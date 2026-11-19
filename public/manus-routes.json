@@ -1,0 +1,22 @@
+{
+  "routes": [
+    "/",
+    "/login",
+    "/signup",
+    "/forgot-password",
+    "/dashboard",
+    "/explore",
+    "/skills",
+    "/skills/:slug",
+    "/roadmap/:slug",
+    "/quiz/:quizId",
+    "/challenge/:challengeId",
+    "/opportunities",
+    "/opportunities/:id",
+    "/admin",
+    "/admin/submissions",
+    "/admin/content",
+    "/admin/quizzes",
+    "/admin/opportunities"
+  ]
+}
