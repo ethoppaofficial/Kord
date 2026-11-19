@@ -9,30 +9,32 @@ set search_path = public
 as $$
 declare
   v_uid uuid := auth.uid();
-  v_completed_activities integer := 0;
+  v_completed_lessons integer := 0;
   v_total_minutes integer := 0;
-  v_enrolled_count integer := 0;
+  v_active_courses integer := 0;
+  v_completed_courses integer := 0;
   v_passed_quizzes integer := 0;
   v_total_attempts integer := 0;
   v_approved_subs integer := 0;
   v_pending_subs integer := 0;
   v_revision_subs integer := 0;
   v_skills jsonb := '[]'::jsonb;
-  v_weekly jsonb := '[]'::jsonb;
-  v_hourly jsonb := '[]'::jsonb;
 begin
   if v_uid is null then
     raise exception 'Authentication required';
   end if;
 
-  select count(*), coalesce(sum(coalesce(ap.minutes_spent, a.est_minutes)), 0)
-  into v_completed_activities, v_total_minutes
-  from public.activity_progress ap
-  join public.activities a on a.id = ap.activity_id
-  where ap.user_id = v_uid and ap.completed = true;
+  select count(*), coalesce(sum(coalesce(lp.minutes_spent, l.est_minutes)), 0)
+  into v_completed_lessons, v_total_minutes
+  from public.lesson_progress lp
+  join public.lessons l on l.id = lp.lesson_id
+  where lp.user_id = v_uid and lp.completed = true;
 
-  select count(*) into v_enrolled_count
-  from public.enrollments where user_id = v_uid and status = 'active';
+  select
+    count(*) filter (where status = 'active'),
+    count(*) filter (where status = 'completed')
+  into v_active_courses, v_completed_courses
+  from public.course_enrollments where user_id = v_uid;
 
   select count(*) filter (where passed), count(*)
   into v_passed_quizzes, v_total_attempts
@@ -49,6 +51,7 @@ begin
     'skillId', s.id,
     'slug', s.slug,
     'title', s.title,
+    'category', s.category,
     'level', us.level,
     'updatedAt', us.updated_at
   )), '[]'::jsonb)
@@ -59,8 +62,9 @@ begin
 
   return jsonb_build_object(
     'learning', jsonb_build_object(
-      'activeRoadmaps', v_enrolled_count,
-      'completedActivities', v_completed_activities,
+      'activeCourses', v_active_courses,
+      'completedCourses', v_completed_courses,
+      'completedLessons', v_completed_lessons,
       'minutesLearned', v_total_minutes
     ),
     'understanding', jsonb_build_object(
@@ -73,8 +77,8 @@ begin
       'needsRevisionSubmissions', v_revision_subs
     ),
     'skillLevels', v_skills,
-    'weeklyMinutes', v_weekly,
-    'hourlyDistribution', v_hourly
+    'weeklyMinutes', '[]'::jsonb,
+    'hourlyDistribution', '[]'::jsonb
   );
 end;
 $$;

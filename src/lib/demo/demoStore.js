@@ -1,7 +1,7 @@
 import { createInitialSeed } from './seedData.js';
 import { clearIdempotencyCache } from '../idempotency.js';
 
-const STORAGE_KEY = 'kord_app_state_v3';
+const STORAGE_KEY = 'kord_app_state_v4';
 
 const listeners = new Set();
 
@@ -14,7 +14,13 @@ function loadState() {
       return seed;
     }
     const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.skills) || !parsed.opportunities?.[0]?.responsibilities) {
+    if (
+      !parsed ||
+      !Array.isArray(parsed.skills) ||
+      !Array.isArray(parsed.courses) ||
+      !Array.isArray(parsed.categories) ||
+      parsed.skills.length < 20
+    ) {
       const seed = createInitialSeed();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
       return seed;

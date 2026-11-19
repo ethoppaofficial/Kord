@@ -1,5 +1,8 @@
-import { listSkills } from '../../lib/repositories/contentRepository.js';
+import { listSkills, listAllCourses } from '../../lib/repositories/contentRepository.js';
+import { getCourseEnrollments, getLessonProgress } from '../../lib/repositories/progressRepository.js';
 import { getUserSkills, declareUserSkill } from '../../lib/repositories/skillsRepository.js';
+import { getDemoState } from '../../lib/demo/demoStore.js';
+import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../lib/progressionEngine.js';
 import { PROGRESSION_LADDER, PROGRESSION_WEIGHT } from '../../lib/constants.js';
 import { escapeHtml, formatDate } from '../../lib/formatters.js';
 import { renderStatusBadge, renderEmptyState, renderProgressRail } from '../../components/Common.js';
@@ -7,7 +10,33 @@ import { showToast } from '../../components/Toast.js';
 
 export async function renderMySkillsPage({ session, rerender }) {
   const userId = session.user.id;
-  const [skills, userSkills] = await Promise.all([listSkills(), getUserSkills(userId)]);
+  const [skills, allCourses, enrollments, lessonProgress, userSkills] = await Promise.all([
+    listSkills(),
+    listAllCourses({ includeDrafts: false }),
+    getCourseEnrollments(userId),
+    getLessonProgress(userId),
+    getUserSkills(userId),
+  ]);
+
+  const state = getDemoState();
+  const quizzes = state.quizzes || [];
+  const challenges = state.challenges || [];
+  const quizAttempts = (state.quizAttempts || []).filter((a) => a.userId === userId);
+  const submissions = (state.submissions || []).filter((s) => s.userId === userId);
+
+  const courseProgressById = {};
+  allCourses.forEach((course) => {
+    const enr = enrollments.find((e) => e.courseId === course.id) || null;
+    courseProgressById[course.id] = computeCourseProgress({
+      course,
+      lessonProgress: lessonProgress.filter((lp) => lp.courseId === course.id),
+      assessments: quizzes,
+      quizAttempts,
+      challenges,
+      submissions,
+      enrollment: enr,
+    });
+  });
 
   const userSkillById = new Map(userSkills.map((us) => [us.skillId, us]));
   const undeclaredSkills = skills.filter((s) => !userSkillById.has(s.id));
@@ -16,9 +45,10 @@ export async function renderMySkillsPage({ session, rerender }) {
     html: `
       <div class="page-header">
         <div>
-          <h1 class="page-title">My Skills &amp; Evidence Progression</h1>
-          <p class="page-subtitle">Skill levels upgrade only when backed by completed activities, passed quizzes, or approved challenge evidence.</p>
+          <h1 class="page-title">My Learning &amp; Skill Progression</h1>
+          <p class="page-subtitle">Track individual course progress and how your courses contribute toward earning Verified skill status.</p>
         </div>
+        <a href="/explore" data-link class="btn btn-primary btn-sm">Explore courses</a>
       </div>
 
       <section class="card" style="margin-bottom:24px;">
@@ -35,6 +65,60 @@ export async function renderMySkillsPage({ session, rerender }) {
         </div>
       </section>
 
+      <!-- Active Course Enrollments -->
+      <section style="margin-bottom:28px;">
+        <h2 class="section-heading">Enrolled courses (${enrollments.length})</h2>
+        ${
+          enrollments.length > 0
+            ? `
+          <div class="lab-grid-2">
+            ${enrollments
+              .map((enr) => {
+                const course = allCourses.find((c) => c.id === enr.courseId);
+                if (!course) return '';
+                const prog = courseProgressById[course.id];
+                const skill = skills.find((s) => s.id === course.skillId);
+                return `
+                  <article class="card" style="display:flex; flex-direction:column; gap:12px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+                      <div>
+                        <div class="meta-line" style="margin-bottom:2px;">
+                          <span>${escapeHtml(skill?.title || 'Skill')}</span>
+                          <span class="meta-sep" aria-hidden="true">·</span>
+                          <span>${escapeHtml(course.difficulty)}</span>
+                        </div>
+                        <a href="/courses/${escapeHtml(course.slug)}" data-link style="font-size:1.05rem; font-weight:700; color:var(--color-navy);">
+                          ${escapeHtml(course.title)}
+                        </a>
+                      </div>
+                      ${prog.isCompleted ? renderStatusBadge('completed') : renderStatusBadge(enr.status)}
+                    </div>
+
+                    ${renderProgressRail({
+                      label: `${prog.completedLessonsCount}/${prog.requiredLessonsCount} lessons · ${prog.passedAssessmentsCount}/${prog.assessmentsCount} assessments`,
+                      value: prog.progressPercent,
+                      max: 100,
+                      detail: `${prog.progressPercent}%`,
+                    })}
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:12.5px; color:var(--color-text-muted);">
+                      <span>${prog.isCompleted ? 'Completed' : `Est. target: ${formatDate(prog.projectedCompletionAt)}`}</span>
+                      <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-secondary btn-sm">Continue course →</a>
+                    </div>
+                  </article>
+                `;
+              })
+              .join('')}
+          </div>
+        `
+            : renderEmptyState({
+                title: 'No courses enrolled yet',
+                message: 'Browse skills in Explore and enroll in individual courses to start building verified mastery.',
+                actionHtml: `<a href="/explore" data-link class="btn btn-primary btn-sm">Browse skills &amp; courses</a>`,
+              })
+        }
+      </section>
+
       <div class="lab-split">
         <section>
           <h2 class="section-heading">Your tracked skills (${userSkills.length})</h2>
@@ -46,6 +130,11 @@ export async function renderMySkillsPage({ session, rerender }) {
                 .map((us) => {
                   const skill = skills.find((s) => s.id === us.skillId);
                   if (!skill) return '';
+                  const skillCourses = allCourses.filter((c) => c.skillId === skill.id);
+                  const overall = computeOverallSkillCourseProgress({
+                    publishedCourses: skillCourses,
+                    courseProgressById,
+                  });
                   const pct = Math.round((PROGRESSION_WEIGHT[us.level] || 0.3) * 100);
                   return `
                     <article class="card pop-in" style="display:flex; flex-direction:column; gap:12px;">
@@ -53,6 +142,8 @@ export async function renderMySkillsPage({ session, rerender }) {
                         <div>
                           <div class="meta-line" style="margin-bottom:4px;">
                             <span>${escapeHtml(skill.category)}</span>
+                            <span class="meta-sep" aria-hidden="true">·</span>
+                            <span>${overall.completedCoursesCount}/${overall.totalPublishedCourses} courses completed</span>
                             <span class="meta-sep" aria-hidden="true">·</span>
                             <span>Updated ${formatDate(us.updatedAt)}</span>
                           </div>
@@ -72,17 +163,7 @@ export async function renderMySkillsPage({ session, rerender }) {
                       })}
 
                       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                        <a href="/skills/${escapeHtml(skill.slug)}" data-link class="btn btn-secondary btn-sm">Open roadmap</a>
-                        ${
-                          skill.skillCheckQuizId
-                            ? `<a href="/quiz/${escapeHtml(skill.skillCheckQuizId)}" data-link class="btn btn-secondary btn-sm">Skill check</a>`
-                            : ''
-                        }
-                        ${
-                          skill.challengeId
-                            ? `<a href="/challenge/${escapeHtml(skill.challengeId)}" data-link class="btn btn-primary btn-sm">Challenge</a>`
-                            : ''
-                        }
+                        <a href="/skills/${escapeHtml(skill.slug)}" data-link class="btn btn-secondary btn-sm">Open skill hub</a>
                       </div>
                     </article>
                   `;
@@ -92,7 +173,7 @@ export async function renderMySkillsPage({ session, rerender }) {
           `
               : renderEmptyState({
                   title: 'No skills declared yet',
-                  message: 'Declare a skill on the right or enroll in a roadmap to start tracking progression.',
+                  message: 'Declare a skill on the right or enroll in a course to begin building evidence.',
                 })
           }
         </section>
@@ -100,7 +181,7 @@ export async function renderMySkillsPage({ session, rerender }) {
         <aside class="card-workspace">
           <h2 style="font-size:1.05rem; margin-bottom:8px;">Declare a skill</h2>
           <p style="font-size:13px; color:var(--color-text-secondary); margin-bottom:14px;">
-            Declaring adds a skill at <strong>Declared</strong> level so you can benchmark yourself via Skill Check quizzes and see opportunity matches.
+            Declaring adds a skill at <strong>Declared</strong> level so you can track opportunity readiness while completing its courses.
           </p>
           ${
             undeclaredSkills.length > 0
@@ -110,7 +191,7 @@ export async function renderMySkillsPage({ session, rerender }) {
                 <label class="field-label" for="declare-select">Select skill</label>
                 <select class="select" id="declare-select" name="skillId">
                   ${undeclaredSkills
-                    .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.title)} (${escapeHtml(s.level)})</option>`)
+                    .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.title)} (${escapeHtml(s.category)})</option>`)
                     .join('')}
                 </select>
               </div>
@@ -132,7 +213,7 @@ export async function renderMySkillsPage({ session, rerender }) {
         const skillId = root.querySelector('#declare-select').value;
         try {
           await declareUserSkill(userId, skillId);
-          showToast('Skill declared! Complete activities, quizzes, or a challenge to level up.', 'success');
+          showToast('Skill declared! Enroll in its courses to advance your level.', 'success');
           rerender({ silent: true });
         } catch (err) {
           if (btn) btn.disabled = false;

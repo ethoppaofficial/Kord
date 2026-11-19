@@ -140,13 +140,23 @@ export async function listRankedOpportunities(userId) {
       const missingSkills = [];
 
       reqDefs.forEach((def) => {
-        const skill = skillBySlug.get(def.slug) || {
+        const rawSkill = skillBySlug.get(def.slug) || {
           id: def.slug,
           slug: def.slug,
           title: def.slug,
-          skillCheckQuizId: null,
-          challengeId: null,
         };
+        const skillQuiz =
+          demoState &&
+          ((demoState.quizzes || []).find((q) => q.skillId === rawSkill.id && q.quizType === 'skill_check') ||
+            (demoState.quizzes || []).find((q) => q.skillId === rawSkill.id));
+        const skillChallenge =
+          demoState && (demoState.challenges || []).find((c) => c.skillId === rawSkill.id);
+        const skill = {
+          ...rawSkill,
+          skillCheckQuizId: rawSkill.skillCheckQuizId || skillQuiz?.id || null,
+          challengeId: rawSkill.challengeId || skillChallenge?.id || null,
+        };
+
         const userSkill = userSkillBySkillId.get(skill.id);
         const evidence =
           userId && demoState

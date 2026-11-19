@@ -10,6 +10,7 @@ import { renderLoginPage, renderSignupPage, renderForgotPasswordPage } from '../
 import { renderDashboardPage } from '../pages/learner/DashboardPage.js';
 import { renderExplorePage } from '../pages/learner/ExplorePage.js';
 import { renderSkillDetailPage } from '../pages/learner/SkillDetailPage.js';
+import { renderCourseWorkspacePage } from '../pages/learner/CourseWorkspacePage.js';
 import { renderRoadmapPage } from '../pages/learner/RoadmapPage.js';
 import { renderQuizPage } from '../pages/learner/QuizPage.js';
 import { renderChallengePage } from '../pages/learner/ChallengePage.js';
@@ -35,6 +36,7 @@ const ROUTES = [
 
   { pattern: '/explore', access: 'learner', render: renderExplorePage },
   { pattern: '/skills/:slug', access: 'learner', render: renderSkillDetailPage },
+  { pattern: '/courses/:slug', access: 'learner', render: renderCourseWorkspacePage },
   { pattern: '/opportunities', access: 'learner', render: renderOpportunitiesPage },
   { pattern: '/opportunities/:id', access: 'learner', render: renderOpportunityDetailPage },
   { pattern: '/dashboard', access: 'learner', render: renderDashboardPage },

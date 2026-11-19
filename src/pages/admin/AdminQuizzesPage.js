@@ -1,41 +1,72 @@
 import {
   adminListAllQuizzes,
+  adminUpsertAssessment,
   adminGetQuizQuestions,
   adminUpsertQuestion,
   adminDeleteQuestion,
 } from '../../lib/repositories/quizRepository.js';
+import { listSkills, listAllCourses } from '../../lib/repositories/contentRepository.js';
+import { ASSESSMENT_TYPES, QUESTION_TYPES } from '../../lib/constants.js';
 import { escapeHtml } from '../../lib/formatters.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { showToast } from '../../components/Toast.js';
 
 let selectedQuizId = null;
+let selectedQuestionType = 'multiple_choice';
 
 export async function renderAdminQuizzesPage({ currentPath, rerender }) {
-  const quizzes = await adminListAllQuizzes();
+  const [quizzes, skills, courses] = await Promise.all([
+    adminListAllQuizzes(),
+    listSkills({ includeDrafts: true }),
+    listAllCourses({ includeDrafts: true }),
+  ]);
+
   if (!selectedQuizId || !quizzes.some((q) => q.id === selectedQuizId)) {
     selectedQuizId = quizzes[0]?.id || null;
   }
 
   const questions = selectedQuizId ? await adminGetQuizQuestions(selectedQuizId) : [];
+  const activeQuiz = quizzes.find((q) => q.id === selectedQuizId) || null;
+
+  const isManual = ['short_answer', 'long_form', 'practical_submission'].includes(selectedQuestionType);
+  const isFill = selectedQuestionType === 'fill_blank';
+  const isOrder = selectedQuestionType === 'ordering';
+  const isMultiSelect = selectedQuestionType === 'multiple_select';
+  const isTrueFalse = selectedQuestionType === 'true_false';
 
   const innerHtml = `
     <div class="page-header">
       <div>
-        <h1 class="page-title">Manage Quiz Questions</h1>
-        <p class="page-subtitle">Protected admin view. Answer keys and explanations are never exposed to learner queries.</p>
+        <h1 class="page-title">Assessments &amp; 10-Format Question Bank</h1>
+        <p class="page-subtitle">Create assessments linked to skills or courses and author questions across 10 objective and manual formats.</p>
       </div>
     </div>
 
     <div class="card" style="margin-bottom:20px;">
-      <div class="field" style="max-width:460px;">
-        <label class="field-label" for="admin-quiz-select">Select quiz</label>
-        <select class="select" id="admin-quiz-select">
-          ${quizzes
-            .map(
-              (q) => `<option value="${escapeHtml(q.id)}" ${q.id === selectedQuizId ? 'selected' : ''}>${escapeHtml(q.skillTitle || '')} — ${escapeHtml(q.title)}</option>`
-            )
-            .join('')}
-        </select>
+      <div class="lab-grid-2">
+        <div class="field">
+          <label class="field-label" for="admin-quiz-select">Select Assessment</label>
+          <select class="select" id="admin-quiz-select">
+            ${quizzes
+              .map(
+                (q) => `<option value="${escapeHtml(q.id)}" ${q.id === selectedQuizId ? 'selected' : ''}>${escapeHtml(q.skillTitle || '')}${q.courseTitle ? ` · ${escapeHtml(q.courseTitle)}` : ''} — ${escapeHtml(q.title)}</option>`
+              )
+              .join('')}
+          </select>
+        </div>
+        <div style="display:flex; flex-direction:column; justify-content:flex-end;">
+          ${
+            activeQuiz
+              ? `<div class="meta-line">
+                  <span>Type: ${escapeHtml(activeQuiz.quizType)}</span>
+                  <span class="meta-sep">·</span>
+                  <span class="mono-num">Pass: ${activeQuiz.passPercent}%</span>
+                  ${activeQuiz.timeLimitMinutes ? `<span class="meta-sep">·</span><span>${activeQuiz.timeLimitMinutes}m timer</span>` : ''}
+                  ${activeQuiz.maxAttempts ? `<span class="meta-sep">·</span><span>Max ${activeQuiz.maxAttempts} attempts</span>` : ''}
+                </div>`
+              : ''
+          }
+        </div>
       </div>
     </div>
 
@@ -48,22 +79,43 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
               (q, i) => `
             <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:8px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
-                <strong style="color:var(--color-navy);"><span class="mono-num">${i + 1}.</span> ${escapeHtml(q.prompt)}</strong>
+                <div>
+                  <div class="meta-line" style="margin-bottom:2px;">
+                    <span>${escapeHtml((q.questionType || 'multiple_choice').replace('_', ' '))}</span>
+                    <span class="meta-sep">·</span>
+                    <span class="mono-num">${q.marks || 1} marks</span>
+                    <span class="meta-sep">·</span>
+                    <span>${escapeHtml(q.difficulty || 'medium')}</span>
+                  </div>
+                  <strong style="color:var(--color-navy);"><span class="mono-num">${i + 1}.</span> ${escapeHtml(q.prompt)}</strong>
+                </div>
                 <button type="button" class="btn btn-danger btn-sm" data-del-q="${escapeHtml(q.id)}">Remove</button>
               </div>
-              <ol start="0" style="margin:0; padding-left:20px; font-size:13px; color:var(--color-text-secondary);">
-                ${(q.options || [])
-                  .map(
-                    (opt, idx) => `
-                  <li style="${idx === q.correctIndex ? 'color:var(--color-green); font-weight:600;' : ''}">
-                    ${escapeHtml(opt)} ${idx === q.correctIndex ? '(Correct)' : ''}
-                  </li>
-                `
-                  )
-                  .join('')}
-              </ol>
+              ${q.contextText ? `<div style="font-size:12.5px; color:var(--color-text-secondary); padding:6px 10px; background:var(--color-bg); border-radius:4px;">${escapeHtml(q.contextText)}</div>` : ''}
+              ${
+                (q.options || []).length > 0
+                  ? `<ol start="0" style="margin:0; padding-left:20px; font-size:13px; color:var(--color-text-secondary);">
+                      ${q.options
+                        .map((opt, idx) => {
+                          const isHit =
+                            q.questionType === 'multiple_select'
+                              ? (q.correctIndices || []).includes(idx)
+                              : q.questionType === 'ordering'
+                                ? false
+                                : idx === q.correctIndex;
+                          return `<li style="${isHit ? 'color:var(--color-green); font-weight:600;' : ''}">${escapeHtml(opt)} ${isHit ? '(Correct)' : ''}</li>`;
+                        })
+                        .join('')}
+                    </ol>`
+                  : ''
+              }
+              ${
+                q.acceptedAnswers?.length
+                  ? `<div style="font-size:12.5px; color:var(--color-green);">Accepted: ${q.acceptedAnswers.map(escapeHtml).join(', ')}</div>`
+                  : ''
+              }
               <div style="font-size:12px; color:var(--color-text-muted);">
-                <strong>Explanation:</strong> ${escapeHtml(q.explanation)}
+                <strong>Explanation / Rubric:</strong> ${escapeHtml(q.explanation)}
               </div>
             </div>
           `
@@ -72,44 +124,140 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
         </div>
       </section>
 
-      <aside class="card-workspace">
-        <h2 style="font-size:1.05rem; margin-bottom:12px;">Add question</h2>
-        <form id="admin-question-form" class="form-stack">
-          <div class="field">
-            <label class="field-label" for="q-prompt">Question prompt</label>
-            <textarea class="textarea" id="q-prompt" name="prompt" style="min-height:80px;" required placeholder="Enter the question…"></textarea>
-          </div>
-          <div class="field">
-            <label class="field-label" for="q-opt-0">Option 0</label>
-            <input class="input" id="q-opt-0" name="opt0" required />
-          </div>
-          <div class="field">
-            <label class="field-label" for="q-opt-1">Option 1</label>
-            <input class="input" id="q-opt-1" name="opt1" required />
-          </div>
-          <div class="field">
-            <label class="field-label" for="q-opt-2">Option 2</label>
-            <input class="input" id="q-opt-2" name="opt2" required />
-          </div>
-          <div class="field">
-            <label class="field-label" for="q-opt-3">Option 3</label>
-            <input class="input" id="q-opt-3" name="opt3" required />
-          </div>
-          <div class="field">
-            <label class="field-label" for="q-correct">Correct option index</label>
-            <select class="select" id="q-correct" name="correctIndex">
-              <option value="0">Option 0</option>
-              <option value="1">Option 1</option>
-              <option value="2">Option 2</option>
-              <option value="3">Option 3</option>
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label" for="q-explanation">Post-submission explanation</label>
-            <textarea class="textarea" id="q-explanation" name="explanation" style="min-height:70px;" required placeholder="Shown to learners only after they submit…"></textarea>
-          </div>
-          <button type="submit" class="btn btn-primary btn-sm">Save question</button>
-        </form>
+      <aside style="display:flex; flex-direction:column; gap:18px;">
+        <div class="card-workspace">
+          <h2 style="font-size:1.05rem; margin-bottom:12px;">Add Question</h2>
+          <form id="admin-question-form" class="form-stack">
+            <div class="field">
+              <label class="field-label" for="q-type">Question Format</label>
+              <select class="select" id="q-type" name="questionType">
+                ${QUESTION_TYPES.map(
+                  (t) => `<option value="${t.key}" ${t.key === selectedQuestionType ? 'selected' : ''}>${escapeHtml(t.label)}${t.autoGraded ? '' : ' (Admin review)'}</option>`
+                ).join('')}
+              </select>
+            </div>
+
+            <div class="lab-grid-2">
+              <div class="field">
+                <label class="field-label" for="q-marks">Marks</label>
+                <input class="input" id="q-marks" name="marks" type="number" min="1" max="50" value="2" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="q-diff">Difficulty</label>
+                <select class="select" id="q-diff" name="difficulty">
+                  <option value="easy">Easy</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="q-prompt">Question prompt</label>
+              <textarea class="textarea" id="q-prompt" name="prompt" style="min-height:74px;" required placeholder="Enter the assessment prompt…"></textarea>
+            </div>
+
+            ${
+              selectedQuestionType === 'scenario' || selectedQuestionType === 'case_study'
+                ? `<div class="field">
+                    <label class="field-label" for="q-context">Scenario / Case Study Context</label>
+                    <textarea class="textarea" id="q-context" name="contextText" style="min-height:70px;" placeholder="Background scenario data for the learner to analyze…"></textarea>
+                  </div>`
+                : ''
+            }
+
+            ${
+              isManual
+                ? `<div style="padding:10px 12px; background:var(--color-amber-bg); border:1px solid var(--color-amber-border); border-radius:6px; font-size:12.5px;">
+                    Written / practical responses are routed to Admin Submission Review after the learner submits.
+                  </div>`
+                : isFill
+                  ? `<div class="field">
+                      <label class="field-label" for="q-accepted">Accepted answers (comma-separated)</label>
+                      <input class="input" id="q-accepted" name="acceptedAnswersCsv" required placeholder="e.g. BLUF, Bottom Line Up Front" />
+                    </div>`
+                  : isTrueFalse
+                    ? `<div class="field">
+                        <label class="field-label" for="q-correct">Correct answer</label>
+                        <select class="select" id="q-correct" name="correctIndex">
+                          <option value="0">True</option>
+                          <option value="1">False</option>
+                        </select>
+                      </div>`
+                    : `
+                      <div class="field">
+                        <label class="field-label" for="q-options-lines">${isOrder ? 'Steps in CORRECT sequence (one per line)' : 'Options (one per line)'}</label>
+                        <textarea class="textarea" id="q-options-lines" name="optionsLines" style="min-height:84px;" required placeholder="Option A&#10;Option B&#10;Option C&#10;Option D"></textarea>
+                      </div>
+                      ${
+                        isMultiSelect
+                          ? `<div class="field">
+                              <label class="field-label" for="q-multi-idx">Correct 0-based indices (comma-separated)</label>
+                              <input class="input" id="q-multi-idx" name="correctIndicesCsv" required placeholder="e.g. 0, 2" />
+                            </div>`
+                          : isOrder
+                            ? `<div style="font-size:12px; color:var(--color-text-muted);">Order listed above is stored as the target sequence.</div>`
+                            : `<div class="field">
+                                <label class="field-label" for="q-correct">Correct option 0-based index</label>
+                                <input class="input" id="q-correct" name="correctIndex" type="number" min="0" max="10" value="0" />
+                              </div>`
+                      }
+                    `
+            }
+
+            <div class="field">
+              <label class="field-label" for="q-explanation">Post-submission explanation / grading note</label>
+              <textarea class="textarea" id="q-explanation" name="explanation" style="min-height:64px;" required placeholder="Shown to learners only after they submit…"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Save question</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2 style="font-size:1.05rem; margin-bottom:10px;">Create New Assessment</h2>
+          <form id="admin-create-quiz-form" class="form-stack">
+            <div class="field">
+              <label class="field-label" for="nq-skill">Parent Skill</label>
+              <select class="select" id="nq-skill" name="skillId">
+                ${skills.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.title)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="nq-course">Linked Course (optional)</label>
+              <select class="select" id="nq-course" name="courseId">
+                <option value="">Skill-wide assessment</option>
+                ${courses.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.title)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="lab-grid-2">
+              <div class="field">
+                <label class="field-label" for="nq-type">Type</label>
+                <select class="select" id="nq-type" name="quizType">
+                  ${ASSESSMENT_TYPES.map((t) => `<option value="${t.key}">${escapeHtml(t.label)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="nq-pass">Pass %</label>
+                <input class="input" id="nq-pass" name="passPercent" type="number" min="50" max="100" value="70" />
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="nq-title">Assessment title</label>
+              <input class="input" id="nq-title" name="title" required placeholder="e.g. Course Final Mastery Exam" />
+            </div>
+            <div class="lab-grid-2">
+              <div class="field">
+                <label class="field-label" for="nq-timer">Time limit (mins, optional)</label>
+                <input class="input" id="nq-timer" name="timeLimitMinutes" type="number" min="5" max="180" placeholder="e.g. 25" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="nq-attempts">Max attempts (optional)</label>
+                <input class="input" id="nq-attempts" name="maxAttempts" type="number" min="1" max="20" placeholder="Unlimited" />
+              </div>
+            </div>
+            <button type="submit" class="btn btn-secondary btn-sm">Create assessment</button>
+          </form>
+        </div>
       </aside>
     </div>
   `;
@@ -119,6 +267,11 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
     bind(root) {
       root.querySelector('#admin-quiz-select')?.addEventListener('change', (e) => {
         selectedQuizId = e.target.value;
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#q-type')?.addEventListener('change', (e) => {
+        selectedQuestionType = e.target.value;
         rerender({ silent: true });
       });
 
@@ -139,24 +292,69 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
 
       root.querySelector('#admin-question-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const form = e.currentTarget;
-        const submitBtn = form.querySelector('button[type="submit"]');
-        if (submitBtn?.disabled) return;
-        if (submitBtn) submitBtn.disabled = true;
+        if (!selectedQuizId) return;
+        const fd = new FormData(e.currentTarget);
+        const qType = String(fd.get('questionType'));
+        const options =
+          qType === 'true_false'
+            ? ['True', 'False']
+            : String(fd.get('optionsLines') || '')
+                .split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean);
+
+        const acceptedAnswers = String(fd.get('acceptedAnswersCsv') || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        const correctIndices = String(fd.get('correctIndicesCsv') || '')
+          .split(',')
+          .map((s) => Number(s.trim()))
+          .filter((n) => !Number.isNaN(n));
+
+        const correctOrder = qType === 'ordering' ? options.map((_, i) => i) : null;
+
         try {
-          const fd = new FormData(form);
           await adminUpsertQuestion({
             quizId: selectedQuizId,
+            questionType: qType,
+            marks: Number(fd.get('marks') || 1),
+            difficulty: String(fd.get('difficulty') || 'medium'),
             prompt: String(fd.get('prompt')),
-            options: [fd.get('opt0'), fd.get('opt1'), fd.get('opt2'), fd.get('opt3')].map(String),
-            correctIndex: Number(fd.get('correctIndex')),
+            contextText: String(fd.get('contextText') || ''),
+            options,
+            correctIndex: Number(fd.get('correctIndex') || 0),
+            correctIndices: correctIndices.length ? correctIndices : null,
+            acceptedAnswers: acceptedAnswers.length ? acceptedAnswers : null,
+            correctOrder,
             explanation: String(fd.get('explanation')),
           });
-          showToast('Question saved via protected admin RPC.', 'success');
+          showToast('Question saved securely.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          if (submitBtn) submitBtn.disabled = false;
           showToast(err?.message || 'Unable to save question.', 'error');
+        }
+      });
+
+      root.querySelector('#admin-create-quiz-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.currentTarget);
+        try {
+          await adminUpsertAssessment({
+            skillId: String(fd.get('skillId')),
+            courseId: String(fd.get('courseId') || '') || null,
+            quizType: String(fd.get('quizType')),
+            title: String(fd.get('title')),
+            description: 'Administrator-authored course assessment.',
+            passPercent: Number(fd.get('passPercent') || 70),
+            timeLimitMinutes: fd.get('timeLimitMinutes') ? Number(fd.get('timeLimitMinutes')) : null,
+            maxAttempts: fd.get('maxAttempts') ? Number(fd.get('maxAttempts')) : null,
+          });
+          showToast('Assessment created!', 'success');
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err?.message || 'Unable to create assessment.', 'error');
         }
       });
     },

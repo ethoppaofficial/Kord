@@ -1,5 +1,5 @@
 -- 02_security.sql
--- Idempotent Row Level Security with strict actor isolation
+-- Idempotent Row Level Security with strict actor isolation & answer-key protection
 
 create or replace function public.is_admin()
 returns boolean
@@ -15,12 +15,17 @@ as $$
 $$;
 
 alter table public.profiles enable row level security;
+alter table public.categories enable row level security;
 alter table public.skills enable row level security;
+alter table public.courses enable row level security;
 alter table public.phases enable row level security;
+alter table public.lessons enable row level security;
 alter table public.activities enable row level security;
 alter table public.quizzes enable row level security;
 alter table public.questions enable row level security;
 alter table public.challenges enable row level security;
+alter table public.course_enrollments enable row level security;
+alter table public.lesson_progress enable row level security;
 alter table public.enrollments enable row level security;
 alter table public.activity_progress enable row level security;
 alter table public.quiz_attempts enable row level security;
@@ -28,7 +33,7 @@ alter table public.submissions enable row level security;
 alter table public.user_skills enable row level security;
 alter table public.opportunities enable row level security;
 
--- Profiles: users only see their own profile; admin sees reviewer identity for submissions
+-- Profiles
 drop policy if exists "profiles_select_own_or_admin" on public.profiles;
 create policy "profiles_select_own_or_admin" on public.profiles
   for select using (id = auth.uid() or public.is_admin());
@@ -38,15 +43,30 @@ create policy "profiles_update_own" on public.profiles
   for update using (id = auth.uid()) with check (id = auth.uid());
 
 -- Catalog reads & admin authoring
+drop policy if exists "catalog_read_categories" on public.categories;
+create policy "catalog_read_categories" on public.categories for select using (true);
+drop policy if exists "catalog_admin_categories" on public.categories;
+create policy "catalog_admin_categories" on public.categories for all using (public.is_admin()) with check (public.is_admin());
+
 drop policy if exists "catalog_read_skills" on public.skills;
 create policy "catalog_read_skills" on public.skills for select using (true);
 drop policy if exists "catalog_admin_skills" on public.skills;
 create policy "catalog_admin_skills" on public.skills for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "catalog_read_courses" on public.courses;
+create policy "catalog_read_courses" on public.courses for select using (publication_status = 'published' or public.is_admin());
+drop policy if exists "catalog_admin_courses" on public.courses;
+create policy "catalog_admin_courses" on public.courses for all using (public.is_admin()) with check (public.is_admin());
+
 drop policy if exists "catalog_read_phases" on public.phases;
 create policy "catalog_read_phases" on public.phases for select using (true);
 drop policy if exists "catalog_admin_phases" on public.phases;
 create policy "catalog_admin_phases" on public.phases for all using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "catalog_read_lessons" on public.lessons;
+create policy "catalog_read_lessons" on public.lessons for select using (true);
+drop policy if exists "catalog_admin_lessons" on public.lessons;
+create policy "catalog_admin_lessons" on public.lessons for all using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_activities" on public.activities;
 create policy "catalog_read_activities" on public.activities for select using (true);
@@ -68,38 +88,44 @@ create policy "catalog_read_opportunities" on public.opportunities for select us
 drop policy if exists "catalog_admin_opportunities" on public.opportunities;
 create policy "catalog_admin_opportunities" on public.opportunities for all using (public.is_admin()) with check (public.is_admin());
 
--- Questions: NEVER expose correct_index or explanation to learners
+-- Questions: NEVER expose correct_index, answer_config, or explanation before submission
 revoke select on public.questions from anon, authenticated;
-grant select (id, quiz_id, position, prompt, options) on public.questions to authenticated;
+grant select (id, quiz_id, position, question_type, difficulty, marks, prompt, context_text, options) on public.questions to authenticated;
 drop policy if exists "questions_read_authenticated" on public.questions;
 create policy "questions_read_authenticated" on public.questions for select to authenticated using (not public.is_admin());
 drop policy if exists "questions_admin_all" on public.questions;
 create policy "questions_admin_all" on public.questions for all using (public.is_admin()) with check (public.is_admin());
 
--- Strict learner-only personal workspace data (Admins cannot view learner personal notes/progress/attempts)
+-- Strict learner-only personal workspace tables
+drop policy if exists "course_enrollments_own_only" on public.course_enrollments;
+create policy "course_enrollments_own_only" on public.course_enrollments
+  for all using (user_id = auth.uid() and not public.is_admin())
+  with check (user_id = auth.uid() and not public.is_admin());
+
+drop policy if exists "lesson_progress_own_only" on public.lesson_progress;
+create policy "lesson_progress_own_only" on public.lesson_progress
+  for all using (user_id = auth.uid() and not public.is_admin())
+  with check (user_id = auth.uid() and not public.is_admin());
+
 drop policy if exists "enrollments_own_only" on public.enrollments;
-drop policy if exists "enrollments_own_or_admin" on public.enrollments;
 create policy "enrollments_own_only" on public.enrollments
   for all using (user_id = auth.uid() and not public.is_admin())
   with check (user_id = auth.uid() and not public.is_admin());
 
 drop policy if exists "activity_progress_own_only" on public.activity_progress;
-drop policy if exists "activity_progress_own_or_admin" on public.activity_progress;
 create policy "activity_progress_own_only" on public.activity_progress
   for all using (user_id = auth.uid() and not public.is_admin())
   with check (user_id = auth.uid() and not public.is_admin());
 
 drop policy if exists "quiz_attempts_own_only" on public.quiz_attempts;
-drop policy if exists "quiz_attempts_select_own_or_admin" on public.quiz_attempts;
 create policy "quiz_attempts_own_only" on public.quiz_attempts
-  for select using (user_id = auth.uid() and not public.is_admin());
+  for select using (user_id = auth.uid() or public.is_admin());
 
 drop policy if exists "user_skills_own_only" on public.user_skills;
-drop policy if exists "user_skills_select_own_or_admin" on public.user_skills;
 create policy "user_skills_own_only" on public.user_skills
   for select using (user_id = auth.uid() and not public.is_admin());
 
--- Challenge submissions: learners manage own; admins only review challenge submissions
+-- Challenge submissions: learners manage own; admins review submissions
 drop policy if exists "submissions_select_own_or_admin" on public.submissions;
 create policy "submissions_select_own_or_admin" on public.submissions
   for select using (user_id = auth.uid() or public.is_admin());

@@ -17,13 +17,17 @@ export async function renderChallengePage({ params, session, rerender }) {
 
   const userId = session.user.id;
   const submissions = await getUserSubmissions(userId, challenge.id);
-  const rubricMax = (challenge.rubric || []).reduce((sum, r) => sum + Number(r.maxPoints || 5), 0);
-  const backPath = challenge.skill?.slug ? `/roadmap/${challenge.skill.slug}` : '/skills';
+  const rubricMax = challenge.maxScore || (challenge.rubric || []).reduce((sum, r) => sum + Number(r.maxPoints || 5), 0);
+  const backPath = challenge.course?.slug
+    ? `/courses/${challenge.course.slug}`
+    : challenge.skill?.slug
+      ? `/skills/${challenge.skill.slug}`
+      : '/skills';
 
   return {
     html: `
       <div style="margin-bottom:14px;">
-        <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to roadmap</a>
+        <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to ${challenge.course ? escapeHtml(challenge.course.title) : 'Skill hub'}</a>
       </div>
 
       <div class="lab-split">
@@ -32,18 +36,38 @@ export async function renderChallengePage({ params, session, rerender }) {
             <div class="meta-line" style="margin-bottom:6px;">
               <span>Practical Challenge</span>
               ${challenge.skill ? `<span class="meta-sep" aria-hidden="true">·</span><span>${escapeHtml(challenge.skill.title)}</span>` : ''}
+              ${challenge.course ? `<span class="meta-sep" aria-hidden="true">·</span><span>${escapeHtml(challenge.course.title)}</span>` : ''}
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <span class="mono-num">Passing score: ${challenge.passingScore || Math.ceil(rubricMax * 0.7)}/${rubricMax}</span>
             </div>
             <h1 class="page-title">${escapeHtml(challenge.title)}</h1>
             <p style="margin-top:12px; color:var(--color-text-secondary);">${escapeHtml(challenge.brief)}</p>
             ${
-              challenge.deliverableHint
-                ? `<p style="margin-top:10px; font-size:13px; color:var(--color-text-muted);"><strong>Accepted formats:</strong> ${escapeHtml(challenge.deliverableHint)}</p>`
+              challenge.instructions && challenge.instructions !== challenge.brief
+                ? `<div style="margin-top:14px; padding:12px 14px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-size:13.5px; color:var(--color-text-secondary);">
+                    <strong style="color:var(--color-navy);">Instructions:</strong> ${escapeHtml(challenge.instructions)}
+                  </div>`
+                : ''
+            }
+            ${
+              challenge.expectedDeliverables?.length
+                ? `<div style="margin-top:14px;">
+                    <strong style="font-size:13px; color:var(--color-navy);">Expected deliverables:</strong>
+                    <ul style="margin:6px 0 0; padding-left:18px; font-size:13.5px; color:var(--color-text-secondary);">
+                      ${challenge.expectedDeliverables.map((d) => `<li>${escapeHtml(d)}</li>`).join('')}
+                    </ul>
+                  </div>`
+                : ''
+            }
+            ${
+              challenge.deliverableHint || challenge.submissionFormat
+                ? `<p style="margin-top:10px; font-size:13px; color:var(--color-text-muted);"><strong>Accepted formats:</strong> ${escapeHtml(challenge.deliverableHint || challenge.submissionFormat)}</p>`
                 : ''
             }
           </section>
 
           <section>
-            <h2 class="section-heading">Assessment rubric (<span class="mono-num">${rubricMax}</span> points total)</h2>
+            <h2 class="section-heading">Evaluation rubric (<span class="mono-num">${rubricMax}</span> points total)</h2>
             <div class="rubric-sheet">
               ${(challenge.rubric || [])
                 .map(
@@ -65,13 +89,13 @@ export async function renderChallengePage({ params, session, rerender }) {
             <h2 class="section-heading">${submissions.length > 0 ? 'Resubmit or add new evidence' : 'Submit your evidence'}</h2>
             <form id="challenge-form" class="form-stack" novalidate>
               <div class="field">
-                <label class="field-label" for="evidence-url">Evidence link (optional if uploading a file)</label>
+                <label class="field-label" for="evidence-url">Evidence link (optional if uploading a file or pasting text)</label>
                 <input class="input" id="evidence-url" name="evidenceUrl" type="url" placeholder="https://docs.google.com/…" />
                 <div class="field-error" data-error-for="evidenceUrl"></div>
               </div>
 
               <div class="field">
-                <span class="field-label">Upload evidence file (optional if providing a link)</span>
+                <span class="field-label">Upload evidence file (optional)</span>
                 <div class="dropzone" id="evidence-dropzone" tabindex="0" role="button" aria-label="Choose or drop evidence file">
                   <div style="color:var(--color-blue); margin-bottom:4px;">${icon('upload', 20)}</div>
                   <div id="dropzone-label" style="font-size:14px; font-weight:600; color:var(--color-navy);">
@@ -87,6 +111,11 @@ export async function renderChallengePage({ params, session, rerender }) {
                 </div>
               </div>
 
+              <div class="field">
+                <label class="field-label" for="submission-text">Direct deliverable text (optional if providing URL or file)</label>
+                <textarea class="textarea" id="submission-text" name="submissionText" style="min-height:90px;" placeholder="Paste your written brief, copy, script, or code solution directly here if preferred…"></textarea>
+              </div>
+
               <div class="field-error" data-error-for="evidence"></div>
 
               <div class="field">
@@ -99,7 +128,7 @@ export async function renderChallengePage({ params, session, rerender }) {
               </div>
 
               <div class="card-workspace" style="padding:12px 14px; display:flex; gap:16px; flex-wrap:wrap; font-size:13px;" id="readiness-checklist">
-                <span id="check-evidence" style="color:var(--color-text-muted);">○ Link or file attached</span>
+                <span id="check-evidence" style="color:var(--color-text-muted);">○ Deliverable attached (link, file, or text)</span>
                 <span id="check-explanation" style="color:var(--color-text-muted);">○ Explanation (20+ chars)</span>
               </div>
 
@@ -125,6 +154,7 @@ export async function renderChallengePage({ params, session, rerender }) {
                     ${renderStatusBadge(sub.status)}
                   </div>
                   <p style="font-size:13px; color:var(--color-text-secondary);">${escapeHtml(sub.explanation)}</p>
+                  ${sub.submissionText ? `<div style="padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:6px; font-size:12.5px; white-space:pre-line;">${escapeHtml(sub.submissionText)}</div>` : ''}
                   <div style="font-size:12px; color:var(--color-text-muted);">
                     ${sub.evidenceUrl ? `URL: <a href="${escapeHtml(sub.evidenceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sub.evidenceUrl)}</a>` : ''}
                     ${sub.fileName ? `<div>File: ${escapeHtml(sub.fileName)}</div>` : ''}
@@ -147,7 +177,7 @@ export async function renderChallengePage({ params, session, rerender }) {
                 .join('')}
             </div>
           `
-              : '<p style="font-size:14px; color:var(--color-text-muted);">No submissions yet. Approved submissions verify this skill on your profile.</p>'
+              : '<p style="font-size:14px; color:var(--color-text-muted);">No submissions yet. Approved work contributes toward course completion and skill verification.</p>'
           }
         </aside>
       </div>
@@ -156,6 +186,7 @@ export async function renderChallengePage({ params, session, rerender }) {
       const form = root.querySelector('#challenge-form');
       const urlEl = root.querySelector('#evidence-url');
       const fileEl = root.querySelector('#evidence-file');
+      const subTextEl = root.querySelector('#submission-text');
       const dropzone = root.querySelector('#evidence-dropzone');
       const dropLabel = root.querySelector('#dropzone-label');
       const dropMeta = root.querySelector('#dropzone-meta');
@@ -170,14 +201,15 @@ export async function renderChallengePage({ params, session, rerender }) {
 
       const updateReadiness = () => {
         const hasValidUrl = urlEl.value.trim().length > 0 && isValidUrl(urlEl.value.trim());
-        const hasEvidence = Boolean(selectedFile) || hasValidUrl;
+        const hasText = subTextEl.value.trim().length >= 20;
+        const hasEvidence = Boolean(selectedFile) || hasValidUrl || hasText;
         const expLen = expEl.value.trim().length;
         const hasExplanation = expLen >= 20;
 
         counterEl.textContent = `${expLen} / 20 min chars`;
         counterEl.style.color = hasExplanation ? 'var(--color-green)' : 'var(--color-text-muted)';
 
-        checkEvidenceEl.textContent = hasEvidence ? '✓ Link or file attached' : '○ Link or file attached';
+        checkEvidenceEl.textContent = hasEvidence ? '✓ Deliverable ready' : '○ Deliverable attached (link, file, or text)';
         checkEvidenceEl.style.color = hasEvidence ? 'var(--color-green)' : 'var(--color-text-muted)';
         checkEvidenceEl.style.fontWeight = hasEvidence ? '600' : '400';
 
@@ -210,7 +242,6 @@ export async function renderChallengePage({ params, session, rerender }) {
           fileEl.click();
         }
       });
-
       dropzone?.addEventListener('dragover', (e) => {
         e.preventDefault();
         dropzone.classList.add('is-dragover');
@@ -226,10 +257,12 @@ export async function renderChallengePage({ params, session, rerender }) {
       fileEl?.addEventListener('change', () => setFile(fileEl.files?.[0] || null));
       clearBtn?.addEventListener('click', () => setFile(null));
       urlEl?.addEventListener('input', updateReadiness);
+      subTextEl?.addEventListener('input', updateReadiness);
       expEl?.addEventListener('input', updateReadiness);
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const submissionText = subTextEl.value.trim();
         const payload = {
           evidenceUrl: urlEl.value.trim(),
           file: selectedFile,
@@ -237,6 +270,10 @@ export async function renderChallengePage({ params, session, rerender }) {
         };
 
         const errors = validateSubmissionForm(payload);
+        // Allow direct submissionText if at least 20 chars
+        if (errors.evidence && submissionText.length >= 20) {
+          delete errors.evidence;
+        }
         root.querySelector('[data-error-for="evidence"]').textContent = errors.evidence || '';
         root.querySelector('[data-error-for="evidenceUrl"]').textContent = errors.evidenceUrl || '';
         root.querySelector('[data-error-for="explanation"]').textContent = errors.explanation || '';
@@ -248,8 +285,10 @@ export async function renderChallengePage({ params, session, rerender }) {
           await submitChallengeEvidence({
             userId,
             challengeId: challenge.id,
+            courseId: challenge.courseId || null,
             evidenceUrl: payload.evidenceUrl,
             file: payload.file,
+            submissionText,
             explanation: payload.explanation,
             rubricMax,
           });

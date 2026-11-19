@@ -1,6 +1,7 @@
 import { supabase, isDemoMode } from '../lib/supabase.js';
 import { getDemoState } from '../lib/demo/demoStore.js';
 import { listRankedOpportunities } from '../lib/repositories/opportunityRepository.js';
+import { computeCourseProgress } from '../lib/progressionEngine.js';
 
 function startOfIsoWeek(date) {
   const d = new Date(date);
@@ -59,62 +60,82 @@ export async function getDashboardData(userId) {
     const recommendations = await listRankedOpportunities(userId);
     return {
       ...data,
+      enrolledCourses: data.enrolledCourses || [],
       recommendations: recommendations.slice(0, 3),
     };
   }
 
   const state = getDemoState();
-  const activeRoadmaps = state.enrollments.filter(
-    (e) => e.userId === userId && e.status === 'active'
-  ).length;
-  const pausedRoadmaps = state.enrollments.filter(
-    (e) => e.userId === userId && e.status === 'paused'
-  ).length;
+  const enrollments = (state.courseEnrollments || []).filter((e) => e.userId === userId);
+  const activeCourses = enrollments.filter((e) => e.status === 'active').length;
+  const pausedCourses = enrollments.filter((e) => e.status === 'paused').length;
+  const completedCourses = enrollments.filter((e) => e.status === 'completed').length;
 
-  const activityById = new Map();
-  state.skills.forEach((s) =>
-    (s.phases || []).forEach((p) =>
-      (p.activities || []).forEach((a) => activityById.set(a.id, a))
+  const lessonById = new Map();
+  (state.courses || []).forEach((c) =>
+    (c.phases || []).forEach((p) =>
+      (p.lessons || []).forEach((l) => lessonById.set(l.id, l))
     )
   );
 
-  const completedProgress = state.activityProgress.filter(
-    (ap) => ap.userId === userId && ap.completed
-  );
+  const userLessonProgress = (state.lessonProgress || []).filter((lp) => lp.userId === userId);
+  const completedProgress = userLessonProgress.filter((lp) => lp.completed);
 
-  const completedEntries = completedProgress.map((ap) => {
-    const act = activityById.get(ap.activityId);
+  const completedEntries = completedProgress.map((lp) => {
+    const lesson = lessonById.get(lp.lessonId);
     return {
-      completedAt: ap.completedAt || ap.updatedAt,
-      minutes: Number(ap.minutesSpent || act?.estMinutes || 20),
+      completedAt: lp.completedAt || lp.updatedAt,
+      minutes: Number(lp.minutesSpent || lesson?.estMinutes || 20),
     };
   });
-
-  if (Array.isArray(state.syntheticHistory)) {
-    state.syntheticHistory
-      .filter((item) => item.userId === userId)
-      .forEach((item) => completedEntries.push({ completedAt: item.completedAt, minutes: item.minutes }));
-  }
 
   const minutesLearned = completedEntries.reduce((sum, item) => sum + item.minutes, 0);
   const { weeklyMinutes, hourlyDistribution } = buildTimeSeries(completedEntries);
 
-  const attempts = state.quizAttempts.filter((qa) => qa.userId === userId);
+  const attempts = (state.quizAttempts || []).filter((qa) => qa.userId === userId);
   const passedQuizzes = new Set(attempts.filter((a) => a.passed).map((a) => a.quizId)).size;
   const averageQuizScore =
     attempts.length > 0
       ? Math.round(attempts.reduce((sum, a) => sum + a.percentage, 0) / attempts.length)
       : 0;
 
-  const subs = state.submissions.filter((s) => s.userId === userId);
+  const subs = (state.submissions || []).filter((s) => s.userId === userId);
   const approvedSubmissions = subs.filter((s) => s.status === 'approved').length;
   const pendingSubmissions = subs.filter((s) => s.status === 'pending').length;
   const needsRevisionSubmissions = subs.filter((s) => s.status === 'needs_revision').length;
 
-  const skillLevels = state.userSkills
+  const enrolledCourses = enrollments
+    .map((enr) => {
+      const course = (state.courses || []).find((c) => c.id === enr.courseId);
+      if (!course) return null;
+      const skill = (state.skills || []).find((s) => s.id === course.skillId);
+      const progress = computeCourseProgress({
+        course,
+        lessonProgress: userLessonProgress.filter((lp) => lp.courseId === course.id),
+        assessments: state.quizzes || [],
+        quizAttempts: attempts,
+        challenges: state.challenges || [],
+        submissions: subs,
+        enrollment: enr,
+      });
+      return {
+        id: course.id,
+        slug: course.slug,
+        title: course.title,
+        skillTitle: skill?.title || '',
+        skillSlug: skill?.slug || '',
+        difficulty: course.difficulty,
+        estimatedDurationWeeks: course.estimatedDurationWeeks,
+        status: enr.status,
+        progress,
+      };
+    })
+    .filter(Boolean);
+
+  const skillLevels = (state.userSkills || [])
     .filter((us) => us.userId === userId)
     .map((us) => {
-      const skill = state.skills.find((s) => s.id === us.skillId);
+      const skill = (state.skills || []).find((s) => s.id === us.skillId);
       return {
         skillId: us.skillId,
         slug: skill?.slug || '',
@@ -129,8 +150,12 @@ export async function getDashboardData(userId) {
 
   return {
     learning: {
-      activeRoadmaps,
-      pausedRoadmaps,
+      activeCourses,
+      pausedCourses,
+      completedCourses,
+      activeRoadmaps: activeCourses,
+      pausedRoadmaps: pausedCourses,
+      completedLessons: completedProgress.length,
       completedActivities: completedProgress.length,
       minutesLearned,
     },
@@ -145,10 +170,10 @@ export async function getDashboardData(userId) {
       needsRevisionSubmissions,
       totalSubmissions: subs.length,
     },
+    enrolledCourses,
     skillLevels,
     weeklyMinutes,
     hourlyDistribution,
     recommendations,
-    sampleHistoryInjected: Boolean(state.sampleHistoryInjected),
   };
 }

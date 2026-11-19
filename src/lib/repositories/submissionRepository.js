@@ -1,6 +1,7 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
+import { recomputeCourseAndSkillStatus } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 
 export async function getUserSubmissions(userId, challengeId = null) {
@@ -16,12 +17,22 @@ export async function getUserSubmissions(userId, challengeId = null) {
     return data.map(mapSubmission);
   }
 
-  return getDemoState()
-    .submissions.filter((s) => s.userId === userId && (!challengeId || s.challengeId === challengeId))
+  return (getDemoState().submissions || [])
+    .filter((s) => s.userId === userId && (!challengeId || s.challengeId === challengeId))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
-export async function submitChallengeEvidence({ userId, challengeId, evidenceUrl, file, explanation, rubricMax, idempotencyKey }) {
+export async function submitChallengeEvidence({
+  userId,
+  challengeId,
+  courseId = null,
+  evidenceUrl,
+  file,
+  submissionText = '',
+  explanation,
+  rubricMax,
+  idempotencyKey,
+}) {
   const effectiveKey =
     idempotencyKey ||
     buildIdempotencyKey(
@@ -30,6 +41,7 @@ export async function submitChallengeEvidence({ userId, challengeId, evidenceUrl
       challengeId,
       evidenceUrl || '',
       file?.name || '',
+      submissionText || '',
       explanation
     );
 
@@ -52,9 +64,11 @@ export async function submitChallengeEvidence({ userId, challengeId, evidenceUrl
             {
               user_id: userId,
               challenge_id: challengeId,
+              course_id: courseId || null,
               evidence_url: evidenceUrl || null,
               file_path: filePath,
               file_name: fileName,
+              submission_text: submissionText || '',
               explanation,
               rubric_max: rubricMax || 20,
               idempotency_key: effectiveKey,
@@ -67,19 +81,23 @@ export async function submitChallengeEvidence({ userId, challengeId, evidenceUrl
         return mapSubmission(data);
       }
 
-      const existing = getDemoState().submissions.find(
+      const state = getDemoState();
+      const existing = (state.submissions || []).find(
         (s) => s.userId === userId && s.idempotencyKey === effectiveKey
       );
       if (existing) return existing;
 
+      const challenge = (state.challenges || []).find((c) => c.id === challengeId);
       const filePath = file ? `${userId}/${challengeId}/${file.name}` : null;
       const newSub = {
         id: `sub-${Date.now()}`,
         userId,
         challengeId,
+        courseId: courseId || challenge?.courseId || null,
         evidenceUrl: evidenceUrl?.trim() || null,
         filePath,
         fileName: file ? file.name : null,
+        submissionText: String(submissionText || '').trim(),
         explanation: explanation.trim(),
         status: 'pending',
         rubricScores: {},
@@ -93,6 +111,7 @@ export async function submitChallengeEvidence({ userId, challengeId, evidenceUrl
       };
 
       updateDemoState((draft) => {
+        draft.submissions = draft.submissions || [];
         draft.submissions.unshift(newSub);
         return draft;
       });
@@ -109,17 +128,17 @@ export async function getSignedEvidenceUrl(filePath) {
     if (error) throw error;
     return data.signedUrl;
   }
-  return `#demo-private-evidence:${filePath}`;
+  return `#private-evidence:${filePath}`;
 }
 
 export async function adminListSubmissions() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('submissions')
-      .select('*, profiles!submissions_user_id_fkey(full_name, email), challenges(title, rubric, skill_id)')
+      .select('*, profiles!submissions_user_id_fkey(full_name, email), challenges(title, rubric, skill_id, course_id)')
       .order('created_at', { ascending: false });
     if (error) throw error;
-    return data.map((row) => ({
+    return (data || []).map((row) => ({
       ...mapSubmission(row),
       learnerName: row.profiles?.full_name || 'Learner',
       learnerEmail: row.profiles?.email || '',
@@ -128,24 +147,36 @@ export async function adminListSubmissions() {
   }
 
   const state = getDemoState();
-  return state.submissions
+  return (state.submissions || [])
     .slice()
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .map((sub) => {
-      const learner = state.users.find((u) => u.id === sub.userId);
-      const challenge = state.challenges.find((c) => c.id === sub.challengeId);
-      const skill = challenge ? state.skills.find((s) => s.id === challenge.skillId) : null;
+      const learner = (state.users || []).find((u) => u.id === sub.userId);
+      const challenge = (state.challenges || []).find((c) => c.id === sub.challengeId);
+      const skill = challenge ? (state.skills || []).find((s) => s.id === challenge.skillId) : null;
+      const course = challenge?.courseId
+        ? (state.courses || []).find((c) => c.id === challenge.courseId)
+        : null;
       return {
         ...sub,
         learnerName: learner?.fullName || 'Learner',
         learnerEmail: learner?.email || '',
         challenge,
         skillTitle: skill?.title || '',
+        courseTitle: course?.title || '',
       };
     });
 }
 
-export async function adminReviewSubmission({ submissionId, reviewerId, status, rubricScores, rubricTotal, rubricMax, feedback }) {
+export async function adminReviewSubmission({
+  submissionId,
+  reviewerId,
+  status,
+  rubricScores,
+  rubricTotal,
+  rubricMax,
+  feedback,
+}) {
   const key = buildIdempotencyKey('admin-review', submissionId, status, rubricTotal, feedback);
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
@@ -163,9 +194,10 @@ export async function adminReviewSubmission({ submissionId, reviewerId, status, 
 
     let targetUserId = null;
     let targetSkillId = null;
+    let targetCourseId = null;
 
     updateDemoState((draft) => {
-      const sub = draft.submissions.find((s) => s.id === submissionId);
+      const sub = (draft.submissions || []).find((s) => s.id === submissionId);
       if (!sub) throw new Error('Submission not found');
       sub.status = status;
       sub.rubricScores = rubricScores;
@@ -176,13 +208,18 @@ export async function adminReviewSubmission({ submissionId, reviewerId, status, 
       sub.reviewedAt = new Date().toISOString();
 
       targetUserId = sub.userId;
-      const challenge = draft.challenges.find((c) => c.id === sub.challengeId);
+      const challenge = (draft.challenges || []).find((c) => c.id === sub.challengeId);
       targetSkillId = challenge?.skillId || null;
+      targetCourseId = sub.courseId || challenge?.courseId || null;
       return draft;
     });
 
-    if (status === 'approved' && targetUserId && targetSkillId) {
-      await upgradeSkillLevel(targetUserId, targetSkillId, 'verified');
+    if (status === 'approved' && targetUserId) {
+      if (targetCourseId) {
+        await recomputeCourseAndSkillStatus(targetUserId, targetCourseId);
+      } else if (targetSkillId) {
+        await upgradeSkillLevel(targetUserId, targetSkillId, 'demonstrated');
+      }
     }
   });
 }
@@ -192,9 +229,11 @@ function mapSubmission(s) {
     id: s.id,
     userId: s.user_id,
     challengeId: s.challenge_id,
+    courseId: s.course_id || null,
     evidenceUrl: s.evidence_url,
     filePath: s.file_path,
     fileName: s.file_name,
+    submissionText: s.submission_text || '',
     explanation: s.explanation,
     status: s.status,
     rubricScores: s.rubric_scores || {},

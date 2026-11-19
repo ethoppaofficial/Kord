@@ -27,17 +27,24 @@ export function renderStatusBadge(status) {
   const map = {
     approved: { cls: 'status-green', ic: 'checkCircle', text: 'Approved' },
     verified: { cls: 'status-green', ic: 'checkCircle', text: 'Verified' },
+    completed: { cls: 'status-green', ic: 'checkCircle', text: 'Completed' },
     passed: { cls: 'status-green', ic: 'checkCircle', text: 'Passed' },
+    published: { cls: 'status-blue', ic: 'book', text: 'Published' },
     active: { cls: 'status-blue', ic: 'play', text: 'Active' },
     demonstrated: { cls: 'status-blue', ic: 'award', text: 'Demonstrated' },
     practising: { cls: 'status-blue', ic: 'book', text: 'Practising' },
+    auto_graded: { cls: 'status-blue', ic: 'check', text: 'Auto-graded' },
+    reviewed: { cls: 'status-green', ic: 'checkCircle', text: 'Reviewed' },
     declared: { cls: 'status-neutral', ic: 'check', text: 'Declared' },
     pending: { cls: 'status-amber', ic: 'clock', text: 'Pending review' },
+    pending_review: { cls: 'status-amber', ic: 'clock', text: 'Awaiting grading' },
     paused: { cls: 'status-amber', ic: 'pause', text: 'Paused' },
     needs_revision: { cls: 'status-amber', ic: 'alert', text: 'Needs revision' },
+    draft: { cls: 'status-neutral', ic: 'clock', text: 'Draft' },
+    archived: { cls: 'status-neutral', ic: 'clock', text: 'Archived' },
     failed: { cls: 'status-red', ic: 'alert', text: 'Not passed' },
     coming_soon: { cls: 'status-neutral', ic: 'clock', text: 'Coming soon' },
-    full: { cls: 'status-blue', ic: 'book', text: 'Full roadmap' },
+    full: { cls: 'status-blue', ic: 'book', text: 'Courses ready' },
   };
   const cfg = map[status] || { cls: 'status-neutral', ic: 'check', text: status || 'Status' };
   return `<span class="status-tag ${cfg.cls}">${icon(cfg.ic, 13)} ${escapeHtml(cfg.text)}</span>`;
@@ -47,33 +54,35 @@ export function renderSkillCard(
   skill,
   {
     index = 0,
-    completedCount = 0,
-    totalCount = 0,
-    enrollmentStatus = null,
+    completedCoursesCount = 0,
+    totalCoursesCount = 0,
+    averageCoursePct = 0,
     userLevel = null,
   } = {}
 ) {
-  const safeTotal = Math.max(0, totalCount);
+  const courseCount = Number(totalCoursesCount || skill.courseCount || 0);
   const pct =
     userLevel === 'verified'
       ? 100
-      : safeTotal > 0
-        ? Math.min(100, Math.round((completedCount / safeTotal) * 100))
-        : userLevel === 'practising'
-          ? 50
-          : userLevel === 'declared'
-            ? 15
-            : 0;
+      : courseCount > 0
+        ? averageCoursePct
+        : userLevel === 'demonstrated'
+          ? 75
+          : userLevel === 'practising'
+            ? 45
+            : userLevel === 'declared'
+              ? 15
+              : 0;
 
   return `
-    <article class="skill-card view-enter" style="animation-delay:${Math.min(index, 6) * 25}ms;">
+    <article class="skill-card view-enter" style="animation-delay:${Math.min(index, 6) * 20}ms;">
       <div style="display:flex; flex-direction:column; gap:8px;">
         <div class="meta-line">
           <span>${escapeHtml(skill.category)}</span>
           <span class="meta-sep" aria-hidden="true">·</span>
           <span>${escapeHtml(skill.level)}</span>
           <span class="meta-sep" aria-hidden="true">·</span>
-          <span class="mono-num">${skill.estHours}h</span>
+          <span class="mono-num">${courseCount} ${courseCount === 1 ? 'course' : 'courses'}</span>
         </div>
 
         <h3 style="font-size:1.1rem;">${escapeHtml(skill.title)}</h3>
@@ -84,7 +93,7 @@ export function renderSkillCard(
 
       <div style="display:flex; flex-direction:column; gap:12px;">
         ${renderProgressRail({
-          label: skill.roadmapStatus === 'full' ? 'Roadmap progress' : 'Curriculum preview',
+          label: courseCount > 0 ? `Skill pathway (${completedCoursesCount}/${courseCount} courses)` : 'Competency overview',
           value: pct,
           max: 100,
           detail: `${pct}%`,
@@ -92,11 +101,11 @@ export function renderSkillCard(
 
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:10px; border-top:1px solid var(--color-border); flex-wrap:wrap;">
           <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-            ${renderStatusBadge(skill.roadmapStatus)}
-            ${enrollmentStatus ? renderStatusBadge(enrollmentStatus) : ''}
+            ${courseCount > 0 ? renderStatusBadge('full') : renderStatusBadge('declared')}
+            ${userLevel ? renderStatusBadge(userLevel) : ''}
           </div>
           <a href="/skills/${escapeHtml(skill.slug)}" data-link class="btn btn-secondary btn-sm">
-            ${skill.roadmapStatus === 'full' ? 'Open skill' : 'Preview'} ${icon('arrowRight', 14)}
+            ${courseCount > 0 ? 'View courses' : 'View skill'} ${icon('arrowRight', 14)}
           </a>
         </div>
       </div>

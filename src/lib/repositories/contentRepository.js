@@ -2,108 +2,294 @@ import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { slugify } from '../formatters.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
+import { normalizeVideoEntry } from '../videoProvider.js';
 
-export async function listSkills() {
+export async function listCategories() {
   if (!isDemoMode && supabase) {
-    const { data, error } = await supabase.from('skills').select('*').order('title');
+    const { data, error } = await supabase.from('categories').select('*').order('position');
     if (error) throw error;
-    return data.map((s) => ({
-      ...s,
-      roadmapStatus: s.roadmap_status,
-      estHours: Number(s.est_hours),
-      phases: [],
-    }));
+    return data || [];
   }
-  return getDemoState().skills;
+  return (getDemoState().categories || []).slice().sort((a, b) => (a.position || 0) - (b.position || 0));
 }
 
-export async function getSkillBySlug(slug) {
+export async function adminUpsertCategory({ id, name, slug, description = '', position }) {
+  const cleanName = String(name || '').trim();
+  const cleanSlug = slug ? slugify(slug) : slugify(cleanName);
+  const key = buildIdempotencyKey('admin-category', id || cleanSlug, cleanName);
+
+  return runIdempotent(key, async () => {
+    if (!isDemoMode && supabase) {
+      const { data, error } = await supabase
+        .from('categories')
+        .upsert(
+          {
+            id: id || undefined,
+            slug: cleanSlug,
+            name: cleanName,
+            description: String(description || '').trim(),
+            position: Number(position || 99),
+          },
+          { onConflict: 'slug' }
+        )
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+
+    return updateDemoState((draft) => {
+      draft.categories = draft.categories || [];
+      const existing = id
+        ? draft.categories.find((c) => c.id === id)
+        : draft.categories.find((c) => c.slug === cleanSlug || c.name.toLowerCase() === cleanName.toLowerCase());
+      if (existing) {
+        existing.name = cleanName;
+        existing.slug = cleanSlug;
+        existing.description = String(description || '').trim();
+        if (position) existing.position = Number(position);
+      } else {
+        draft.categories.push({
+          id: `cat-${cleanSlug}`,
+          slug: cleanSlug,
+          name: cleanName,
+          description: String(description || '').trim(),
+          position: Number(position || draft.categories.length + 1),
+        });
+      }
+      return draft;
+    });
+  });
+}
+
+export async function listSkills({ includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
-    const { data: skill, error } = await supabase
-      .from('skills')
-      .select('*')
-      .eq('slug', slug)
-      .single();
-    if (error || !skill) return null;
+    const [{ data: skillsData, error }, { data: coursesData }] = await Promise.all([
+      supabase.from('skills').select('*').order('title'),
+      supabase.from('courses').select('id, skill_id, slug, title, difficulty, estimated_duration_weeks, publication_status, position'),
+    ]);
+    if (error) throw error;
+    const courses = (coursesData || []).map(mapCourseSummary);
+    return (skillsData || [])
+      .map((s) => {
+        const skillCourses = courses.filter(
+          (c) => c.skillId === s.id && (includeDrafts || c.publicationStatus === 'published')
+        );
+        return {
+          ...s,
+          categoryId: s.category_id,
+          competencyExpectations: s.competency_expectations || '',
+          prerequisites: s.prerequisites || [],
+          publicationStatus: s.publication_status || 'published',
+          roadmapStatus: skillCourses.length > 0 ? 'full' : s.roadmap_status || 'coming_soon',
+          estHours: Number(s.est_hours || 4),
+          courses: skillCourses,
+          courseCount: skillCourses.length,
+        };
+      })
+      .filter((s) => includeDrafts || s.publicationStatus === 'published');
+  }
 
-    const { data: phases } = await supabase
-      .from('phases')
-      .select('*, activities(*)')
-      .eq('skill_id', skill.id)
-      .order('position');
+  const state = getDemoState();
+  const courses = state.courses || [];
+  return (state.skills || [])
+    .map((s) => {
+      const skillCourses = courses
+        .filter((c) => c.skillId === s.id && (includeDrafts || c.publicationStatus === 'published'))
+        .sort((a, b) => (a.position || 1) - (b.position || 1));
+      return {
+        ...s,
+        courses: skillCourses,
+        courseCount: skillCourses.length,
+        roadmapStatus: skillCourses.length > 0 ? 'full' : s.roadmapStatus || 'coming_soon',
+      };
+    })
+    .filter((s) => includeDrafts || s.publicationStatus !== 'draft');
+}
 
-    const { data: quizzes } = await supabase
-      .from('quizzes')
-      .select('id, phase_id, quiz_type, title')
-      .eq('skill_id', skill.id);
+export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
+  const allSkills = await listSkills({ includeDrafts });
+  const skill = allSkills.find((s) => s.slug === slug);
+  if (!skill) return null;
 
-    const { data: challenges } = await supabase
-      .from('challenges')
-      .select('id, title')
-      .eq('skill_id', skill.id);
+  if (!isDemoMode && supabase) {
+    const [{ data: coursesData }, { data: quizzesData }, { data: challengesData }] = await Promise.all([
+      supabase
+        .from('courses')
+        .select('*, phases(*, lessons(*))')
+        .eq('skill_id', skill.id)
+        .order('position'),
+      supabase.from('quizzes').select('id, course_id, phase_id, quiz_type, title').eq('skill_id', skill.id),
+      supabase.from('challenges').select('id, course_id, title').eq('skill_id', skill.id),
+    ]);
 
-    const skillCheck = (quizzes || []).find((q) => q.quiz_type === 'skill_check');
+    const courses = (coursesData || [])
+      .map(mapFullCourse)
+      .filter((c) => includeDrafts || c.publicationStatus === 'published');
+    const skillCheck = (quizzesData || []).find((q) => q.quiz_type === 'skill_check');
 
     return {
       ...skill,
-      roadmapStatus: skill.roadmap_status,
-      estHours: Number(skill.est_hours),
-      phases: (phases || []).map((p) => ({
-        ...p,
-        activities: (p.activities || [])
-          .sort((a, b) => a.position - b.position)
-          .map((a) => ({ ...a, estMinutes: a.est_minutes })),
-        quizId: (quizzes || []).find((q) => q.phase_id === p.id)?.id || null,
-      })),
+      courses,
+      courseCount: courses.length,
       skillCheckQuizId: skillCheck?.id || null,
-      challengeId: challenges?.[0]?.id || null,
+      challengeId: challengesData?.[0]?.id || null,
     };
   }
 
-  return getDemoState().skills.find((s) => s.slug === slug) || null;
+  const state = getDemoState();
+  const courses = (state.courses || [])
+    .filter((c) => c.skillId === skill.id && (includeDrafts || c.publicationStatus === 'published'))
+    .sort((a, b) => (a.position || 1) - (b.position || 1));
+  const skillQuizzes = (state.quizzes || []).filter((q) => q.skillId === skill.id);
+  const skillChallenges = (state.challenges || []).filter((c) => c.skillId === skill.id);
+  const skillCheck = skillQuizzes.find((q) => q.quizType === 'skill_check') || skillQuizzes[0] || null;
+
+  return {
+    ...skill,
+    courses,
+    courseCount: courses.length,
+    skillCheckQuizId: skillCheck?.id || null,
+    challengeId: skillChallenges[0]?.id || null,
+    assessments: skillQuizzes,
+    challenges: skillChallenges,
+  };
+}
+
+export async function listAllCourses({ includeDrafts = true } = {}) {
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase
+      .from('courses')
+      .select('*, skills(id, slug, title, category), phases(*, lessons(*))')
+      .order('title');
+    if (error) throw error;
+    return (data || [])
+      .map((c) => ({
+        ...mapFullCourse(c),
+        skill: c.skills || null,
+      }))
+      .filter((c) => includeDrafts || c.publicationStatus === 'published');
+  }
+
+  const state = getDemoState();
+  const skillById = new Map((state.skills || []).map((s) => [s.id, s]));
+  return (state.courses || [])
+    .filter((c) => includeDrafts || c.publicationStatus === 'published')
+    .map((c) => ({
+      ...c,
+      skill: skillById.get(c.skillId) || null,
+    }));
+}
+
+export async function getCourseBySlug(slug) {
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase
+      .from('courses')
+      .select('*, skills(*), phases(*, lessons(*))')
+      .eq('slug', slug)
+      .single();
+    if (error || !data) return null;
+    const course = mapFullCourse(data);
+    const [{ data: assessments }, { data: challenges }] = await Promise.all([
+      supabase.from('quizzes').select('id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts').eq('course_id', course.id),
+      supabase.from('challenges').select('*').eq('course_id', course.id),
+    ]);
+    return {
+      ...course,
+      skill: data.skills || null,
+      assessments: (assessments || []).map((a) => ({
+        id: a.id,
+        courseId: a.course_id,
+        phaseId: a.phase_id,
+        lessonId: a.lesson_id,
+        quizType: a.quiz_type,
+        title: a.title,
+        description: a.description,
+        passPercent: a.pass_percent,
+        timeLimitMinutes: a.time_limit_minutes,
+        maxAttempts: a.max_attempts,
+      })),
+      challenges: (challenges || []).map(mapChallenge),
+    };
+  }
+
+  const state = getDemoState();
+  const course = (state.courses || []).find((c) => c.slug === slug);
+  if (!course) return null;
+  const skill = (state.skills || []).find((s) => s.id === course.skillId) || null;
+  const assessments = (state.quizzes || []).filter((q) => q.courseId === course.id);
+  const challenges = (state.challenges || []).filter((c) => c.courseId === course.id);
+  return {
+    ...course,
+    skill,
+    assessments,
+    challenges,
+  };
+}
+
+export async function getCourseById(courseId) {
+  if (!isDemoMode && supabase) {
+    const { data } = await supabase.from('courses').select('slug').eq('id', courseId).single();
+    if (!data) return null;
+    return getCourseBySlug(data.slug);
+  }
+  const course = (getDemoState().courses || []).find((c) => c.id === courseId);
+  return course ? getCourseBySlug(course.slug) : null;
 }
 
 export async function getChallengeById(challengeId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('challenges')
-      .select('*, skills(id, slug, title)')
+      .select('*, skills(id, slug, title), courses(id, slug, title)')
       .eq('id', challengeId)
       .single();
-    if (error) return null;
+    if (error || !data) return null;
     return {
-      ...data,
-      skillId: data.skill_id,
-      deliverableHint: data.deliverable_hint,
-      skill: data.skills,
+      ...mapChallenge(data),
+      skill: data.skills || null,
+      course: data.courses || null,
     };
   }
 
   const state = getDemoState();
-  const challenge = state.challenges.find((c) => c.id === challengeId);
+  const challenge = (state.challenges || []).find((c) => c.id === challengeId);
   if (!challenge) return null;
-  const skill = state.skills.find((s) => s.id === challenge.skillId) || null;
-  return { ...challenge, skill };
+  const skill = (state.skills || []).find((s) => s.id === challenge.skillId) || null;
+  const course = challenge.courseId
+    ? (state.courses || []).find((c) => c.id === challenge.courseId) || null
+    : null;
+  return { ...challenge, skill, course };
 }
 
 export async function adminUpsertSkill(payload) {
-  const cleanSlug = payload.slug ? slugify(payload.slug) : slugify(payload.title);
-  const key = buildIdempotencyKey('admin-skill', payload.id || cleanSlug, payload.roadmapStatus);
+  const cleanTitle = String(payload.title || '').trim();
+  const cleanSlug = payload.slug ? slugify(payload.slug) : slugify(cleanTitle);
+  const key = buildIdempotencyKey('admin-skill', payload.id || cleanSlug, cleanTitle);
 
   return runIdempotent(key, async () => {
+    const categories = await listCategories();
+    const matchedCat =
+      categories.find((c) => c.id === payload.categoryId) ||
+      categories.find((c) => c.name === payload.category);
+
     if (!isDemoMode && supabase) {
       const { data, error } = await supabase
         .from('skills')
         .upsert(
           {
             id: payload.id || undefined,
+            category_id: matchedCat?.id || null,
             slug: cleanSlug,
-            title: payload.title,
-            category: payload.category,
-            level: payload.level,
-            summary: payload.summary,
-            roadmap_status: payload.roadmapStatus,
-            est_hours: Number(payload.estHours || 2),
+            title: cleanTitle,
+            category: matchedCat?.name || payload.category,
+            level: payload.level || 'Beginner',
+            summary: String(payload.summary || '').trim(),
+            competency_expectations: String(payload.competencyExpectations || '').trim(),
+            prerequisites: payload.prerequisites || [],
+            publication_status: payload.publicationStatus || 'published',
+            roadmap_status: payload.roadmapStatus || 'full',
+            est_hours: Number(payload.estHours || 6),
             outcomes: payload.outcomes || [],
           },
           { onConflict: 'slug' }
@@ -119,68 +305,180 @@ export async function adminUpsertSkill(payload) {
         ? draft.skills.find((s) => s.id === payload.id)
         : draft.skills.find((s) => s.slug === cleanSlug);
 
+      const enriched = {
+        categoryId: matchedCat?.id || payload.categoryId || null,
+        slug: cleanSlug,
+        title: cleanTitle,
+        category: matchedCat?.name || payload.category || 'General',
+        level: payload.level || 'Beginner',
+        summary: String(payload.summary || '').trim(),
+        competencyExpectations:
+          String(payload.competencyExpectations || '').trim() ||
+          `Demonstrate applied understanding and produce portfolio-grade deliverables for ${cleanTitle}.`,
+        prerequisites: payload.prerequisites || [],
+        publicationStatus: payload.publicationStatus || 'published',
+        roadmapStatus: payload.roadmapStatus || 'full',
+        estHours: Number(payload.estHours || 6),
+        outcomes:
+          payload.outcomes?.length
+            ? payload.outcomes
+            : [
+                `Explain core frameworks in ${cleanTitle}`,
+                `Deliver practical projects evaluated against a structured rubric`,
+              ],
+      };
+
       if (existing) {
-        existing.title = payload.title.trim();
-        existing.slug = cleanSlug;
-        existing.category = payload.category;
-        existing.level = payload.level;
-        existing.summary = payload.summary.trim();
-        existing.roadmapStatus = payload.roadmapStatus;
-        existing.estHours = Number(payload.estHours || existing.estHours || 2);
+        Object.assign(existing, enriched);
         return draft;
       }
 
       draft.skills.push({
         id: `skill-${cleanSlug}`,
-        slug: cleanSlug,
-        title: payload.title.trim(),
-        category: payload.category,
-        level: payload.level,
-        summary: payload.summary.trim(),
-        roadmapStatus: payload.roadmapStatus || 'coming_soon',
-        estHours: Number(payload.estHours || 2),
-        outcomes: payload.outcomes?.length
-          ? payload.outcomes
-          : ['Apply practical techniques from verified resources'],
-        phases: [],
-        skillCheckQuizId: null,
-        challengeId: null,
+        ...enriched,
       });
       return draft;
     });
   });
 }
 
-export async function adminAddActivity({ skillId, phaseTitle, title, description, estMinutes, resourceUrl, resourceTitle, verified }) {
-  const key = buildIdempotencyKey('admin-activity', skillId, title);
+export async function adminUpsertCourse(payload) {
+  const cleanTitle = String(payload.title || '').trim();
+  const cleanSlug = payload.slug ? slugify(payload.slug) : slugify(cleanTitle);
+  const key = buildIdempotencyKey('admin-course', payload.id || cleanSlug, payload.skillId);
+
   return runIdempotent(key, async () => {
+    const parsedOutcomes = Array.isArray(payload.outcomes)
+      ? payload.outcomes
+      : String(payload.outcomes || '')
+          .split('\n')
+          .map((x) => x.trim())
+          .filter(Boolean);
+    const parsedPrereqs = Array.isArray(payload.prerequisites)
+      ? payload.prerequisites
+      : String(payload.prerequisites || '')
+          .split('\n')
+          .map((x) => x.trim())
+          .filter(Boolean);
+
     if (!isDemoMode && supabase) {
-      let { data: phases } = await supabase
-        .from('phases')
-        .select('*')
-        .eq('skill_id', skillId)
-        .order('position');
-      let phase = phases?.[0];
-      if (!phase) {
-        const { data: createdPhase, error: phaseErr } = await supabase
-          .from('phases')
-          .insert({ skill_id: skillId, position: 1, title: phaseTitle || 'Core Practice', summary: '' })
-          .select()
-          .single();
-        if (phaseErr) throw phaseErr;
-        phase = createdPhase;
-      }
       const { data, error } = await supabase
-        .from('activities')
-        .insert({
-          phase_id: phase.id,
-          position: Date.now() % 10000,
-          title,
-          description,
-          est_minutes: Number(estMinutes || 20),
-          resources: resourceUrl
-            ? [{ title: resourceTitle || title, url: resourceUrl, source: 'External', verified: Boolean(verified) }]
-            : [],
+        .from('courses')
+        .upsert(
+          {
+            id: payload.id || undefined,
+            skill_id: payload.skillId,
+            slug: cleanSlug,
+            title: cleanTitle,
+            description: String(payload.description || '').trim(),
+            outcomes: parsedOutcomes,
+            difficulty: payload.difficulty || 'Beginner',
+            estimated_duration_weeks: Number(payload.estimatedDurationWeeks || 4),
+            recommended_weekly_hours: Number(payload.recommendedWeeklyHours || 4),
+            recommended_schedule: String(payload.recommendedSchedule || 'Self-paced weekly milestones').trim(),
+            prerequisites: parsedPrereqs,
+            completion_rules: payload.completionRules || {
+              requireAllRequiredLessons: true,
+              requireAllAssessments: true,
+              requireChallengeApproval: true,
+            },
+            publication_status: payload.publicationStatus || 'published',
+            position: Number(payload.position || 1),
+          },
+          { onConflict: 'slug' }
+        )
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+
+    return updateDemoState((draft) => {
+      draft.courses = draft.courses || [];
+      const existing = payload.id
+        ? draft.courses.find((c) => c.id === payload.id)
+        : draft.courses.find((c) => c.slug === cleanSlug);
+
+      const siblingCount = draft.courses.filter((c) => c.skillId === payload.skillId).length;
+      const fields = {
+        skillId: payload.skillId,
+        slug: cleanSlug,
+        title: cleanTitle,
+        description: String(payload.description || '').trim(),
+        outcomes: parsedOutcomes,
+        difficulty: payload.difficulty || 'Beginner',
+        estimatedDurationWeeks: Number(payload.estimatedDurationWeeks || 4),
+        recommendedWeeklyHours: Number(payload.recommendedWeeklyHours || 4),
+        recommendedSchedule:
+          String(payload.recommendedSchedule || '').trim() || '2 lessons + 1 practical exercise per week',
+        prerequisites: parsedPrereqs,
+        completionRules: payload.completionRules || {
+          requireAllRequiredLessons: true,
+          requireAllAssessments: true,
+          requireChallengeApproval: true,
+        },
+        publicationStatus: payload.publicationStatus || 'published',
+        position: Number(payload.position || existing?.position || siblingCount + 1),
+      };
+
+      if (existing) {
+        Object.assign(existing, fields);
+        return draft;
+      }
+
+      const newCourseId = `course-${Date.now()}`;
+      draft.courses.push({
+        id: newCourseId,
+        ...fields,
+        phases: [
+          {
+            id: `ph-${newCourseId}-1`,
+            position: 1,
+            title: 'Phase 1: Core Foundations',
+            summary: 'Foundational concepts and guided exercises.',
+            objectives: ['Build foundational fluency in this course topic'],
+            difficulty: fields.difficulty,
+            estHours: 4,
+            lessons: [],
+          },
+        ],
+      });
+      return draft;
+    });
+  });
+}
+
+export async function adminUpsertPhase({
+  id,
+  courseId,
+  title,
+  summary = '',
+  objectives = [],
+  difficulty = 'Beginner',
+  estHours = 3,
+  position,
+}) {
+  const key = buildIdempotencyKey('admin-phase', id || courseId, title);
+  return runIdempotent(key, async () => {
+    const cleanObjectives = Array.isArray(objectives)
+      ? objectives
+      : String(objectives || '')
+          .split('\n')
+          .map((x) => x.trim())
+          .filter(Boolean);
+
+    if (!isDemoMode && supabase) {
+      const { data, error } = await supabase
+        .from('phases')
+        .upsert({
+          id: id || undefined,
+          course_id: courseId,
+          position: Number(position || 1),
+          title: String(title || '').trim(),
+          summary: String(summary || '').trim(),
+          objectives: cleanObjectives,
+          difficulty,
+          est_hours: Number(estHours || 3),
         })
         .select()
         .single();
@@ -189,45 +487,232 @@ export async function adminAddActivity({ skillId, phaseTitle, title, description
     }
 
     return updateDemoState((draft) => {
-      const skill = draft.skills.find((s) => s.id === skillId);
-      if (!skill) throw new Error('Skill not found');
-      if (!skill.phases || skill.phases.length === 0) {
-        skill.phases = [
-          {
-            id: `phase-${skill.id}-1`,
-            position: 1,
-            title: phaseTitle || 'Core Foundations',
-            summary: 'Structured learning activities and external references.',
-            activities: [],
-            quizId: null,
-          },
-        ];
-        skill.roadmapStatus = 'full';
-      }
-      const phase = skill.phases[0];
-      const existing = phase.activities.find(
-        (a) => a.title.trim().toLowerCase() === title.trim().toLowerCase()
-      );
-      const resourceObj = resourceUrl
-        ? [{ title: resourceTitle || title, url: resourceUrl, source: 'Resource', verified: Boolean(verified) }]
-        : [];
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      if (!course) throw new Error('Course not found');
+      course.phases = course.phases || [];
+      const existing = id
+        ? course.phases.find((p) => p.id === id)
+        : course.phases.find((p) => p.title.trim().toLowerCase() === String(title).trim().toLowerCase());
 
       if (existing) {
-        existing.description = description.trim();
-        existing.estMinutes = Number(estMinutes || 20);
-        if (resourceObj.length > 0) existing.resources = resourceObj;
-        return draft;
+        existing.title = String(title || '').trim();
+        existing.summary = String(summary || '').trim();
+        existing.objectives = cleanObjectives;
+        existing.difficulty = difficulty;
+        existing.estHours = Number(estHours || 3);
+        if (position) existing.position = Number(position);
+      } else {
+        course.phases.push({
+          id: `ph-${Date.now()}`,
+          position: Number(position || course.phases.length + 1),
+          title: String(title || '').trim(),
+          summary: String(summary || '').trim(),
+          objectives: cleanObjectives,
+          difficulty,
+          estHours: Number(estHours || 3),
+          lessons: [],
+        });
       }
-
-      phase.activities.push({
-        id: `act-${Date.now()}`,
-        position: phase.activities.length + 1,
-        title: title.trim(),
-        description: description.trim(),
-        estMinutes: Number(estMinutes || 20),
-        resources: resourceObj,
-      });
       return draft;
     });
   });
+}
+
+export async function adminUpsertLesson({
+  id,
+  courseId,
+  phaseId,
+  title,
+  introduction = '',
+  objectives = [],
+  estMinutes = 25,
+  blocks = [],
+  videos = [],
+  summary = '',
+  takeaways = [],
+  furtherReading = [],
+  isRequired = true,
+}) {
+  const key = buildIdempotencyKey('admin-lesson', id || phaseId, title, String(blocks.length), String(videos.length));
+  return runIdempotent(key, async () => {
+    const cleanVideos = (videos || []).map((v) => {
+      if (v.videoId && v.embedUrl && !v.urlUpdated) return v;
+      const normalized = normalizeVideoEntry(v);
+      if (!normalized.valid) throw new Error(normalized.error);
+      return normalized.video;
+    });
+
+    const cleanObjectives = Array.isArray(objectives)
+      ? objectives
+      : String(objectives || '')
+          .split('\n')
+          .map((x) => x.trim())
+          .filter(Boolean);
+
+    const cleanTakeaways = Array.isArray(takeaways)
+      ? takeaways
+      : String(takeaways || '')
+          .split('\n')
+          .map((x) => x.trim())
+          .filter(Boolean);
+
+    if (!isDemoMode && supabase) {
+      const { data, error } = await supabase
+        .from('lessons')
+        .upsert({
+          id: id || undefined,
+          phase_id: phaseId,
+          position: Date.now() % 10000,
+          title: String(title || '').trim(),
+          introduction: String(introduction || '').trim(),
+          objectives: cleanObjectives,
+          est_minutes: Number(estMinutes || 25),
+          blocks,
+          videos: cleanVideos,
+          summary: String(summary || '').trim(),
+          takeaways: cleanTakeaways,
+          further_reading: furtherReading || [],
+          is_required: Boolean(isRequired),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+
+    return updateDemoState((draft) => {
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      if (!course) throw new Error('Course not found');
+      const phase = (course.phases || []).find((p) => p.id === phaseId);
+      if (!phase) throw new Error('Phase not found');
+      phase.lessons = phase.lessons || [];
+
+      const existing = id ? phase.lessons.find((l) => l.id === id) : null;
+      const lessonData = {
+        title: String(title || '').trim(),
+        introduction: String(introduction || '').trim(),
+        objectives: cleanObjectives,
+        estMinutes: Number(estMinutes || 25),
+        blocks: Array.isArray(blocks) ? blocks : [],
+        videos: cleanVideos,
+        summary: String(summary || '').trim(),
+        takeaways: cleanTakeaways,
+        furtherReading: furtherReading || [],
+        isRequired: Boolean(isRequired),
+      };
+
+      if (existing) {
+        Object.assign(existing, lessonData);
+      } else {
+        phase.lessons.push({
+          id: `les-${Date.now()}`,
+          position: phase.lessons.length + 1,
+          ...lessonData,
+        });
+      }
+      return draft;
+    });
+  });
+}
+
+export async function adminDeleteLesson(courseId, phaseId, lessonId) {
+  const key = buildIdempotencyKey('admin-lesson-del', courseId, phaseId, lessonId);
+  return runIdempotent(key, async () => {
+    if (!isDemoMode && supabase) {
+      const { error } = await supabase.from('lessons').delete().eq('id', lessonId);
+      if (error) throw error;
+      return;
+    }
+    updateDemoState((draft) => {
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      const phase = course?.phases?.find((p) => p.id === phaseId);
+      if (phase) {
+        phase.lessons = (phase.lessons || []).filter((l) => l.id !== lessonId);
+      }
+      return draft;
+    });
+  });
+}
+
+function mapCourseSummary(c) {
+  return {
+    id: c.id,
+    skillId: c.skill_id,
+    slug: c.slug,
+    title: c.title,
+    difficulty: c.difficulty,
+    estimatedDurationWeeks: c.estimated_duration_weeks,
+    publicationStatus: c.publication_status,
+    position: c.position,
+  };
+}
+
+function mapFullCourse(c) {
+  return {
+    id: c.id,
+    skillId: c.skill_id,
+    slug: c.slug,
+    title: c.title,
+    description: c.description || '',
+    outcomes: c.outcomes || [],
+    difficulty: c.difficulty || 'Beginner',
+    estimatedDurationWeeks: Number(c.estimated_duration_weeks || 4),
+    recommendedWeeklyHours: Number(c.recommended_weekly_hours || 4),
+    recommendedSchedule: c.recommended_schedule || '',
+    prerequisites: c.prerequisites || [],
+    completionRules: c.completion_rules || {
+      requireAllRequiredLessons: true,
+      requireAllAssessments: true,
+      requireChallengeApproval: true,
+    },
+    publicationStatus: c.publication_status || 'published',
+    position: Number(c.position || 1),
+    phases: (c.phases || [])
+      .slice()
+      .sort((a, b) => a.position - b.position)
+      .map((p) => ({
+        id: p.id,
+        position: p.position,
+        title: p.title,
+        summary: p.summary || '',
+        objectives: p.objectives || [],
+        difficulty: p.difficulty || 'Beginner',
+        estHours: Number(p.est_hours || 2),
+        lessons: (p.lessons || [])
+          .slice()
+          .sort((a, b) => a.position - b.position)
+          .map((l) => ({
+            id: l.id,
+            position: l.position,
+            title: l.title,
+            introduction: l.introduction || '',
+            objectives: l.objectives || [],
+            estMinutes: Number(l.est_minutes || 25),
+            blocks: l.blocks || [],
+            videos: l.videos || [],
+            summary: l.summary || '',
+            takeaways: l.takeaways || [],
+            furtherReading: l.further_reading || [],
+            isRequired: l.is_required !== false,
+          })),
+      })),
+  };
+}
+
+function mapChallenge(c) {
+  return {
+    id: c.id,
+    skillId: c.skill_id,
+    courseId: c.course_id || null,
+    phaseId: c.phase_id || null,
+    title: c.title,
+    brief: c.brief,
+    instructions: c.instructions || c.brief,
+    expectedDeliverables: c.expected_deliverables || [],
+    submissionFormat: c.submission_format || 'URL, file upload, or structured written response',
+    deliverableHint: c.deliverable_hint || '',
+    maxScore: Number(c.max_score || 20),
+    passingScore: Number(c.passing_score || 14),
+    rubric: c.rubric || [],
+  };
 }

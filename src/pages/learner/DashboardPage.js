@@ -1,5 +1,5 @@
 import { getDashboardData } from '../../dashboard/dashboardData.js';
-import { escapeHtml, formatMinutes } from '../../lib/formatters.js';
+import { escapeHtml, formatMinutes, formatDate } from '../../lib/formatters.js';
 import { buildUserGreeting } from '../../lib/greeting.js';
 import { renderOpportunityCard, renderStatusBadge, renderEmptyState, renderProgressRail } from '../../components/Common.js';
 import { getSavedOpportunityIds, toggleSavedOpportunity } from './OpportunitiesPage.js';
@@ -27,9 +27,9 @@ export async function renderDashboardPage({ session }) {
       <div class="page-header">
         <div>
           <h1 class="page-title">${escapeHtml(greetingInfo.text)}</h1>
-          <p class="page-subtitle">Track what you are learning, what you understand, and what you have demonstrated.</p>
+          <p class="page-subtitle">Track active courses, completed lessons, assessment mastery, and verified skills.</p>
         </div>
-        <a href="/explore" data-link class="btn btn-primary btn-sm">Explore roadmaps</a>
+        <a href="/explore" data-link class="btn btn-primary btn-sm">Explore skills &amp; courses</a>
       </div>
 
       <!-- 1. LEARNING -->
@@ -41,26 +41,63 @@ export async function renderDashboardPage({ session }) {
 
         <div class="kpi-strip" style="margin-bottom:18px;">
           <div class="kpi-box">
-            <div class="kpi-label">Active roadmaps</div>
-            <div class="kpi-value mono-num">${data.learning.activeRoadmaps}</div>
-            <div class="kpi-meta">${data.learning.pausedRoadmaps || 0} paused</div>
+            <div class="kpi-label">Active courses</div>
+            <div class="kpi-value mono-num">${data.learning.activeCourses ?? data.learning.activeRoadmaps ?? 0}</div>
+            <div class="kpi-meta">${data.learning.completedCourses || 0} completed · ${data.learning.pausedCourses || 0} paused</div>
           </div>
           <div class="kpi-box">
-            <div class="kpi-label">Completed activities</div>
-            <div class="kpi-value mono-num">${data.learning.completedActivities}</div>
-            <div class="kpi-meta">With saved reflections</div>
+            <div class="kpi-label">Completed lessons</div>
+            <div class="kpi-value mono-num">${data.learning.completedLessons ?? data.learning.completedActivities ?? 0}</div>
+            <div class="kpi-meta">Earned from self-contained modules</div>
           </div>
           <div class="kpi-box">
-            <div class="kpi-label">Quizzes passed</div>
+            <div class="kpi-label">Assessments passed</div>
             <div class="kpi-value mono-num">${data.understanding.passedQuizzes}</div>
             <div class="kpi-meta">${data.understanding.averageScore}% average score</div>
           </div>
           <div class="kpi-box">
             <div class="kpi-label">Time learned</div>
             <div class="kpi-value mono-num">${formatMinutes(data.learning.minutesLearned)}</div>
-            <div class="kpi-meta">Across all logged dates</div>
+            <div class="kpi-meta">Across completed lessons</div>
           </div>
         </div>
+
+        ${
+          (data.enrolledCourses || []).length > 0
+            ? `
+          <div class="card" style="margin-bottom:18px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <h3 style="font-size:1rem;">Your active &amp; completed courses</h3>
+              <a href="/skills" data-link style="font-size:13px; font-weight:600;">View all courses →</a>
+            </div>
+            <div class="lab-grid-2">
+              ${data.enrolledCourses
+                .slice(0, 4)
+                .map(
+                  (c) => `
+                <div style="padding:12px; border:1px solid var(--color-border); border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <a href="/courses/${escapeHtml(c.slug)}" data-link style="font-weight:600; color:var(--color-navy);">${escapeHtml(c.title)}</a>
+                    ${renderStatusBadge(c.progress?.isCompleted ? 'completed' : c.status)}
+                  </div>
+                  ${renderProgressRail({
+                    label: `${c.skillTitle} · ${c.difficulty}`,
+                    value: c.progress?.progressPercent || 0,
+                    max: 100,
+                    detail: `${c.progress?.progressPercent || 0}%`,
+                  })}
+                  <div style="font-size:12px; color:var(--color-text-muted);">
+                    ${c.progress?.isCompleted ? 'Course completed' : `Projected completion: ${formatDate(c.progress?.projectedCompletionAt)}`}
+                  </div>
+                </div>
+              `
+                )
+                .join('')}
+            </div>
+          </div>
+        `
+            : ''
+        }
 
         <div class="lab-grid-2">
           <div class="card">
@@ -89,7 +126,7 @@ export async function renderDashboardPage({ session }) {
 
           <div class="card">
             <h3 style="font-size:1rem; margin-bottom:4px;">Time-of-day study distribution</h3>
-            <p style="font-size:13px; color:var(--color-text-muted);">Local hours when activities were completed.</p>
+            <p style="font-size:13px; color:var(--color-text-muted);">Local hours when lessons were completed.</p>
             <div class="chart-bars" role="group" aria-label="Hourly study distribution chart">
               ${data.hourlyDistribution
                 .map((b, idx) => {
@@ -117,10 +154,10 @@ export async function renderDashboardPage({ session }) {
       <div class="lab-grid-2" style="margin-bottom:28px;">
         <section class="card" aria-labelledby="dash-understanding-heading">
           <h2 id="dash-understanding-heading" class="section-heading">2. Understanding</h2>
-          <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">Phase quizzes &amp; skill checks graded securely.</p>
+          <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">Multi-format assessments graded securely.</p>
           <div style="margin-bottom:14px;">
             ${renderProgressRail({
-              label: 'Average quiz mastery',
+              label: 'Average assessment mastery',
               value: data.understanding.averageScore,
               max: 100,
               detail: `${data.understanding.averageScore}%`,
@@ -128,7 +165,7 @@ export async function renderDashboardPage({ session }) {
           </div>
           <div class="divider-list">
             <div class="divider-row">
-              <span>Quizzes passed</span>
+              <span>Assessments passed</span>
               <strong class="mono-num" style="font-size:1.1rem;">${data.understanding.passedQuizzes}</strong>
             </div>
             <div class="divider-row">
@@ -136,7 +173,7 @@ export async function renderDashboardPage({ session }) {
               <strong class="mono-num" style="font-size:1.1rem;">${data.understanding.totalAttempts}</strong>
             </div>
             <div class="divider-row">
-              <span>Average quiz score</span>
+              <span>Average score</span>
               <strong class="mono-num" style="font-size:1.1rem;">${data.understanding.averageScore}%</strong>
             </div>
           </div>
@@ -144,10 +181,10 @@ export async function renderDashboardPage({ session }) {
 
         <section class="card" aria-labelledby="dash-demonstrating-heading">
           <h2 id="dash-demonstrating-heading" class="section-heading">3. Demonstrating</h2>
-          <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">Real work assessed against challenge rubrics.</p>
+          <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">Practical deliverables assessed against rubrics.</p>
           <div class="divider-list">
             <div class="divider-row">
-              <span>Approved (Verified)</span>
+              <span>Approved submissions</span>
               <strong class="mono-num" style="color:var(--color-green); font-size:1.1rem;">${data.demonstrating.approvedSubmissions}</strong>
             </div>
             <div class="divider-row">
@@ -200,7 +237,7 @@ export async function renderDashboardPage({ session }) {
           `
               : renderEmptyState({
                   title: 'No skills tracked yet',
-                  message: 'Declare a skill or enroll in a roadmap to begin building evidence.',
+                  message: 'Enroll in a course under any skill to begin building verified mastery.',
                   actionHtml: `<a href="/explore" data-link class="btn btn-primary btn-sm">Explore skills</a>`,
                 })
           }

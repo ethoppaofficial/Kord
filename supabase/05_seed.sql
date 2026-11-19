@@ -1,69 +1,53 @@
 -- 05_seed.sql
--- Seed catalog skills, phases, activities, quizzes, challenges, and sample opportunities
+-- Seed 7 skill categories, flagship skills across all 7 domains, courses, and sample opportunities (Idempotent)
 
-insert into public.skills (slug, title, category, level, summary, roadmap_status, est_hours, outcomes)
+insert into public.categories (slug, name, description, position)
 values
-  (
-    'structured-business-writing',
-    'Structured Business Writing',
-    'Communication',
-    'Beginner',
-    'Write concise memos, executive summaries, and action-oriented updates that decision-makers can scan in 30 seconds.',
-    'full',
-    3.5,
-    '["Structure briefs using BLUF (Bottom Line Up Front)", "Replace vague prose with verifiable metrics and next owners", "Deliver an executive brief assessed against a 4-point rubric"]'::jsonb
-  ),
-  (
-    'public-speaking-presentations',
-    'Public Speaking & Presentations',
-    'Communication',
-    'Intermediate',
-    'Plan, pace, and deliver persuasive 5-minute briefings for technical and non-technical stakeholders.',
-    'full',
-    3.0,
-    '["Open with a clear problem-impact hook", "Design slide narratives with one claim per slide", "Handle Q&A concisely using structured bridging"]'::jsonb
-  ),
-  (
-    'digital-analytics-measurement',
-    'Digital Analytics & Measurement',
-    'Data & Digital',
-    'Beginner',
-    'Define meaningful product metrics, separate vanity counts from outcomes, and build clean measurement plans.',
-    'full',
-    4.0,
-    '["Map user journeys to measurable conversion events", "Spot misleading averages and survivorship bias", "Author a one-page measurement specification"]'::jsonb
-  ),
-  (
-    'web-accessibility-fundamentals',
-    'Web Accessibility Fundamentals',
-    'Product & Web',
-    'Intermediate',
-    'Audit semantic HTML, keyboard focus order, and WCAG AA contrast so public digital services work for everyone.',
-    'full',
-    3.5,
-    '["Audit keyboard navigation and focus visibility", "Verify semantic landmarks and accessible names", "Produce an actionable WCAG remediation log"]'::jsonb
-  ),
-  (
-    'stakeholder-discovery-interviews',
-    'Stakeholder Discovery Interviews',
-    'Product & Web',
-    'Intermediate',
-    'Conduct non-leading discovery interviews and synthesize findings into prioritized opportunity trees.',
-    'coming_soon',
-    2.5,
-    '["Write neutral interview guides", "Synthesize qualitative notes into evidence themes"]'::jsonb
-  ),
-  (
-    'civic-data-storytelling',
-    'Civic Data Storytelling',
-    'Data & Digital',
-    'Advanced',
-    'Turn public datasets into transparent, reproducible visual narratives for policy and community teams.',
-    'coming_soon',
-    4.5,
-    '["Normalize public CSV datasets", "Present uncertainty and baselines clearly"]'::jsonb
-  )
-on conflict (slug) do nothing;
+  ('communication-interpersonal', 'Communication & Interpersonal', 'Clear workplace communication, public speaking, negotiation, active listening, leadership, and conflict resolution.', 1),
+  ('writing-content-creation', 'Writing & Content Creation', 'Creative storytelling, business writing, copywriting, technical documentation, editing, and SEO content strategy.', 2),
+  ('entrepreneurship-business', 'Entrepreneurship & Business', 'Startup fundamentals, business planning, market research, financial literacy, CRM, product and project management.', 3),
+  ('digital-marketing-social', 'Digital Marketing & Social Media', 'Social media management, Meta and Google advertising, SEO, email marketing, analytics, and conversion optimization.', 4),
+  ('creative-design', 'Creative & Design', 'Graphic design, Canva, UI/UX design, brand identity, photography, video editing, and art direction.', 5),
+  ('technology-digital', 'Technology & Digital', 'Web and mobile development, databases, data analysis, cybersecurity, cloud computing, AI, testing, and DevOps.', 6),
+  ('career-professional', 'Career & Professional Development', 'CV writing, interview readiness, freelancing, remote collaboration, time management, and client management.', 7)
+on conflict (slug) do update set
+  name = excluded.name,
+  description = excluded.description,
+  position = excluded.position;
+
+insert into public.skills (slug, title, category_id, category, level, summary, competency_expectations, roadmap_status, publication_status, est_hours, outcomes)
+select
+  v.slug,
+  v.title,
+  c.id,
+  c.name,
+  v.level,
+  v.summary,
+  v.competency_expectations,
+  'full',
+  'published',
+  v.est_hours,
+  v.outcomes
+from (
+  values
+    ('effective-communication', 'Effective Communication', 'communication-interpersonal', 'Beginner', 'Structure clear spoken and written messages tailored to colleagues, clients, and decision-makers.', 'Demonstrate clear framing, active listening, and stakeholder alignment.', 8.0, '["Frame messages clearly for busy audiences","Listen actively and confirm mutual understanding"]'::jsonb),
+    ('public-speaking', 'Public Speaking', 'communication-interpersonal', 'Intermediate', 'Design persuasive talks, manage delivery pacing, and engage audiences with confidence.', 'Deliver structured 5-minute briefings with composed Q&A.', 12.0, '["Open with a clear problem-impact hook","Handle Q&A concisely using structured bridging"]'::jsonb),
+    ('business-writing', 'Business Writing', 'writing-content-creation', 'Beginner', 'Use Bottom Line Up Front (BLUF) structure so busy readers grasp decisions fast.', 'Author concise executive briefs and owner-dated action logs.', 8.0, '["Lead with the recommendation upfront","Pair claims with baseline metrics and next owners"]'::jsonb),
+    ('creative-writing', 'Creative Writing', 'writing-content-creation', 'Beginner', 'Craft vivid scenes, memorable characters, compelling dialogue, and cohesive narratives.', 'Complete multi-course fiction and revision pathways from foundations to publication.', 16.0, '["Write sensory-grounded narrative scenes","Control pacing, subtext, and line-level revision"]'::jsonb),
+    ('entrepreneurship', 'Entrepreneurship', 'entrepreneurship-business', 'Beginner', 'Validate real customer pain, design viable business models, and launch lean ventures.', 'Validate riskiest assumptions and model sustainable unit economics.', 14.0, '["Run structured customer discovery interviews","Validate lean business models before scaling"]'::jsonb),
+    ('social-media-management', 'Social Media Management', 'digital-marketing-social', 'Beginner', 'Plan 30-day content calendars, grow engaged communities, and report channel performance.', 'Manage content pillars, community engagement, and retention reporting.', 10.0, '["Build balanced 30-day content calendars","Report saves, shares, and retention metrics"]'::jsonb),
+    ('facebook-and-instagram-advertising', 'Facebook and Instagram Advertising', 'digital-marketing-social', 'Intermediate', 'Plan, launch, retarget, and optimize Meta ad campaigns from beginner foundations to analytics.', 'Complete Beginner through Analytics & Optimization courses on Meta Ads Manager.', 20.0, '["Structure 3-tier Meta campaigns","Design retargeting funnels and diagnose ROAS/CPA"]'::jsonb),
+    ('graphic-design', 'Graphic Design', 'creative-design', 'Beginner', 'Apply visual hierarchy, typography, grid alignment, and color contrast to real deliverables.', 'Deliver print and social assets grounded in typography and grid systems.', 10.0, '["Apply visual hierarchy and spacing grids","Pair accessible color palettes cleanly"]'::jsonb),
+    ('web-development', 'Web Development', 'technology-digital', 'Beginner', 'Build semantic, accessible HTML/CSS layouts and modular interactive JavaScript web apps.', 'Ship responsive accessible interfaces with clean state management.', 18.0, '["Write semantic WCAG-friendly HTML/CSS","Build modular interactive browser workflows"]'::jsonb),
+    ('data-analysis', 'Data Analysis', 'technology-digital', 'Beginner', 'Clean messy datasets, write analytical queries, and surface clear decision insights.', 'Separate vanity metrics from decision-grade baselines and cohorts.', 12.0, '["Clean and segment tabular datasets","Communicate KPI movements accurately"]'::jsonb),
+    ('cv-and-resume-writing', 'CV and Resume Writing', 'career-professional', 'Beginner', 'Frame measurable achievements, clear formatting, and role-tailored summaries.', 'Produce ATS-scannable, impact-quantified CVs tailored to real listings.', 6.0, '["Quantify bullet impact with Action-Metric-Result","Tailor CVs without sacrificing factual clarity"]'::jsonb)
+) as v(slug, title, cat_slug, level, summary, competency_expectations, est_hours, outcomes)
+join public.categories c on c.slug = v.cat_slug
+on conflict (slug) do update set
+  category_id = excluded.category_id,
+  category = excluded.category,
+  competency_expectations = excluded.competency_expectations,
+  publication_status = excluded.publication_status;
 
 insert into public.opportunities (
   title,
@@ -84,106 +68,72 @@ insert into public.opportunities (
 )
 values
   (
-    'Junior Operations & Communications Associate',
-    'Northbridge Civic Works',
+    'Paid Social & Meta Ads Coordinator',
+    'Kestrel Consumer Studio',
     'Junior Role',
     'Hybrid',
     'London, UK',
-    'Draft weekly stakeholder briefings, maintain public project trackers, and coordinate service delivery updates across three municipal teams.',
-    'Northbridge Civic Works partners with local authorities to modernize public service operations. As a Junior Operations & Communications Associate, you will turn complex operational metrics into clear, scannable weekly memos and help programme leads track service milestones.',
-    '["Write concise weekly BLUF briefing memos summarizing service throughput, blockers, and next owners.", "Maintain core product and service KPI trackers alongside programme analysts.", "Coordinate 5-minute verbal status readouts with cross-functional delivery teams.", "Document standard operating procedures in plain language for new team members."]'::jsonb,
-    '["Demonstrated structured business writing with real memo or executive brief samples.", "Practising fluency in digital analytics and outcome-focused KPI measurement.", "Comfort presenting structured updates and answering stakeholder questions concisely.", "Strong attention to deadlines, action ownership, and baseline accuracy."]'::jsonb,
-    '[{"slug": "structured-business-writing", "neededLevel": "practising"}, {"slug": "digital-analytics-measurement", "neededLevel": "practising"}, {"slug": "public-speaking-presentations", "neededLevel": "practising"}]'::jsonb,
-    '["structured-business-writing", "digital-analytics-measurement", "public-speaking-presentations"]'::jsonb,
-    '{"compensation": "£28,500 – £31,000 / year (Sample band)", "duration": "Full-time · Permanent", "schedule": "3 days on-site (London), 2 days remote", "deadline": "Rolling cohort review · Closes in 21 days"}'::jsonb,
-    '{"aboutOrg": "Northbridge Civic Works values plain-language clarity over buzzwords. Their operations team runs asynchronous Friday readouts using strict 1-page BLUF memos.", "howToApply": "Include a link to one 1-page structured brief or memo alongside your CV. Explain the baseline metric and concrete outcome in your cover note.", "tips": ["Open your cover note with a 3-sentence BLUF summary of why you fit the role.", "Quantify at least one workflow improvement you have documented or measured.", "Mention how you handle follow-up questions when exact data is still pending."]}'::jsonb,
+    'Plan, build, and optimize Meta acquisition and retargeting campaigns while reporting weekly ROAS and creative fatigue diagnostics.',
+    'Kestrel Consumer Studio manages growth campaigns for sustainable retail brands. As Paid Social & Meta Ads Coordinator, you will structure Meta ad accounts, draft multi-hook ad creatives, interpret pixel/CAPI signals, and present crisp optimization readouts.',
+    '["Structure Campaign, Ad Set, and Ad tiers aligned with funnel conversion objectives.", "Monitor CTR, CPA, Frequency, and 7-day ROAS trends across active campaigns.", "Coordinate monthly social content calendars alongside brand designers.", "Draft weekly BLUF campaign performance memos for account leads."]'::jsonb,
+    '["Verified or demonstrated fluency in Facebook and Instagram Advertising.", "Hands-on planning experience in Social Media Management.", "Clear written business communication for client reporting."]'::jsonb,
+    '[{"slug": "facebook-and-instagram-advertising", "neededLevel": "practising"}, {"slug": "social-media-management", "neededLevel": "practising"}, {"slug": "business-writing", "neededLevel": "practising"}]'::jsonb,
+    '["facebook-and-instagram-advertising", "social-media-management", "business-writing"]'::jsonb,
+    '{"compensation": "£29,000 – £33,000 / year", "duration": "Full-time · Permanent", "schedule": "3 days studio (London), 2 days remote", "deadline": "Rolling cohort review"}'::jsonb,
+    '{"aboutOrg": "Kestrel emphasizes transparent attribution, creative testing discipline, and clear client communication without vanity reporting.", "howToApply": "Include a campaign blueprint or creative test plan alongside your CV and highlight any completed Kord ad analytics projects.", "tips": ["Explain how you separate cold prospecting from warm retargeting audiences.", "Show how you diagnose high CPM vs. low landing-page conversion."]}'::jsonb,
     true,
-    'https://example.org/opportunities/northbridge-ops'
+    'https://example.org/opportunities/kestrel-meta-ads'
   ),
   (
-    'Digital Service Accessibility Intern',
-    'Harbourline Public Lab',
-    'Internship',
+    'Editorial & Creative Content Fellow',
+    'Harbourline Storytelling Lab',
+    'Fellowship',
     'Remote',
     'Remote (UK / EU)',
-    'Partner with product designers to run keyboard and screen-reader audits across citizen portals and document clear remediation fixes.',
-    'Harbourline Public Lab builds accessible digital forms and public-benefit tools. During this 12-week internship, you will pair directly with frontend engineers and content designers to audit live pages against WCAG 2.2 AA standards.',
-    '["Run structured keyboard navigation, focus visibility, and semantic landmark audits.", "Log reproducible accessibility defects with clear HTML/CSS remediation snippets.", "Review form error messaging to ensure failures never rely on color alone.", "Summarize weekly audit findings in concise stakeholder briefs."]'::jsonb,
-    '["Practising or higher skill level in Web Accessibility Fundamentals.", "Clear technical writing ability to document issues for engineering teams.", "Familiarity with semantic HTML elements, heading order, and contrast ratios."]'::jsonb,
-    '[{"slug": "web-accessibility-fundamentals", "neededLevel": "practising"}, {"slug": "structured-business-writing", "neededLevel": "practising"}]'::jsonb,
-    '["web-accessibility-fundamentals", "structured-business-writing"]'::jsonb,
-    '{"compensation": "£1,850 / month paid internship", "duration": "12 weeks (extendable)", "schedule": "Remote · Core hours 10:00–15:00 GMT", "deadline": "Applications reviewed weekly"}'::jsonb,
-    '{"aboutOrg": "Harbourline publishes open accessibility statements for every product release and prioritizes native HTML semantics over heavy custom widgets.", "howToApply": "Submit your WCAG 2.2 AA audit log or a short breakdown of 3 accessibility fixes you spotted on a public site.", "tips": ["Demonstrate that you tested with keyboard-only Tab/Shift+Tab navigation.", "Reference exact WCAG success criteria (e.g. 1.4.3 Contrast, 2.4.7 Focus Visible).", "Keep your defect tickets actionable with before/after HTML examples."]}'::jsonb,
+    'Craft compelling short fiction, brand essays, and narrative scripts while leading peer critique workshops.',
+    'Harbourline Storytelling Lab publishes community-funded fiction anthologies and narrative audio documentaries. Fellows develop vivid scenes, sharpen dialogue subtext, and edit long-form manuscripts to publication standard.',
+    '["Write and revise 1,500–2,500 word narrative pieces anchored in sensory scene work.", "Develop voice-consistent character dialogue and structural outlines.", "Collaborate with editorial leads during line-editing and copy-proofing passes."]'::jsonb,
+    '["Practising or higher mastery in Creative Writing.", "Strong command of narrative pacing, dialogue clarity, and structural editing."]'::jsonb,
+    '[{"slug": "creative-writing", "neededLevel": "practising"}, {"slug": "effective-communication", "neededLevel": "practising"}]'::jsonb,
+    '["creative-writing", "effective-communication"]'::jsonb,
+    '{"compensation": "£2,050 / month fellowship stipend", "duration": "6 months", "schedule": "Remote · Async editorial sprints + Tuesday table reads", "deadline": "Applications reviewed weekly"}'::jsonb,
+    '{"aboutOrg": "Harbourline values original voice, disciplined revision habits, and generous peer critique.", "howToApply": "Submit a 600–1,200 word original scene or story draft demonstrating scene grounding and earned dialogue.", "tips": ["Lead immediately with action and specific sensory detail rather than backstory exposition.", "Highlight one concrete structural revision you made between draft 1 and draft 2."]}'::jsonb,
     true,
-    'https://example.org/opportunities/harbourline-a11y'
+    'https://example.org/opportunities/harbourline-editorial'
   ),
   (
-    'Product Analytics Apprentice',
-    'Brightwell Learning Trust',
+    'Venture Operations & Strategy Intern',
+    'Northbridge Impact Ventures',
+    'Internship',
+    'Hybrid',
+    'Manchester, UK',
+    'Support early-stage founders with customer discovery synthesis, unit-economics modeling, and investor update memos.',
+    'Northbridge Impact Ventures backs seed-stage civic and climate startups. As Venture Operations Intern, you will help founders map problem interviews, test MVP hypotheses, and communicate clear milestones.',
+    '["Synthesize founder customer discovery notes into actionable opportunity memos.", "Audit startup unit economics, break-even assumptions, and launch milestones.", "Coordinate pitch rehearsal briefings with portfolio teams."]'::jsonb,
+    '["Solid grounding in Entrepreneurship and lean validation workflows.", "Confident Effective Communication and concise Business Writing."]'::jsonb,
+    '[{"slug": "entrepreneurship", "neededLevel": "practising"}, {"slug": "effective-communication", "neededLevel": "practising"}, {"slug": "business-writing", "neededLevel": "practising"}]'::jsonb,
+    '["entrepreneurship", "effective-communication", "business-writing"]'::jsonb,
+    '{"compensation": "£1,950 / month paid internship", "duration": "12 weeks (extendable)", "schedule": "2 days Manchester hub, 3 days remote", "deadline": "Closes in 21 days"}'::jsonb,
+    '{"aboutOrg": "Northbridge prefers evidence of real customer conversations over polished slide templates.", "howToApply": "Attach a 1-page Venture Validation Canvas or startup brief alongside your tailored CV.", "tips": ["Name the riskiest assumption in any business model and how you would test it cheaply.", "Quantify customer pain with specific frequency or cost estimates."]}'::jsonb,
+    true,
+    'https://example.org/opportunities/northbridge-venture'
+  ),
+  (
+    'Junior Web & Visual Systems Developer',
+    'OpenCouncil Digital Studio',
     'Apprenticeship',
     'Remote',
     'Remote',
-    'Build weekly learning engagement reports, clean event taxonomies, and present insight summaries to programme leads.',
-    'Brightwell Learning Trust supports adult upskilling cohorts across community colleges. As Product Analytics Apprentice, you will help curriculum leads understand where learners thrive or stall and communicate insights clearly.',
-    '["Define clean conversion and activation events aligned with learner outcomes.", "Monitor percentile latency and funnel drop-off across mobile and desktop cohorts.", "Deliver a 5-minute spoken insight readout during Monday programme reviews.", "Maintain a 1-page measurement specification for new learning modules."]'::jsonb,
-    '["Practising foundation in Digital Analytics & Measurement.", "Ability to separate vanity pageviews from meaningful outcome KPIs.", "Clear written and spoken communication for non-technical educators."]'::jsonb,
-    '[{"slug": "digital-analytics-measurement", "neededLevel": "practising"}, {"slug": "public-speaking-presentations", "neededLevel": "practising"}, {"slug": "structured-business-writing", "neededLevel": "practising"}]'::jsonb,
-    '["digital-analytics-measurement", "public-speaking-presentations", "structured-business-writing"]'::jsonb,
-    '{"compensation": "£24,000 / year + mentorship budget", "duration": "12-month structured apprenticeship", "schedule": "Full-time · Remote with quarterly team offsites", "deadline": "Next intake opens next month"}'::jsonb,
-    '{"aboutOrg": "Brightwell pairs apprentices with a senior analyst and an educator mentor, emphasizing ethical measurement and clear denominator reporting.", "howToApply": "Attach your 1-page measurement plan showing a primary KPI, funnel events, and a concrete decision threshold.", "tips": ["Always show baseline counts alongside percentages in your examples.", "Highlight one case where segmentation revealed a pattern hidden by overall averages."]}'::jsonb,
+    'Build accessible, responsive web interfaces and visual communication assets for public-benefit web services.',
+    'OpenCouncil Digital Studio creates accessible web portals and community tools. You will build semantic HTML/CSS layouts, accessible interactive JavaScript modules, and crisp visual graphics.',
+    '["Implement responsive grid layouts with WCAG AA contrast and keyboard focus order.", "Build modular vanilla JavaScript components with clean DOM state handling.", "Create campaign flyers, info cards, and UI assets using consistent typographic hierarchy."]'::jsonb,
+    '["Practising or higher skill level in Web Development.", "Working eye for visual hierarchy and layout in Graphic Design.", "Clear documentation and collaborative communication."]'::jsonb,
+    '[{"slug": "web-development", "neededLevel": "practising"}, {"slug": "graphic-design", "neededLevel": "practising"}, {"slug": "effective-communication", "neededLevel": "declared"}]'::jsonb,
+    '["web-development", "graphic-design", "effective-communication"]'::jsonb,
+    '{"compensation": "£25,500 / year + hardware budget", "duration": "12-month apprenticeship", "schedule": "Full-time · Remote", "deadline": "Next intake open"}'::jsonb,
+    '{"aboutOrg": "OpenCouncil prioritizes native browser standards, semantic HTML, and crisp design restraint over bloated frameworks.", "howToApply": "Share a link to a live semantic web page or accessible UI audit plus your tailored resume.", "tips": ["Test every interactive control using only Tab, Shift+Tab, and Enter before submitting.", "Explain your font-scale and contrast choices briefly."]}'::jsonb,
     true,
-    'https://example.org/opportunities/brightwell-analytics'
-  ),
-  (
-    'Community Outreach & Briefing Fellow',
-    'Civic Grid Initiative',
-    'Fellowship',
-    'On-site',
-    'Manchester, UK',
-    'Lead monthly town-hall briefings, synthesize community feedback into structured memos, and coordinate local partner workshops.',
-    'Civic Grid Initiative connects neighbourhood associations with city infrastructure planners. Fellows facilitate public listening sessions and translate resident priorities into crisp briefing papers.',
-    '["Deliver engaging 5-minute project briefings at monthly neighbourhood forums.", "Facilitate structured Q&A sessions with residents and municipal partners.", "Synthesize workshop notes into 1-page BLUF decision memos."]'::jsonb,
-    '["Confident public speaking and structured slide/briefing delivery.", "Strong structured writing skills for summarizing multi-stakeholder feedback."]'::jsonb,
-    '[{"slug": "public-speaking-presentations", "neededLevel": "practising"}, {"slug": "structured-business-writing", "neededLevel": "practising"}]'::jsonb,
-    '["public-speaking-presentations", "structured-business-writing"]'::jsonb,
-    '{"compensation": "£2,100 / month fellowship stipend", "duration": "6 months", "schedule": "On-site in Manchester · Occasional evening forums", "deadline": "Open until filled"}'::jsonb,
-    '{"aboutOrg": "Civic Grid values calm, empathetic facilitators who can bridge community concerns and technical constraints.", "howToApply": "Include a link to a 3–5 minute recorded briefing or speaker deck alongside a brief written summary.", "tips": ["Demonstrate a 30-second problem-impact opening hook.", "Show how you close briefings with concrete owners and timelines."]}'::jsonb,
-    true,
-    'https://example.org/opportunities/civic-grid-fellow'
-  ),
-  (
-    'Content & Web Standards Coordinator',
-    'OpenCouncil Digital',
-    'Project',
-    'Remote',
-    'Remote',
-    'Review public guidance pages for plain-language clarity and WCAG 2.2 AA compliance ahead of a regional portal launch.',
-    'OpenCouncil Digital helps regional councils publish plain-language citizen guides. In this fixed-scope project role, you will audit 40 guidance pages for readability, accessibility, and analytics instrumentation.',
-    '["Rewrite dense policy paragraphs into plain-language, scannable action steps.", "Verify heading hierarchy, link clarity, and WCAG AA color contrast.", "Define task-completion events to track whether guidance resolves user queries."]'::jsonb,
-    '["Proven structured writing and plain-language editing skills.", "Working knowledge of web accessibility checks and basic analytics tracking."]'::jsonb,
-    '[{"slug": "structured-business-writing", "neededLevel": "practising"}, {"slug": "web-accessibility-fundamentals", "neededLevel": "practising"}, {"slug": "digital-analytics-measurement", "neededLevel": "practising"}]'::jsonb,
-    '["structured-business-writing", "web-accessibility-fundamentals", "digital-analytics-measurement"]'::jsonb,
-    '{"compensation": "£3,200 fixed project contract", "duration": "8 weeks · Part-time flexible", "schedule": "Async remote with Tuesday check-ins", "deadline": "Closes in 14 days"}'::jsonb,
-    '{"aboutOrg": "OpenCouncil is a small distributed team of civic writers and web engineers who measure success by reduced citizen support calls.", "howToApply": "Share a before/after writing sample or a short accessibility review of any public council page.", "tips": ["Keep your application under 300 words using headings and bullet points.", "Link your verified Kord challenge work if available."]}'::jsonb,
-    true,
-    'https://example.org/opportunities/opencouncil-standards'
-  ),
-  (
-    'Service Design & User Research Intern',
-    'Southbank Digital Studio',
-    'Internship',
-    'Hybrid',
-    'Bristol, UK',
-    'Assist user researchers with interview note synthesis, accessibility spot checks, and stakeholder readout decks.',
-    'Southbank Digital Studio designs healthcare and civic booking experiences. You will support senior researchers during usability sessions, run quick accessibility checks, and present clear findings.',
-    '["Observe usability sessions and tag findings by severity and user impact.", "Conduct preliminary WCAG keyboard and label checks on prototypes.", "Help prepare concise 5-minute research readout decks."]'::jsonb,
-    '["Web accessibility fundamentals and clear presentation skills.", "Interest in structured stakeholder discovery interviews."]'::jsonb,
-    '[{"slug": "web-accessibility-fundamentals", "neededLevel": "practising"}, {"slug": "public-speaking-presentations", "neededLevel": "practising"}, {"slug": "stakeholder-discovery-interviews", "neededLevel": "declared"}]'::jsonb,
-    '["web-accessibility-fundamentals", "public-speaking-presentations", "stakeholder-discovery-interviews"]'::jsonb,
-    '{"compensation": "£1,900 / month paid internship", "duration": "10 weeks", "schedule": "2 days in Bristol studio, 3 days remote", "deadline": "Autumn cohort open"}'::jsonb,
-    '{"aboutOrg": "Southbank emphasizes inclusive research with assistive-technology users and crisp visual synthesis.", "howToApply": "Share your best presentation or accessibility audit artifact and mention one service flow you would simplify.", "tips": ["Highlight collaborative note-taking and neutral observation skills."]}'::jsonb,
-    true,
-    'https://example.org/opportunities/southbank-research'
+    'https://example.org/opportunities/opencouncil-web'
   )
 on conflict (title, organization) do update set
   opportunity_type = excluded.opportunity_type,

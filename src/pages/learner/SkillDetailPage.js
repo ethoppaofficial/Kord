@@ -1,8 +1,15 @@
 import { getSkillBySlug } from '../../lib/repositories/contentRepository.js';
-import { getUserEnrollments, enrollInSkill, setEnrollmentStatus, getUserActivityProgress } from '../../lib/repositories/progressRepository.js';
+import {
+  getCourseEnrollments,
+  enrollInCourse,
+  getLessonProgress,
+} from '../../lib/repositories/progressRepository.js';
 import { getUserSkills, declareUserSkill } from '../../lib/repositories/skillsRepository.js';
 import { listRankedOpportunities } from '../../lib/repositories/opportunityRepository.js';
+import { getDemoState } from '../../lib/demo/demoStore.js';
+import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../lib/progressionEngine.js';
 import { escapeHtml } from '../../lib/formatters.js';
+import { icon } from '../../lib/icons.js';
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
@@ -12,31 +19,51 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
     return {
       html: renderErrorState({
         title: 'Skill not found',
-        message: 'We could not find a roadmap matching that slug.',
+        message: 'We could not find a competency matching that slug.',
       }),
       bind() {},
     };
   }
 
   const userId = session?.user?.id || null;
-  const [enrollments, progress, userSkills, opportunities] = await Promise.all([
-    userId ? getUserEnrollments(userId) : Promise.resolve([]),
-    userId ? getUserActivityProgress(userId) : Promise.resolve([]),
+  const [enrollments, lessonProgress, userSkills, opportunities] = await Promise.all([
+    userId ? getCourseEnrollments(userId) : Promise.resolve([]),
+    userId ? getLessonProgress(userId) : Promise.resolve([]),
     userId ? getUserSkills(userId) : Promise.resolve([]),
     listRankedOpportunities(userId),
   ]);
 
-  const enrollment = enrollments.find((e) => e.skillId === skill.id) || null;
+  const state = getDemoState();
+  const quizzes = state.quizzes || [];
+  const challenges = state.challenges || [];
+  const quizAttempts = userId ? (state.quizAttempts || []).filter((a) => a.userId === userId) : [];
+  const submissions = userId ? (state.submissions || []).filter((s) => s.userId === userId) : [];
+
   const userSkill = userSkills.find((us) => us.skillId === skill.id) || null;
-  const allActivities = (skill.phases || []).flatMap((p) => p.activities || []);
-  const completedCount = allActivities.filter((a) =>
-    progress.some((ap) => ap.activityId === a.id && ap.completed)
-  ).length;
+  const courses = skill.courses || [];
+
+  const courseProgressById = {};
+  courses.forEach((course) => {
+    const enr = enrollments.find((e) => e.courseId === course.id) || null;
+    courseProgressById[course.id] = computeCourseProgress({
+      course,
+      lessonProgress: lessonProgress.filter((lp) => lp.courseId === course.id),
+      assessments: quizzes,
+      quizAttempts,
+      challenges,
+      submissions,
+      enrollment: enr,
+    });
+  });
+
+  const overall = computeOverallSkillCourseProgress({
+    publishedCourses: courses,
+    courseProgressById,
+  });
+
   const relatedOpps = opportunities
     .filter((o) => (o.requiredSkillSlugs || []).includes(skill.slug))
     .slice(0, 3);
-
-  const isFull = skill.roadmapStatus === 'full';
 
   return {
     html: `
@@ -46,25 +73,36 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
 
       <div class="lab-split">
         <div style="display:flex; flex-direction:column; gap:20px;">
+          <!-- Skill Competency Overview -->
           <section class="card">
             <div class="meta-line" style="margin-bottom:8px;">
               <span>${escapeHtml(skill.category)}</span>
               <span class="meta-sep" aria-hidden="true">·</span>
               <span>${escapeHtml(skill.level)}</span>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <span class="mono-num">${skill.estHours}h estimated</span>
+              <span class="mono-num">${courses.length} ${courses.length === 1 ? 'course' : 'courses'}</span>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
               <h1 class="page-title">${escapeHtml(skill.title)}</h1>
-              ${renderStatusBadge(skill.roadmapStatus)}
+              ${userSkill ? renderStatusBadge(userSkill.level) : renderStatusBadge('declared')}
             </div>
             <p style="margin-top:12px; color:var(--color-text-secondary);">${escapeHtml(skill.summary)}</p>
+
+            ${
+              skill.competencyExpectations
+                ? `
+              <div style="margin-top:14px; padding:12px 14px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-size:13.5px; color:var(--color-text-secondary);">
+                <strong style="color:var(--color-navy);">Competency expectation:</strong> ${escapeHtml(skill.competencyExpectations)}
+              </div>
+            `
+                : ''
+            }
 
             ${
               skill.outcomes?.length
                 ? `
               <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--color-border);">
-                <h2 style="font-size:1rem; margin-bottom:10px;">What you will prove</h2>
+                <h2 style="font-size:1rem; margin-bottom:10px;">Target competency outcomes</h2>
                 <ul style="margin:0; padding-left:18px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:6px;">
                   ${skill.outcomes.map((o) => `<li>${escapeHtml(o)}</li>`).join('')}
                 </ul>
@@ -74,39 +112,93 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
             }
           </section>
 
-          <section class="card">
-            <h2 class="section-heading">Roadmap curriculum</h2>
+          <!-- Structured Courses Under This Skill -->
+          <section>
+            <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+              <h2 class="section-heading" style="margin:0;">Structured courses for ${escapeHtml(skill.title)} (${courses.length})</h2>
+              <span style="font-size:13px; color:var(--color-text-muted);">Enroll independently in any course below</span>
+            </div>
+
             ${
-              isFull && skill.phases.length > 0
+              courses.length > 0
                 ? `
-              <div style="display:flex; flex-direction:column; gap:18px;">
-                ${skill.phases
-                  .map(
-                    (phase) => `
-                  <div style="padding-bottom:14px; border-bottom:1px solid var(--color-border);">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px;">
-                      <h3 style="font-size:1.05rem;">Phase ${phase.position}: ${escapeHtml(phase.title)}</h3>
-                      <span class="mono-num" style="font-size:12px; color:var(--color-text-muted);">${phase.activities.length} activities</span>
-                    </div>
-                    <p style="font-size:14px; color:var(--color-text-secondary); margin-bottom:10px;">${escapeHtml(phase.summary)}</p>
-                    <ul style="margin:0; padding-left:18px; font-size:14px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:4px;">
-                      ${phase.activities
-                        .map((a) => {
-                          const done = progress.some((ap) => ap.activityId === a.id && ap.completed);
-                          return `<li>${escapeHtml(a.title)} (${a.estMinutes}m) ${done ? '<strong style="color:var(--color-green);">· Completed</strong>' : ''}</li>`;
-                        })
-                        .join('')}
-                    </ul>
-                  </div>
-                `
-                  )
+              <div style="display:flex; flex-direction:column; gap:16px;">
+                ${courses
+                  .map((course, idx) => {
+                    const enr = enrollments.find((e) => e.courseId === course.id);
+                    const prog = courseProgressById[course.id];
+                    const phaseCount = (course.phases || []).length;
+                    const lessonCount = prog.totalLessons;
+
+                    return `
+                      <article class="card card-interactive" style="display:flex; flex-direction:column; gap:14px;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+                          <div>
+                            <div class="meta-line" style="margin-bottom:4px;">
+                              <span>Course ${idx + 1}</span>
+                              <span class="meta-sep" aria-hidden="true">·</span>
+                              <span>${escapeHtml(course.difficulty)}</span>
+                              <span class="meta-sep" aria-hidden="true">·</span>
+                              <span class="mono-num">${course.estimatedDurationWeeks} weeks (${course.recommendedWeeklyHours}h/wk)</span>
+                              <span class="meta-sep" aria-hidden="true">·</span>
+                              <span class="mono-num">${phaseCount} phases · ${lessonCount} lessons</span>
+                            </div>
+                            <h3 style="font-size:1.15rem;">${escapeHtml(course.title)}</h3>
+                          </div>
+                          ${
+                            prog.isCompleted
+                              ? renderStatusBadge('completed')
+                              : enr
+                                ? renderStatusBadge(enr.status)
+                                : '<span class="status-tag status-neutral">Not enrolled</span>'
+                          }
+                        </div>
+
+                        <p style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(course.description)}</p>
+
+                        ${
+                          course.outcomes?.length
+                            ? `
+                          <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:3px;">
+                            ${course.outcomes.slice(0, 3).map((o) => `<li>${escapeHtml(o)}</li>`).join('')}
+                          </ul>
+                        `
+                            : ''
+                        }
+
+                        ${renderProgressRail({
+                          label: 'Course completion',
+                          value: prog.progressPercent,
+                          max: 100,
+                          detail: `${prog.completedLessonsCount}/${prog.requiredLessonsCount} lessons · ${prog.progressPercent}%`,
+                        })}
+
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding-top:10px; border-top:1px solid var(--color-border); flex-wrap:wrap;">
+                          <span style="font-size:12.5px; color:var(--color-text-muted);">
+                            Recommended pace: ${escapeHtml(course.recommendedSchedule || 'Self-paced weekly milestones')}
+                          </span>
+                          ${
+                            enr
+                              ? `<a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-primary btn-sm">
+                                  Open course workspace ${icon('arrowRight', 14)}
+                                </a>`
+                              : `<button type="button" class="btn btn-primary btn-sm" data-enroll-course="${escapeHtml(course.id)}" data-course-slug="${escapeHtml(course.slug)}">
+                                  Enroll in course
+                                </button>`
+                          }
+                        </div>
+                      </article>
+                    `;
+                  })
                   .join('')}
               </div>
             `
                 : `
-              <p style="color:var(--color-text-muted); font-size:14px;">
-                This skill roadmap is currently in curation (Coming soon). You can still declare your interest from My Skills while activities are prepared.
-              </p>
+              <div class="card">
+                <p style="color:var(--color-text-muted); font-size:14px;">
+                  No published courses are attached to this skill yet. You can declare this competency on your profile now while course pathways are authored.
+                </p>
+              </div>
             `
             }
           </section>
@@ -115,52 +207,38 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
         <aside style="display:flex; flex-direction:column; gap:18px;">
           <div class="card-workspace" style="display:flex; flex-direction:column; gap:14px;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-              <strong style="color:var(--color-navy);">Your status</strong>
+              <strong style="color:var(--color-navy);">Skill mastery status</strong>
               ${userSkill ? renderStatusBadge(userSkill.level) : '<span style="font-size:13px; color:var(--color-text-muted);">Not tracked yet</span>'}
             </div>
 
             ${
-              isFull
+              courses.length > 0
                 ? renderProgressRail({
-                    label: 'Activities completed',
-                    value: completedCount,
-                    max: Math.max(1, allActivities.length),
-                    detail: `${completedCount}/${allActivities.length}`,
+                    label: 'Courses completed toward Verified',
+                    value: overall.completedCoursesCount,
+                    max: Math.max(1, overall.totalPublishedCourses),
+                    detail: `${overall.completedCoursesCount}/${overall.totalPublishedCourses} courses`,
                   })
                 : ''
             }
 
+            <div style="font-size:13px; color:var(--color-text-secondary); line-height:1.5; padding:10px 12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
+              <strong>Verification rule:</strong> Completing a single course upgrades this skill to <strong>Demonstrated</strong>. Earning <strong>Verified</strong> requires completing <strong>all published courses</strong> associated with ${escapeHtml(skill.title)} with approved assessments and challenges.
+            </div>
+
+            <button type="button" class="btn btn-secondary btn-sm" id="declare-btn" ${userSkill ? 'disabled' : ''}>
+              ${userSkill ? 'Skill tracked on profile' : 'Declare skill interest'}
+            </button>
+
             ${
-              !userId
-                ? `<a href="/login" data-link class="btn btn-primary">Sign in to enroll</a>`
-                : isFull
-                  ? `
-                  ${
-                    !enrollment
-                      ? `<button type="button" class="btn btn-primary" id="enroll-btn">Enroll in roadmap</button>`
-                      : `
-                        <a href="/roadmap/${escapeHtml(skill.slug)}" data-link class="btn btn-primary">
-                          ${enrollment.status === 'paused' ? 'View paused roadmap' : 'Open roadmap workspace'}
-                        </a>
-                        <button type="button" class="btn btn-secondary btn-sm" id="toggle-pause-btn">
-                          ${enrollment.status === 'paused' ? 'Resume enrollment' : 'Pause enrollment'}
-                        </button>
-                      `
-                  }
-                  ${
-                    skill.skillCheckQuizId
-                      ? `<a href="/quiz/${escapeHtml(skill.skillCheckQuizId)}" data-link class="btn btn-secondary btn-sm">Take Skill Check quiz</a>`
-                      : ''
-                  }
-                  ${
-                    skill.challengeId
-                      ? `<a href="/challenge/${escapeHtml(skill.challengeId)}" data-link class="btn btn-secondary btn-sm">Open practical challenge</a>`
-                      : ''
-                  }
-                `
-                  : `<button type="button" class="btn btn-secondary" id="declare-btn" ${userSkill ? 'disabled' : ''}>
-                      ${userSkill ? 'Skill declared' : 'Declare interest in skill'}
-                    </button>`
+              skill.skillCheckQuizId
+                ? `<a href="/quiz/${escapeHtml(skill.skillCheckQuizId)}" data-link class="btn btn-secondary btn-sm">Take skill assessment</a>`
+                : ''
+            }
+            ${
+              skill.challengeId
+                ? `<a href="/challenge/${escapeHtml(skill.challengeId)}" data-link class="btn btn-secondary btn-sm">Open practical challenge</a>`
+                : ''
             }
           </div>
 
@@ -184,9 +262,6 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
                   )
                   .join('')}
               </div>
-              <div style="margin-top:12px;">
-                <a href="/opportunities" data-link style="font-size:13px; font-weight:600;">Explore all matches →</a>
-              </div>
             </div>
           `
               : ''
@@ -195,36 +270,21 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
       </div>
     `,
     bind(root) {
-      root.querySelector('#enroll-btn')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        if (btn.disabled) return;
-        btn.disabled = true;
-        btn.textContent = 'Enrolling…';
-        try {
-          await enrollInSkill(userId, skill.id);
-          await declareUserSkill(userId, skill.id);
-          showToast(`Enrolled in ${skill.title}.`, 'success');
-          navigate(`/roadmap/${skill.slug}`);
-        } catch (err) {
-          btn.disabled = false;
-          btn.textContent = 'Enroll in roadmap';
-          showToast(err?.message || 'Unable to enroll.', 'error');
-        }
-      });
-
-      root.querySelector('#toggle-pause-btn')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        if (btn.disabled) return;
-        btn.disabled = true;
-        try {
-          const nextStatus = enrollment?.status === 'paused' ? 'active' : 'paused';
-          await setEnrollmentStatus(userId, skill.id, nextStatus);
-          showToast(nextStatus === 'paused' ? 'Roadmap paused.' : 'Roadmap resumed.', 'success');
-          rerender({ silent: true });
-        } catch (err) {
-          btn.disabled = false;
-          showToast(err?.message || 'Unable to update enrollment.', 'error');
-        }
+      root.querySelectorAll('[data-enroll-course]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (btn.disabled) return;
+          btn.disabled = true;
+          btn.textContent = 'Enrolling…';
+          try {
+            await enrollInCourse(userId, btn.dataset.enrollCourse);
+            showToast('Enrolled in course!', 'success');
+            navigate(`/courses/${btn.dataset.courseSlug}`);
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Enroll in course';
+            showToast(err?.message || 'Unable to enroll.', 'error');
+          }
+        });
       });
 
       root.querySelector('#declare-btn')?.addEventListener('click', async (e) => {

@@ -1,15 +1,151 @@
 import { getQuizForLearner, getQuizAttempts, submitQuiz } from '../../lib/repositories/quizRepository.js';
+import { isManualQuestionType } from '../../lib/assessmentEngine.js';
+import { buildIdempotencyKey } from '../../lib/idempotency.js';
+import { ASSESSMENT_TYPES } from '../../lib/constants.js';
 import { escapeHtml, formatDateTime } from '../../lib/formatters.js';
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
 let lastResultByQuiz = {};
+let activeOrderByQuizQuestion = {};
+
+function renderQuestionInput(q, idx, res, quizId) {
+  const type = q.questionType || 'multiple_choice';
+  const contextHtml = q.contextText
+    ? `<div style="padding:10px 12px; border-radius:var(--radius-sm); background:var(--color-bg); border:1px solid var(--color-border); font-size:13.5px; color:var(--color-text-secondary); white-space:pre-line;">
+        <strong style="color:var(--color-navy);">Context:</strong> ${escapeHtml(q.contextText)}
+      </div>`
+    : '';
+
+  let controlHtml = '';
+
+  if (type === 'multiple_select') {
+    const selectedArr = Array.isArray(res?.submittedAnswer) ? res.submittedAnswer.map(Number) : [];
+    const expectedArr = Array.isArray(res?.answerConfig?.correctIndices) ? res.answerConfig.correctIndices : [];
+    controlHtml = `
+      <div style="font-size:12px; color:var(--color-text-muted);">Select all that apply</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        ${(q.options || [])
+          .map((opt, optIdx) => {
+            let optClass = '';
+            if (res) {
+              if (expectedArr.includes(optIdx)) optClass = 'is-correct';
+              else if (selectedArr.includes(optIdx) && !expectedArr.includes(optIdx)) optClass = 'is-wrong';
+            }
+            const checked = selectedArr.includes(optIdx);
+            return `
+              <label class="quiz-option ${optClass} ${checked ? 'is-selected' : ''}">
+                <input type="checkbox" name="q_${escapeHtml(q.id)}" value="${optIdx}" ${checked ? 'checked' : ''} />
+                <span style="font-size:14px;">${escapeHtml(opt)}</span>
+              </label>
+            `;
+          })
+          .join('')}
+      </div>
+    `;
+  } else if (type === 'fill_blank') {
+    const val = typeof res?.submittedAnswer === 'string' ? res.submittedAnswer : '';
+    controlHtml = `
+      <div class="field">
+        <input class="input" type="text" name="q_text_${escapeHtml(q.id)}" data-question-input="${escapeHtml(q.id)}" placeholder="Type your exact answer…" value="${escapeHtml(val)}" />
+      </div>
+      ${
+        res?.answerConfig?.acceptedAnswers?.length
+          ? `<div style="font-size:12.5px; color:var(--color-text-muted);">Accepted answers: ${res.answerConfig.acceptedAnswers.map(escapeHtml).join(', ')}</div>`
+          : ''
+      }
+    `;
+  } else if (type === 'ordering') {
+    const key = `${quizId}:${q.id}`;
+    if (!activeOrderByQuizQuestion[key]) {
+      activeOrderByQuizQuestion[key] = (q.options || []).map((_, i) => i);
+    }
+    const order = activeOrderByQuizQuestion[key];
+    controlHtml = `
+      <div style="font-size:12px; color:var(--color-text-muted);">Arrange these steps in the correct sequence using Move Up / Move Down</div>
+      <div style="display:flex; flex-direction:column; gap:6px;" data-order-list="${escapeHtml(q.id)}">
+        ${order
+          .map(
+            (optIdx, pos) => `
+          <div class="order-item-row" data-order-idx="${optIdx}">
+            <span style="font-size:14px;"><strong class="mono-num">${pos + 1}.</strong> ${escapeHtml(q.options?.[optIdx] || '')}</span>
+            <div style="display:flex; gap:4px;">
+              <button type="button" class="btn btn-secondary btn-sm" data-move-order="${escapeHtml(q.id)}" data-pos="${pos}" data-dir="-1" ${pos === 0 ? 'disabled' : ''}>Up</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-move-order="${escapeHtml(q.id)}" data-pos="${pos}" data-dir="1" ${pos === order.length - 1 ? 'disabled' : ''}>Down</button>
+            </div>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `;
+  } else if (type === 'short_answer' || type === 'long_form' || type === 'practical_submission') {
+    const val = typeof res?.submittedAnswer === 'string' ? res.submittedAnswer : '';
+    const minH = type === 'long_form' ? '140px' : '82px';
+    const placeholder =
+      type === 'practical_submission'
+        ? 'Paste your deliverable URL or explain your practical submission…'
+        : type === 'long_form'
+          ? 'Write a thorough, well-structured response covering all parts of the prompt…'
+          : 'Write a concise 1–3 sentence response…';
+    controlHtml = `
+      <div style="font-size:12px; color:var(--color-amber); font-weight:600;">Manually graded by administrator after submission</div>
+      <textarea class="textarea" name="q_text_${escapeHtml(q.id)}" data-question-input="${escapeHtml(q.id)}" style="min-height:${minH};" placeholder="${placeholder}">${escapeHtml(val)}</textarea>
+    `;
+  } else {
+    // multiple_choice, true_false, scenario, case_study
+    const options = type === 'true_false' && (!q.options || q.options.length === 0) ? ['True', 'False'] : q.options || [];
+    controlHtml = `
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        ${options
+          .map((opt, optIdx) => {
+            let optClass = '';
+            if (res && !res.pendingReview) {
+              if (optIdx === res.correctIndex) optClass = 'is-correct';
+              else if (optIdx === res.selectedIndex && !res.isCorrect) optClass = 'is-wrong';
+            }
+            return `
+              <label class="quiz-option ${optClass} ${res && res.selectedIndex === optIdx ? 'is-selected' : ''}">
+                <input type="radio" name="q_${escapeHtml(q.id)}" value="${optIdx}" ${res && res.selectedIndex === optIdx ? 'checked' : ''} />
+                <span style="font-size:14px;">${escapeHtml(opt)}</span>
+              </label>
+            `;
+          })
+          .join('')}
+      </div>
+    `;
+  }
+
+  return `
+    <section class="card" style="display:flex; flex-direction:column; gap:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+        <div style="font-weight:600; color:var(--color-navy);">
+          <span class="mono-num">${idx + 1}.</span> ${escapeHtml(q.prompt)}
+        </div>
+        <span class="mono-num" style="font-size:12px; color:var(--color-text-muted);">${q.marks || 1} ${Number(q.marks || 1) === 1 ? 'mark' : 'marks'} · ${escapeHtml(type.replace('_', ' '))}</span>
+      </div>
+      ${contextHtml}
+      ${controlHtml}
+      ${
+        res
+          ? res.pendingReview
+            ? `<div class="pop-in" style="padding:10px 12px; border-radius:6px; font-size:13px; background:var(--color-amber-bg); color:var(--color-navy);">
+                <strong>Submitted for review:</strong> ${escapeHtml(res.explanation || 'Your written response is queued for administrator grading.')}
+              </div>`
+            : `<div class="pop-in" style="padding:10px 12px; border-radius:6px; font-size:13px; background:${res.isCorrect ? 'var(--color-green-bg)' : 'var(--color-amber-bg)'}; color:var(--color-text);">
+                <strong>${res.isCorrect ? 'Correct:' : 'Explanation:'}</strong> ${escapeHtml(res.explanation)}
+              </div>`
+          : ''
+      }
+    </section>
+  `;
+}
 
 export async function renderQuizPage({ params, session, rerender }) {
   const quiz = await getQuizForLearner(params.quizId);
   if (!quiz) {
     return {
-      html: renderErrorState({ title: 'Quiz not found', message: 'We could not locate this quiz.' }),
+      html: renderErrorState({ title: 'Assessment not found', message: 'We could not locate this assessment.' }),
       bind() {},
     };
   }
@@ -17,24 +153,38 @@ export async function renderQuizPage({ params, session, rerender }) {
   const userId = session.user.id;
   const attempts = await getQuizAttempts(userId, quiz.id);
   const latestResult = lastResultByQuiz[quiz.id] || null;
-  const backPath = quiz.skill?.slug ? `/roadmap/${quiz.skill.slug}` : '/skills';
-  const initialAnswered = latestResult ? quiz.questions.length : 0;
+
+  const displayQuestions = quiz.shuffleQuestions
+    ? quiz.questions.slice().sort((a, b) => a.id.localeCompare(b.id))
+    : quiz.questions;
+
+  const backPath = quiz.course?.slug
+    ? `/courses/${quiz.course.slug}`
+    : quiz.skill?.slug
+      ? `/skills/${quiz.skill.slug}`
+      : '/skills';
+  const typeMeta = ASSESSMENT_TYPES.find((t) => t.key === quiz.quizType);
+  const attemptsLeft = quiz.maxAttempts ? Math.max(0, quiz.maxAttempts - attempts.length) : null;
+  const isLocked = quiz.maxAttempts !== null && quiz.maxAttempts !== undefined && attemptsLeft <= 0;
+  const initialAnswered = latestResult ? displayQuestions.length : 0;
 
   return {
     html: `
       <div style="margin-bottom:14px;">
-        <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to roadmap</a>
+        <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to ${quiz.course ? escapeHtml(quiz.course.title) : 'Skill hub'}</a>
       </div>
 
       <div class="lab-split">
         <div style="display:flex; flex-direction:column; gap:20px;">
           <section class="card">
             <div class="meta-line" style="margin-bottom:6px;">
-              <span>${quiz.quizType === 'skill_check' ? 'Skill Check' : 'Phase Quiz'}</span>
+              <span>${escapeHtml(typeMeta?.label || 'Assessment')}</span>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <span class="mono-num">Pass threshold: ${quiz.passPercent}%</span>
+              <span class="mono-num">Pass: ${quiz.passPercent}%</span>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <span class="mono-num">${quiz.questions.length} questions</span>
+              <span class="mono-num">${displayQuestions.length} questions</span>
+              ${quiz.timeLimitMinutes ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num" id="quiz-timer-badge">Timer: ${quiz.timeLimitMinutes}:00</span>` : ''}
+              ${attemptsLeft !== null ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num">${attemptsLeft} attempts remaining</span>` : ''}
             </div>
             <h1 class="page-title">${escapeHtml(quiz.title)}</h1>
             <p class="page-subtitle" style="margin-bottom:16px;">${escapeHtml(quiz.description)}</p>
@@ -43,8 +193,8 @@ export async function renderQuizPage({ params, session, rerender }) {
               id: 'quiz-completion-rail',
               label: 'Questions answered',
               value: initialAnswered,
-              max: Math.max(1, quiz.questions.length),
-              detail: `${initialAnswered}/${quiz.questions.length}`,
+              max: Math.max(1, displayQuestions.length),
+              detail: `${initialAnswered}/${displayQuestions.length}`,
             })}
           </section>
 
@@ -54,20 +204,26 @@ export async function renderQuizPage({ params, session, rerender }) {
             <section class="card-workspace pop-in" id="quiz-result-banner" aria-live="polite">
               <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
                 <div>
-                  <div style="font-size:13px; color:var(--color-text-secondary);">Submitted result</div>
+                  <div style="font-size:13px; color:var(--color-text-secondary);">Attempt #${latestResult.attemptNumber || 1} result</div>
                   <div class="mono-num" style="font-size:1.5rem; font-weight:700; color:var(--color-navy);">
-                    ${latestResult.score}/${latestResult.total} (${latestResult.percentage}%)
+                    ${latestResult.score}/${latestResult.total} marks (${latestResult.percentage}%)
                   </div>
                 </div>
-                ${renderStatusBadge(latestResult.passed ? 'passed' : 'failed')}
+                ${renderStatusBadge(
+                  latestResult.reviewStatus === 'pending_review'
+                    ? 'pending_review'
+                    : latestResult.passed
+                      ? 'passed'
+                      : 'failed'
+                )}
               </div>
               <p style="font-size:14px; color:var(--color-text-secondary);">
                 ${
-                  latestResult.passed
-                    ? quiz.quizType === 'skill_check'
-                      ? 'Passed! Your skill level has upgraded to Demonstrated (unless already Verified).'
-                      : 'Passed! Your skill progress has been recorded.'
-                    : `Score ${quiz.passPercent}% or higher to pass. Review the explanations below and try again.`
+                  latestResult.reviewStatus === 'pending_review'
+                    ? 'Auto-graded items are scored above. Your written/practical answers are now queued for administrator review before final pass status is awarded.'
+                    : latestResult.passed
+                      ? 'Passed! Your course and skill progression have been updated automatically.'
+                      : `Score ${quiz.passPercent}% or higher to pass. Review the explanations below and try again.`
                 }
               </p>
             </section>
@@ -76,57 +232,31 @@ export async function renderQuizPage({ params, session, rerender }) {
           }
 
           <form id="quiz-form" class="form-stack">
-            ${quiz.questions
+            ${displayQuestions
               .map((q, idx) => {
                 const res = latestResult?.results?.find((r) => r.questionId === q.id);
-                return `
-                  <section class="card" style="display:flex; flex-direction:column; gap:12px;">
-                    <div style="font-weight:600; color:var(--color-navy);">
-                      <span class="mono-num">${idx + 1}.</span> ${escapeHtml(q.prompt)}
-                    </div>
-                    <div style="display:flex; flex-direction:column; gap:8px;">
-                      ${q.options
-                        .map((opt, optIdx) => {
-                          let optClass = '';
-                          if (res) {
-                            if (optIdx === res.correctIndex) optClass = 'is-correct';
-                            else if (optIdx === res.selectedIndex && !res.isCorrect) optClass = 'is-wrong';
-                          }
-                          return `
-                            <label class="quiz-option ${optClass} ${res && res.selectedIndex === optIdx ? 'is-selected' : ''}">
-                              <input type="radio" name="q_${escapeHtml(q.id)}" value="${optIdx}" ${res && res.selectedIndex === optIdx ? 'checked' : ''} />
-                              <span style="font-size:14px;">${escapeHtml(opt)}</span>
-                            </label>
-                          `;
-                        })
-                        .join('')}
-                    </div>
-                    ${
-                      res
-                        ? `
-                      <div class="pop-in" style="padding:10px 12px; border-radius:6px; font-size:13px; background:${res.isCorrect ? 'var(--color-green-bg)' : 'var(--color-amber-bg)'}; color:var(--color-text);">
-                        <strong>${res.isCorrect ? 'Correct:' : 'Explanation:'}</strong> ${escapeHtml(res.explanation)}
-                      </div>
-                    `
-                        : ''
-                    }
-                  </section>
-                `;
+                return renderQuestionInput(q, idx, res, quiz.id);
               })
               .join('')}
 
             <div class="field-error" id="quiz-error" role="alert"></div>
 
-            <div style="display:flex; gap:12px; flex-wrap:wrap;">
-              <button type="submit" class="btn btn-primary" id="quiz-submit-btn">
-                ${latestResult ? 'Retake & submit quiz' : 'Submit quiz answers'}
+            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+              <button type="submit" class="btn btn-primary" id="quiz-submit-btn" ${isLocked ? 'disabled' : ''}>
+                ${
+                  isLocked
+                    ? `Attempt limit reached (${quiz.maxAttempts})`
+                    : latestResult
+                      ? 'Retake & submit assessment'
+                      : 'Submit assessment'
+                }
               </button>
             </div>
           </form>
         </div>
 
         <aside class="card">
-          <h2 style="font-size:1.05rem; margin-bottom:10px;">Previous attempts</h2>
+          <h2 style="font-size:1.05rem; margin-bottom:10px;">Attempt history</h2>
           ${
             attempts.length > 0
               ? `
@@ -134,19 +264,26 @@ export async function renderQuizPage({ params, session, rerender }) {
               ${attempts
                 .map(
                   (a) => `
-                <div class="divider-row">
-                  <div>
+                <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:4px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div class="mono-num" style="font-weight:600;">${a.score}/${a.total} (${a.percentage}%)</div>
-                    <div style="font-size:12px; color:var(--color-text-muted);">${formatDateTime(a.createdAt)}</div>
+                    ${renderStatusBadge(
+                      a.reviewStatus === 'pending_review'
+                        ? 'pending_review'
+                        : a.passed
+                          ? 'passed'
+                          : 'failed'
+                    )}
                   </div>
-                  ${renderStatusBadge(a.passed ? 'passed' : 'failed')}
+                  <div style="font-size:12px; color:var(--color-text-muted);">${formatDateTime(a.createdAt)}</div>
+                  ${a.manualFeedback ? `<div style="font-size:12.5px; color:var(--color-navy); margin-top:2px;">Feedback: ${escapeHtml(a.manualFeedback)}</div>` : ''}
                 </div>
               `
                 )
                 .join('')}
             </div>
           `
-              : '<p style="font-size:14px; color:var(--color-text-muted);">No attempts submitted yet. Correct answers and explanations appear only after submission.</p>'
+              : '<p style="font-size:14px; color:var(--color-text-muted);">No attempts submitted yet. Answer keys and explanations remain hidden until after you submit.</p>'
           }
         </aside>
       </div>
@@ -156,67 +293,160 @@ export async function renderQuizPage({ params, session, rerender }) {
       const errEl = root.querySelector('#quiz-error');
       const btn = root.querySelector('#quiz-submit-btn');
       const rail = root.querySelector('#quiz-completion-rail');
+      const timerEl = root.querySelector('#quiz-timer-badge');
 
-      const updateSelectionFeedback = () => {
-        let answered = 0;
-        quiz.questions.forEach((q) => {
-          const radios = form.querySelectorAll(`input[name="q_${q.id}"]`);
-          let qAnswered = false;
-          radios.forEach((r) => {
-            const label = r.closest('.quiz-option');
-            if (r.checked) {
-              qAnswered = true;
-              label?.classList.add('is-selected');
-            } else {
-              label?.classList.remove('is-selected');
+      // Optional countdown timer for timed assessments
+      let timerId = null;
+      if (quiz.timeLimitMinutes && timerEl && !isLocked) {
+        let secondsLeft = Number(quiz.timeLimitMinutes) * 60;
+        timerId = window.setInterval(() => {
+          if (!document.body.contains(timerEl)) {
+            window.clearInterval(timerId);
+            return;
+          }
+          secondsLeft = Math.max(0, secondsLeft - 1);
+          const m = Math.floor(secondsLeft / 60);
+          const s = String(secondsLeft % 60).padStart(2, '0');
+          timerEl.textContent = `Timer: ${m}:${s}`;
+          if (secondsLeft <= 60) timerEl.style.color = 'var(--color-red)';
+          if (secondsLeft === 0) {
+            window.clearInterval(timerId);
+            showToast('Assessment time limit reached.', 'info');
+          }
+        }, 1000);
+      }
+
+      // Ordering button interactions (local DOM update so prior answers & timer stay intact)
+      const attachOrderControls = (container) => {
+        container.querySelectorAll('[data-move-order]').forEach((moveBtn) => {
+          moveBtn.addEventListener('click', () => {
+            const qId = moveBtn.dataset.moveOrder;
+            const pos = Number(moveBtn.dataset.pos);
+            const dir = Number(moveBtn.dataset.dir);
+            const key = `${quiz.id}:${qId}`;
+            const arr = activeOrderByQuizQuestion[key];
+            if (!arr) return;
+            const target = pos + dir;
+            if (target < 0 || target >= arr.length) return;
+            [arr[pos], arr[target]] = [arr[target], arr[pos]];
+            const q = displayQuestions.find((x) => x.id === qId);
+            const listEl = root.querySelector(`[data-order-list="${qId}"]`);
+            if (listEl && q) {
+              listEl.innerHTML = arr
+                .map(
+                  (optIdx, i) => `
+                <div class="order-item-row" data-order-idx="${optIdx}">
+                  <span style="font-size:14px;"><strong class="mono-num">${i + 1}.</strong> ${escapeHtml(q.options?.[optIdx] || '')}</span>
+                  <div style="display:flex; gap:4px;">
+                    <button type="button" class="btn btn-secondary btn-sm" data-move-order="${escapeHtml(q.id)}" data-pos="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
+                    <button type="button" class="btn btn-secondary btn-sm" data-move-order="${escapeHtml(q.id)}" data-pos="${i}" data-dir="1" ${i === arr.length - 1 ? 'disabled' : ''}>Down</button>
+                  </div>
+                </div>
+              `
+                )
+                .join('');
+              attachOrderControls(listEl);
             }
           });
-          if (qAnswered) answered += 1;
+        });
+      };
+      attachOrderControls(root);
+
+      const collectAnswers = () => {
+        const answersMap = {};
+        let answered = 0;
+        const missingPrompts = [];
+
+        displayQuestions.forEach((q, idx) => {
+          const type = q.questionType || 'multiple_choice';
+          if (type === 'multiple_select') {
+            const checked = [...form.querySelectorAll(`input[name="q_${q.id}"]:checked`)].map((c) => Number(c.value));
+            if (checked.length > 0) {
+              answersMap[q.id] = checked;
+              answered += 1;
+            } else {
+              missingPrompts.push(idx + 1);
+            }
+          } else if (type === 'fill_blank' || isManualQuestionType(type)) {
+            const inp = form.querySelector(`[data-question-input="${q.id}"]`);
+            const val = inp ? inp.value.trim() : '';
+            if (val.length > 0) {
+              answersMap[q.id] = val;
+              answered += 1;
+            } else {
+              missingPrompts.push(idx + 1);
+            }
+          } else if (type === 'ordering') {
+            const key = `${quiz.id}:${q.id}`;
+            answersMap[q.id] = (activeOrderByQuizQuestion[key] || []).slice();
+            answered += 1;
+          } else {
+            const checked = form.querySelector(`input[name="q_${q.id}"]:checked`);
+            if (checked) {
+              answersMap[q.id] = Number(checked.value);
+              answered += 1;
+            } else {
+              missingPrompts.push(idx + 1);
+            }
+          }
         });
 
+        return { answersMap, answered, missingPrompts };
+      };
+
+      const updateSelectionFeedback = () => {
+        displayQuestions.forEach((q) => {
+          form.querySelectorAll(`input[name="q_${q.id}"]`).forEach((input) => {
+            input.closest('.quiz-option')?.classList.toggle('is-selected', input.checked);
+          });
+        });
+
+        const { answered } = collectAnswers();
         if (rail) {
-          const total = Math.max(1, quiz.questions.length);
+          const total = Math.max(1, displayQuestions.length);
           const pct = Math.round((answered / total) * 100);
           rail.querySelector('[data-rail-fill]').style.width = `${pct}%`;
-          rail.querySelector('[data-rail-detail]').textContent = `${answered}/${quiz.questions.length}`;
+          rail.querySelector('[data-rail-detail]').textContent = `${answered}/${displayQuestions.length}`;
         }
         errEl.textContent = '';
       };
 
       form?.addEventListener('change', updateSelectionFeedback);
+      form?.addEventListener('input', updateSelectionFeedback);
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (isLocked) return;
         errEl.textContent = '';
 
-        const answersMap = {};
-        let missing = false;
-        quiz.questions.forEach((q) => {
-          const checked = form.querySelector(`input[name="q_${q.id}"]:checked`);
-          if (!checked) missing = true;
-          else answersMap[q.id] = Number(checked.value);
-        });
-
-        if (missing) {
-          errEl.textContent = 'Please select an answer for every question before submitting.';
+        const { answersMap, missingPrompts } = collectAnswers();
+        if (missingPrompts.length > 0) {
+          errEl.textContent = `Please complete question(s) ${missingPrompts.join(', ')} before submitting.`;
           return;
         }
 
+        if (timerId) window.clearInterval(timerId);
         btn.disabled = true;
         btn.textContent = 'Grading…';
         try {
-          const graded = await submitQuiz(userId, quiz.id, answersMap);
+          // Include unique attempt number in idempotency key so intentional retakes always record cleanly
+          const retakeKey = buildIdempotencyKey('quiz-attempt', userId, quiz.id, attempts.length + 1, Date.now());
+          const graded = await submitQuiz(userId, quiz.id, answersMap, retakeKey);
           lastResultByQuiz[quiz.id] = graded;
           showToast(
-            graded.passed ? `Passed with ${graded.percentage}%!` : `Scored ${graded.percentage}%. Review feedback and retry.`,
+            graded.reviewStatus === 'pending_review'
+              ? 'Submitted! Written answers queued for administrator grading.'
+              : graded.passed
+                ? `Passed with ${graded.percentage}%!`
+                : `Scored ${graded.percentage}%. Review feedback and retry.`,
             graded.passed ? 'success' : 'info'
           );
           await rerender({ silent: true });
           window.scrollTo({ top: 0, behavior: 'smooth' });
         } catch (err) {
-          errEl.textContent = err.message || 'Unable to submit quiz.';
+          errEl.textContent = err.message || 'Unable to submit assessment.';
           btn.disabled = false;
-          btn.textContent = 'Submit quiz answers';
+          btn.textContent = 'Submit assessment';
         }
       });
     },
