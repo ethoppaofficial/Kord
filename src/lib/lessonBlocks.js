@@ -13,6 +13,7 @@ export const BLOCK_TYPE_CATALOG = [
   { type: 'callout', label: 'Important note' },
   { type: 'demonstration', label: 'Practical demonstration' },
   { type: 'code', label: 'Code / template snippet' },
+  { type: 'image', label: 'Illustration / diagram' },
   { type: 'video', label: 'Embedded YouTube video' },
   { type: 'resource_download', label: 'Downloadable / study reference' },
   { type: 'knowledge_check', label: 'Inline knowledge check' },
@@ -43,6 +44,8 @@ export function createEmptyBlock(type) {
       return { id, type: 'demonstration', title: 'Practical demonstration', instructions: '', expectedOutcome: '' };
     case 'code':
       return { id, type: 'code', title: 'Template / Code', language: 'text', code: '' };
+    case 'image':
+      return { id, type: 'image', title: 'Concept illustration', url: '', alt: '', caption: '' };
     case 'video':
       return { id, type: 'video', provider: 'youtube', videoId: '', url: '', title: '', description: '', duration: '', transcript: '', viewingInstructions: '' };
     case 'resource_download':
@@ -177,6 +180,24 @@ export function renderLessonBlocks(blocks = []) {
               <pre class="lesson-code"><code>${escapeHtml(blk.code || '')}</code></pre>
             </div>
           `;
+
+        case 'image': {
+          const rawUrl = String(blk.url || '').trim();
+          const safeUrl = rawUrl.startsWith('/') || rawUrl.startsWith('https://') ? rawUrl : '';
+          return `
+            <figure class="lesson-block" style="margin:14px 0;">
+              ${blk.title ? `<h4 class="lesson-block-title">${escapeHtml(blk.title)}</h4>` : ''}
+              ${
+                safeUrl
+                  ? `<div style="border:1px solid var(--color-border); border-radius:var(--radius-sm); overflow:hidden; background:var(--color-bg);">
+                      <img src="${escapeHtml(safeUrl)}" alt="${escapeHtml(blk.alt || blk.title || 'Lesson illustration')}" referrerpolicy="no-referrer" style="width:100%; max-height:360px; object-fit:cover; display:block;" />
+                    </div>`
+                  : `<div style="padding:16px; border:1px dashed var(--color-border); border-radius:var(--radius-sm); font-size:13px; color:var(--color-text-muted);">Illustration reference: ${escapeHtml(blk.alt || blk.title || 'Visual diagram')}</div>`
+              }
+              ${blk.caption ? `<figcaption style="font-size:12.5px; color:var(--color-text-muted); margin-top:6px;">${escapeHtml(blk.caption)}</figcaption>` : ''}
+            </figure>
+          `;
+        }
 
         case 'video':
           return renderVideoPlayerHtml(blk, idx);

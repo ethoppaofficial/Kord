@@ -2,16 +2,22 @@ import {
   listCategories,
   listSkills,
   listAllCourses,
+  getCourseById,
   adminUpsertCategory,
   adminUpsertSkill,
   adminUpsertCourse,
+  adminSetCourseStatus,
+  adminCreateCourseVersion,
   adminUpsertPhase,
+  adminReorderPhases,
+  adminUpsertActivity,
   adminUpsertLesson,
   adminDeleteLesson,
 } from '../../lib/repositories/contentRepository.js';
 import { DIFFICULTY_LEVELS } from '../../lib/constants.js';
 import { BLOCK_TYPE_CATALOG, createEmptyBlock, renderLessonBlocks } from '../../lib/lessonBlocks.js';
-import { normalizeVideoEntry } from '../../lib/videoProvider.js';
+import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
+import { renderVideoPlayerHtml, normalizeVideoEntry } from '../../lib/videoProvider.js';
 import { escapeHtml } from '../../lib/formatters.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { renderStatusBadge } from '../../components/Common.js';
@@ -21,16 +27,77 @@ let activeTab = 'courses'; // 'catalog' | 'courses' | 'lessons'
 let selectedSkillId = null;
 let selectedCourseId = null;
 let selectedPhaseId = null;
+let courseFormMode = 'edit'; // 'edit' | 'create'
+let previewCourseOpen = false;
+let previewLessonId = null;
 let catalogCategoryFilter = 'All';
-let catalogCourseStatusFilter = 'all'; // 'all' | 'published_courses' | 'draft_courses' | 'no_courses'
+let catalogCourseStatusFilter = 'all';
 let editingSkillId = null;
 
-// Draft state for visual JSON block lesson builder
+// Stateful Visual Lesson Builder state (persists across block add/reorder rerenders)
+let editingLessonId = null;
+let lessonDraft = {
+  title: '',
+  estMinutes: 25,
+  introduction: '',
+  objectives: '',
+  summary: '',
+  takeaways: '',
+  completionCriteria: 'Read the instructional guide, review the example, verify inline checks, and mark complete.',
+  publicationStatus: 'published',
+  isRequired: true,
+};
 let draftBlocks = [
   { id: 'blk-init-1', type: 'heading', text: 'Core Concept Overview' },
   { id: 'blk-init-2', type: 'paragraph', text: 'Explain the foundational principle clearly here.' },
 ];
 let draftVideos = [];
+let draftResources = [];
+
+function resetLessonBuilder() {
+  editingLessonId = null;
+  lessonDraft = {
+    title: '',
+    estMinutes: 25,
+    introduction: '',
+    objectives: '',
+    summary: '',
+    takeaways: '',
+    completionCriteria: 'Read the instructional guide, review the example, verify inline checks, and mark complete.',
+    publicationStatus: 'published',
+    isRequired: true,
+  };
+  draftBlocks = [
+    { id: `blk-${Date.now()}-1`, type: 'heading', text: 'Core Concept Overview' },
+    { id: `blk-${Date.now()}-2`, type: 'paragraph', text: 'Explain the foundational principle clearly here.' },
+  ];
+  draftVideos = [];
+  draftResources = [];
+}
+
+function loadLessonIntoBuilder(lesson) {
+  if (!lesson) {
+    resetLessonBuilder();
+    return;
+  }
+  editingLessonId = lesson.id;
+  lessonDraft = {
+    title: lesson.title || '',
+    estMinutes: Number(lesson.estMinutes || 25),
+    introduction: lesson.introduction || '',
+    objectives: (lesson.objectives || []).join('\n'),
+    summary: lesson.summary || '',
+    takeaways: (lesson.takeaways || []).join('\n'),
+    completionCriteria:
+      lesson.completionCriteria ||
+      'Read the instructional guide, verify inline checks, and mark complete.',
+    publicationStatus: lesson.publicationStatus || 'published',
+    isRequired: lesson.isRequired !== false,
+  };
+  draftBlocks = structuredClone(lesson.blocks || []);
+  draftVideos = structuredClone(lesson.videos || []);
+  draftResources = structuredClone(lesson.furtherReading || []);
+}
 
 function renderDraftBlockEditor(blk, idx, total) {
   let fieldsHtml = '';
@@ -74,6 +141,15 @@ function renderDraftBlockEditor(blk, idx, total) {
     fieldsHtml = `
       <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Snippet title" style="margin-bottom:6px;" />
       <textarea class="textarea" data-blk-field="code" data-blk-idx="${idx}" style="min-height:80px; font-family:var(--font-mono); font-size:12px;" placeholder="Code or template snippet…">${escapeHtml(blk.code || '')}</textarea>
+    `;
+  } else if (blk.type === 'image') {
+    fieldsHtml = `
+      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Illustration / diagram title" style="margin-bottom:6px;" />
+      <input class="input" data-blk-field="url" data-blk-idx="${idx}" value="${escapeHtml(blk.url || '')}" placeholder="Image URL (https://... or /assets/...)" style="margin-bottom:6px;" />
+      <div class="lab-grid-2">
+        <input class="input" data-blk-field="alt" data-blk-idx="${idx}" value="${escapeHtml(blk.alt || '')}" placeholder="Accessible alt description" />
+        <input class="input" data-blk-field="caption" data-blk-idx="${idx}" value="${escapeHtml(blk.caption || '')}" placeholder="Caption under figure" />
+      </div>
     `;
   } else if (blk.type === 'table') {
     fieldsHtml = `
@@ -127,16 +203,37 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
     selectedSkillId = skills.find((s) => s.courseCount > 0)?.id || skills[0]?.id || null;
   }
 
-  const skillCourses = courses.filter((c) => c.skillId === selectedSkillId);
+  const skillCourses = courses.filter(
+    (c) => c.skillId === selectedSkillId || (c.associatedSkillIds || []).includes(selectedSkillId)
+  );
   if (!selectedCourseId || !courses.some((c) => c.id === selectedCourseId)) {
     selectedCourseId = skillCourses[0]?.id || courses[0]?.id || null;
   }
-  const activeCourse = courses.find((c) => c.id === selectedCourseId) || null;
+  const activeCourseSummary = courses.find((c) => c.id === selectedCourseId) || null;
+  const activeCourse = activeCourseSummary
+    ? (await getCourseById(activeCourseSummary.id, { includeDrafts: true })) || activeCourseSummary
+    : null;
   const phases = activeCourse?.phases || [];
   if (!selectedPhaseId || !phases.some((p) => p.id === selectedPhaseId)) {
     selectedPhaseId = phases[0]?.id || null;
   }
   const activePhase = phases.find((p) => p.id === selectedPhaseId) || null;
+  const phaseLessons = activePhase?.lessons || [];
+
+  if (editingLessonId && !phaseLessons.some((l) => l.id === editingLessonId)) {
+    editingLessonId = null;
+  }
+
+  const editCourseObj = courseFormMode === 'edit' && activeCourse ? activeCourse : null;
+  if (!activeCourse && courseFormMode === 'edit') {
+    courseFormMode = 'create';
+  }
+
+  const previewLessonsFlat = phases.flatMap((p) =>
+    (p.lessons || []).map((l) => ({ ...l, phaseTitle: p.title, phasePosition: p.position }))
+  );
+  const previewLesson =
+    previewLessonsFlat.find((l) => l.id === previewLessonId) || previewLessonsFlat[0] || null;
 
   const filteredCatalogSkills = skills.filter((s) => {
     if (catalogCategoryFilter !== 'All' && s.category !== catalogCategoryFilter) return false;
@@ -151,11 +248,11 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
     <div class="page-header">
       <div>
         <h1 class="page-title">Course Engine &amp; Curriculum Authoring</h1>
-        <p class="page-subtitle">Manage categories, ${skills.length} catalog skills, multi-course pathways, structured JSON lessons, and YouTube embeds.</p>
+        <p class="page-subtitle">Manage ${courses.length} courses, ${skills.length} competencies, module ordering, practical activities, JSON block lessons, and course versioning.</p>
       </div>
 
       <div class="segmented" role="tablist">
-        <button type="button" class="segmented-btn ${activeTab === 'courses' ? 'is-active' : ''}" data-admin-tab="courses">Courses &amp; Phases</button>
+        <button type="button" class="segmented-btn ${activeTab === 'courses' ? 'is-active' : ''}" data-admin-tab="courses">Courses &amp; Modules</button>
         <button type="button" class="segmented-btn ${activeTab === 'lessons' ? 'is-active' : ''}" data-admin-tab="lessons">Visual Lesson Builder</button>
         <button type="button" class="segmented-btn ${activeTab === 'catalog' ? 'is-active' : ''}" data-admin-tab="catalog">Categories &amp; Skills (${skills.length})</button>
       </div>
@@ -167,7 +264,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       <div class="card" style="margin-bottom:20px;">
         <div class="lab-grid-2">
           <div class="field">
-            <label class="field-label" for="admin-course-skill">Select Parent Skill</label>
+            <label class="field-label" for="admin-course-skill">Filter by Parent / Associated Skill</label>
             <select class="select" id="admin-course-skill">
               ${skills
                 .map(
@@ -177,16 +274,16 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             </select>
           </div>
           <div class="field">
-            <label class="field-label" for="admin-active-course">Select Course under Skill</label>
+            <label class="field-label" for="admin-active-course">Select Course (${skillCourses.length} under skill · ${courses.length} total)</label>
             <select class="select" id="admin-active-course">
               ${
                 skillCourses.length > 0
                   ? skillCourses
                       .map(
-                        (c) => `<option value="${escapeHtml(c.id)}" ${c.id === selectedCourseId ? 'selected' : ''}>${escapeHtml(c.title)} (${escapeHtml(c.difficulty)} · ${c.publicationStatus})</option>`
+                        (c) => `<option value="${escapeHtml(c.id)}" ${c.id === selectedCourseId ? 'selected' : ''}>${escapeHtml(c.title)} (${escapeHtml(c.difficulty)} · v${c.version || 1} · ${c.publicationStatus})</option>`
                       )
                       .join('')
-                  : '<option value="">No courses for this skill yet — create one on the right</option>'
+                  : '<option value="">No courses linked to this skill yet — create one on the right</option>'
               }
             </select>
           </div>
@@ -194,8 +291,8 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       </div>
 
       <div class="lab-split">
-        <section class="card">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+        <section class="card" style="display:flex; flex-direction:column; gap:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; padding-bottom:14px; border-bottom:1px solid var(--color-border);">
             <div>
               <h2 class="section-heading" style="margin:0;">${activeCourse ? escapeHtml(activeCourse.title) : 'No course selected'}</h2>
               ${
@@ -205,13 +302,60 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                       <span class="meta-sep">·</span>
                       <span class="mono-num">${activeCourse.estimatedDurationWeeks} weeks (${activeCourse.recommendedWeeklyHours}h/wk)</span>
                       <span class="meta-sep">·</span>
-                      <span>${phases.length} phases</span>
+                      <span class="mono-num">v${Number(activeCourse.version || 1)}</span>
+                      <span class="meta-sep">·</span>
+                      <span>By ${escapeHtml(activeCourse.authorName || 'Kord Curriculum Studio')}</span>
+                      <span class="meta-sep">·</span>
+                      <span>${phases.length} modules</span>
                     </div>`
                   : ''
               }
             </div>
-            ${activeCourse ? renderStatusBadge(activeCourse.publicationStatus) : ''}
+            ${
+              activeCourse
+                ? `
+              <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                ${renderStatusBadge(activeCourse.publicationStatus)}
+                <button type="button" class="btn btn-secondary btn-sm" id="open-course-preview">Preview course</button>
+                ${
+                  activeCourse.publicationStatus !== 'published'
+                    ? `<button type="button" class="btn btn-primary btn-sm" data-set-course-status="published">Publish</button>`
+                    : `<button type="button" class="btn btn-secondary btn-sm" data-set-course-status="draft">Unpublish (Draft)</button>`
+                }
+                ${
+                  activeCourse.publicationStatus !== 'archived'
+                    ? `<button type="button" class="btn btn-ghost btn-sm" data-set-course-status="archived">Archive</button>`
+                    : ''
+                }
+              </div>
+            `
+                : ''
+            }
           </div>
+
+          ${
+            activeCourse
+              ? `
+            <!-- Version Snapshot Bar -->
+            <div style="padding:12px 14px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:8px;">
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <input class="input" id="version-notes-input" placeholder="Release notes for v${Number(activeCourse.version || 1) + 1} (e.g. Updated capstone checklist)" style="flex:1; min-width:200px;" />
+                <button type="button" class="btn btn-secondary btn-sm" id="create-course-version-btn">Create Version Snapshot (v${Number(activeCourse.version || 1) + 1})</button>
+              </div>
+              ${
+                (activeCourse.versions || []).length > 0
+                  ? `<div style="font-size:12px; color:var(--color-text-muted);">
+                      Latest snapshots: ${activeCourse.versions
+                        .slice(0, 3)
+                        .map((v) => `v${v.versionNumber} (${escapeHtml(v.changeNotes || 'Release')})`)
+                        .join(' · ')}
+                    </div>`
+                  : ''
+              }
+            </div>
+          `
+              : ''
+          }
 
           ${
             phases.length > 0
@@ -219,11 +363,21 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             <div style="display:flex; flex-direction:column; gap:14px;">
               ${phases
                 .map(
-                  (ph) => `
+                  (ph, idx) => `
                 <div style="padding:14px; border:1px solid var(--color-border); border-radius:var(--radius-sm); background:var(--color-bg);">
-                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
-                    <strong style="color:var(--color-navy);">Phase ${ph.position}: ${escapeHtml(ph.title)}</strong>
-                    <span class="mono-num" style="font-size:12px; color:var(--color-text-muted);">${(ph.lessons || []).length} lessons</span>
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                      <strong style="color:var(--color-navy);">Module ${ph.position}: ${escapeHtml(ph.title)}</strong>
+                      ${renderStatusBadge(ph.publicationStatus || 'published')}
+                      <span class="mono-num" style="font-size:12px; color:var(--color-text-muted);">${(ph.lessons || []).length} lessons · ${(ph.activities || []).length} activities</span>
+                    </div>
+                    <div style="display:flex; gap:4px; align-items:center;">
+                      <button type="button" class="btn btn-secondary btn-sm" data-move-phase="${escapeHtml(ph.id)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>Up</button>
+                      <button type="button" class="btn btn-secondary btn-sm" data-move-phase="${escapeHtml(ph.id)}" data-dir="1" ${idx === phases.length - 1 ? 'disabled' : ''}>Down</button>
+                      <button type="button" class="btn btn-ghost btn-sm" data-toggle-phase-pub="${escapeHtml(ph.id)}">
+                        ${(ph.publicationStatus || 'published') === 'published' ? 'Set Draft' : 'Publish'}
+                      </button>
+                    </div>
                   </div>
                   <p style="font-size:13px; color:var(--color-text-secondary); margin-bottom:8px;">${escapeHtml(ph.summary || '')}</p>
                   <div class="divider-list">
@@ -231,65 +385,140 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                       .map(
                         (l) => `
                       <div class="divider-row" style="padding:6px 0;">
-                        <span style="font-size:13.5px;">${escapeHtml(l.title)} <span style="color:var(--color-text-muted);">(${l.estMinutes}m · ${(l.blocks || []).length} blocks · ${(l.videos || []).length} videos)</span></span>
-                        <button type="button" class="btn btn-danger btn-sm" data-del-lesson="${escapeHtml(l.id)}" data-phase-id="${escapeHtml(ph.id)}">Delete</button>
+                        <span style="font-size:13.5px;">
+                          ${escapeHtml(l.title)}
+                          <span style="color:var(--color-text-muted);">(${l.estMinutes}m · ${(l.blocks || []).length} blocks · ${(l.videos || []).length} videos · ${escapeHtml(l.publicationStatus || 'published')})</span>
+                        </span>
+                        <div style="display:flex; gap:6px;">
+                          <button type="button" class="btn btn-secondary btn-sm" data-edit-lesson-btn="${escapeHtml(l.id)}" data-phase-id="${escapeHtml(ph.id)}">Edit in Builder</button>
+                          <button type="button" class="btn btn-danger btn-sm" data-del-lesson="${escapeHtml(l.id)}" data-phase-id="${escapeHtml(ph.id)}">Delete</button>
+                        </div>
                       </div>
                     `
                       )
                       .join('')}
                   </div>
+                  ${
+                    (ph.activities || []).length > 0
+                      ? `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--color-border); font-size:12.5px; color:var(--color-text-secondary);">
+                          <strong>Practical activities:</strong> ${ph.activities.map((a) => escapeHtml(a.title)).join(' · ')}
+                        </div>`
+                      : ''
+                  }
                 </div>
               `
                 )
                 .join('')}
             </div>
           `
-              : '<p style="font-size:14px; color:var(--color-text-muted);">Select or create a course, then add variable learning phases and lessons.</p>'
+              : '<p style="font-size:14px; color:var(--color-text-muted);">Select or create a course, then add modules, lessons, and practical activities.</p>'
           }
         </section>
 
         <aside style="display:flex; flex-direction:column; gap:18px;">
           <div class="card-workspace">
-            <h2 style="font-size:1.05rem; margin-bottom:10px;">Create New Course Under Skill</h2>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+              <h2 style="font-size:1.05rem;">${editCourseObj ? 'Edit Selected Course' : 'Create New Course'}</h2>
+              <div class="segmented" style="padding:2px;">
+                ${activeCourse ? `<button type="button" class="segmented-btn ${courseFormMode === 'edit' ? 'is-active' : ''}" data-course-form-mode="edit">Edit current</button>` : ''}
+                <button type="button" class="segmented-btn ${courseFormMode === 'create' ? 'is-active' : ''}" data-course-form-mode="create">+ New</button>
+              </div>
+            </div>
+
             <form id="admin-course-form" class="form-stack">
               <div class="field">
                 <label class="field-label" for="c-title">Course title</label>
-                <input class="input" id="c-title" name="title" required placeholder="e.g. Meta Ads Intermediate Retargeting" />
+                <input class="input" id="c-title" name="title" required value="${escapeHtml(editCourseObj?.title || '')}" placeholder="e.g. Meta Ads Intermediate Retargeting" />
+              </div>
+              <div class="lab-grid-2">
+                <div class="field">
+                  <label class="field-label" for="c-slug">Slug</label>
+                  <input class="input" id="c-slug" name="slug" value="${escapeHtml(editCourseObj?.slug || '')}" placeholder="auto-generated-from-title" />
+                </div>
+                <div class="field">
+                  <label class="field-label" for="c-author">Instructor / Author</label>
+                  <input class="input" id="c-author" name="authorName" value="${escapeHtml(editCourseObj?.authorName || 'Kord Curriculum Studio')}" />
+                </div>
               </div>
               <div class="field">
                 <label class="field-label" for="c-desc">Description</label>
-                <textarea class="textarea" id="c-desc" name="description" style="min-height:68px;" required placeholder="What learners achieve in this course…"></textarea>
+                <textarea class="textarea" id="c-desc" name="description" style="min-height:68px;" required placeholder="What learners achieve in this course…">${escapeHtml(editCourseObj?.description || '')}</textarea>
+              </div>
+              <div class="field">
+                <label class="field-label" for="c-audience">Target audience</label>
+                <input class="input" id="c-audience" name="targetAudience" value="${escapeHtml(editCourseObj?.targetAudience || '')}" placeholder="Career-starters and practitioners…" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="c-thumb">Thumbnail URL (optional)</label>
+                <input class="input" id="c-thumb" name="thumbnailUrl" value="${escapeHtml(editCourseObj?.thumbnailUrl || '')}" placeholder="https://... or /assets/..." />
               </div>
               <div class="lab-grid-2">
                 <div class="field">
                   <label class="field-label" for="c-diff">Difficulty</label>
                   <select class="select" id="c-diff" name="difficulty">
-                    ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}">${d}</option>`).join('')}
+                    ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}" ${editCourseObj?.difficulty === d ? 'selected' : ''}>${d}</option>`).join('')}
                   </select>
                 </div>
                 <div class="field">
                   <label class="field-label" for="c-pub">Status</label>
                   <select class="select" id="c-pub" name="publicationStatus">
-                    <option value="published">Published</option>
-                    <option value="draft">Draft</option>
+                    <option value="draft" ${(editCourseObj?.publicationStatus || 'draft') === 'draft' ? 'selected' : ''}>Draft</option>
+                    <option value="published" ${editCourseObj?.publicationStatus === 'published' ? 'selected' : ''}>Published</option>
+                    <option value="archived" ${editCourseObj?.publicationStatus === 'archived' ? 'selected' : ''}>Archived</option>
                   </select>
                 </div>
               </div>
               <div class="lab-grid-2">
                 <div class="field">
                   <label class="field-label" for="c-weeks">Duration (weeks)</label>
-                  <input class="input" id="c-weeks" name="estimatedDurationWeeks" type="number" min="1" max="52" value="4" />
+                  <input class="input" id="c-weeks" name="estimatedDurationWeeks" type="number" min="1" max="52" value="${Number(editCourseObj?.estimatedDurationWeeks || 4)}" />
                 </div>
                 <div class="field">
                   <label class="field-label" for="c-hrs">Weekly hours</label>
-                  <input class="input" id="c-hrs" name="recommendedWeeklyHours" type="number" min="1" max="40" value="4" />
+                  <input class="input" id="c-hrs" name="recommendedWeeklyHours" type="number" min="1" max="40" value="${Number(editCourseObj?.recommendedWeeklyHours || 4)}" />
                 </div>
               </div>
               <div class="field">
-                <label class="field-label" for="c-outcomes">Outcomes (one per line)</label>
-                <textarea class="textarea" id="c-outcomes" name="outcomes" style="min-height:60px;" placeholder="Build retargeting audiences&#10;Measure weekly ROAS"></textarea>
+                <label class="field-label" for="c-schedule">Recommended schedule</label>
+                <input class="input" id="c-schedule" name="recommendedSchedule" value="${escapeHtml(editCourseObj?.recommendedSchedule || '2 lessons + 1 practical activity per week')}" />
               </div>
-              <button type="submit" class="btn btn-primary btn-sm">Create course</button>
+              <div class="field">
+                <span class="field-label">Associated competencies (M2M)</span>
+                <div class="checkbox-grid">
+                  ${skills
+                    .filter((s) => {
+                      const linked = editCourseObj?.associatedSkillIds || [selectedSkillId];
+                      return linked.includes(s.id) || s.category === skills.find((x) => x.id === selectedSkillId)?.category || s.courseCount > 0;
+                    })
+                    .slice(0, 30)
+                    .map((s) => {
+                      const checked = (editCourseObj?.associatedSkillIds || [selectedSkillId]).includes(s.id);
+                      return `
+                        <label class="checkbox-item">
+                          <input type="checkbox" name="associatedSkillIds" value="${escapeHtml(s.id)}" ${checked ? 'checked' : ''} />
+                          <span>${escapeHtml(s.title)}</span>
+                        </label>
+                      `;
+                    })
+                    .join('')}
+                </div>
+              </div>
+              <div class="field">
+                <label class="field-label" for="c-prereqs">Prerequisites (one per line)</label>
+                <textarea class="textarea" id="c-prereqs" name="prerequisites" style="min-height:54px;">${escapeHtml((editCourseObj?.prerequisites || []).join('\n'))}</textarea>
+              </div>
+              <div class="field">
+                <label class="field-label" for="c-outcomes">Learning objectives (one per line)</label>
+                <textarea class="textarea" id="c-outcomes" name="outcomes" style="min-height:60px;" placeholder="Build retargeting audiences&#10;Measure weekly ROAS">${escapeHtml((editCourseObj?.outcomes || []).join('\n'))}</textarea>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:6px; font-size:12.5px; color:var(--color-navy); padding:10px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
+                <strong>Completion rules</strong>
+                <label><input type="checkbox" name="ruleLessons" ${(editCourseObj?.completionRules?.requireAllRequiredLessons ?? true) ? 'checked' : ''} /> Require all lessons</label>
+                <label><input type="checkbox" name="ruleActivities" ${(editCourseObj?.completionRules?.requireAllActivities ?? true) ? 'checked' : ''} /> Require practical activities</label>
+                <label><input type="checkbox" name="ruleAssessments" ${(editCourseObj?.completionRules?.requireAllAssessments ?? true) ? 'checked' : ''} /> Require graded assessments</label>
+                <label><input type="checkbox" name="ruleChallengeApproval" ${(editCourseObj?.completionRules?.requireChallengeApproval ?? true) ? 'checked' : ''} /> Require admin capstone approval for Verified</label>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm">${editCourseObj ? 'Save course changes' : 'Create course'}</button>
             </form>
           </div>
 
@@ -297,15 +526,19 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             activeCourse
               ? `
             <div class="card">
-              <h2 style="font-size:1.05rem; margin-bottom:10px;">Add Phase to ${escapeHtml(activeCourse.title)}</h2>
+              <h2 style="font-size:1.05rem; margin-bottom:10px;">Add Module to ${escapeHtml(activeCourse.title)}</h2>
               <form id="admin-phase-form" class="form-stack">
                 <div class="field">
-                  <label class="field-label" for="ph-title">Phase title</label>
-                  <input class="input" id="ph-title" name="title" required placeholder="e.g. Phase 4: Budget Scaling" />
+                  <label class="field-label" for="ph-title">Module title</label>
+                  <input class="input" id="ph-title" name="title" required placeholder="e.g. Module 9: Performance Optimization" />
                 </div>
                 <div class="field">
-                  <label class="field-label" for="ph-summary">Phase summary</label>
-                  <input class="input" id="ph-summary" name="summary" required placeholder="Key scope of this phase" />
+                  <label class="field-label" for="ph-summary">Module summary</label>
+                  <input class="input" id="ph-summary" name="summary" required placeholder="Key scope of this module" />
+                </div>
+                <div class="field">
+                  <label class="field-label" for="ph-objectives">Module objectives (one per line)</label>
+                  <textarea class="textarea" id="ph-objectives" name="objectives" style="min-height:54px;"></textarea>
                 </div>
                 <div class="lab-grid-2">
                   <div class="field">
@@ -319,19 +552,119 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                     <input class="input" id="ph-hrs" name="estHours" type="number" min="1" max="40" value="3" />
                   </div>
                 </div>
-                <button type="submit" class="btn btn-secondary btn-sm">Add phase</button>
+                <button type="submit" class="btn btn-secondary btn-sm">Add module</button>
               </form>
             </div>
+
+            ${
+              phases.length > 0
+                ? `
+              <div class="card">
+                <h2 style="font-size:1.05rem; margin-bottom:10px;">Add Practical Activity to Module</h2>
+                <form id="admin-activity-form" class="form-stack">
+                  <div class="field">
+                    <label class="field-label" for="act-phase">Target module</label>
+                    <select class="select" id="act-phase" name="phaseId">
+                      ${phases.map((p) => `<option value="${escapeHtml(p.id)}" ${p.id === selectedPhaseId ? 'selected' : ''}>Module ${p.position}: ${escapeHtml(p.title)}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="act-title">Activity title</label>
+                    <input class="input" id="act-title" name="title" required placeholder="e.g. Build a semantic landing skeleton" />
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="act-desc">Description</label>
+                    <input class="input" id="act-desc" name="description" required placeholder="Brief practice goal" />
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="act-instr">Step-by-step instructions</label>
+                    <textarea class="textarea" id="act-instr" name="instructions" style="min-height:60px;" required></textarea>
+                  </div>
+                  <div class="lab-grid-2">
+                    <div class="field">
+                      <label class="field-label" for="act-output">Expected output</label>
+                      <input class="input" id="act-output" name="expectedOutput" required placeholder="Verified deliverable" />
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="act-mins">Est. minutes</label>
+                      <input class="input" id="act-mins" name="estMinutes" type="number" min="5" max="180" value="25" />
+                    </div>
+                  </div>
+                  <button type="submit" class="btn btn-secondary btn-sm">Add practical activity</button>
+                </form>
+              </div>
+            `
+                : ''
+            }
           `
               : ''
           }
         </aside>
       </div>
+
+      ${
+        previewCourseOpen && activeCourse
+          ? `
+        <div class="modal-backdrop" id="course-preview-backdrop">
+          <div class="modal-panel" style="max-width:860px;">
+            <div class="modal-header">
+              <div>
+                <div class="meta-line">
+                  <span>In-Admin Preview</span>
+                  <span class="meta-sep">·</span>
+                  <span>v${Number(activeCourse.version || 1)}</span>
+                  <span class="meta-sep">·</span>
+                  <span>${escapeHtml(activeCourse.publicationStatus)}</span>
+                </div>
+                <h2 style="font-size:1.2rem; margin-top:2px;">${escapeHtml(activeCourse.title)}</h2>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" id="close-course-preview">Close preview</button>
+            </div>
+
+            <div style="margin-bottom:14px;">
+              ${renderCourseThumbnailHtml(activeCourse, { height: '160px' })}
+            </div>
+
+            <p style="font-size:14px; color:var(--color-text-secondary); margin-bottom:14px;">${escapeHtml(activeCourse.description)}</p>
+
+            ${
+              previewLessonsFlat.length > 0
+                ? `
+              <div class="field" style="margin-bottom:14px;">
+                <label class="field-label" for="preview-lesson-select">Inspect lesson content (${previewLessonsFlat.length} lessons)</label>
+                <select class="select" id="preview-lesson-select">
+                  ${previewLessonsFlat
+                    .map(
+                      (l) => `<option value="${escapeHtml(l.id)}" ${l.id === previewLesson?.id ? 'selected' : ''}>Module ${l.phasePosition}: ${escapeHtml(l.title)}</option>`
+                    )
+                    .join('')}
+                </select>
+              </div>
+              ${
+                previewLesson
+                  ? `
+                <div class="card" style="background:var(--color-bg);">
+                  <h3 style="font-size:1.05rem; margin-bottom:6px;">${escapeHtml(previewLesson.title)}</h3>
+                  ${previewLesson.introduction ? `<p class="lesson-paragraph">${escapeHtml(previewLesson.introduction)}</p>` : ''}
+                  ${renderLessonBlocks(previewLesson.blocks || [])}
+                  ${(previewLesson.videos || []).map((v, i) => renderVideoPlayerHtml(v, i)).join('')}
+                </div>
+              `
+                  : ''
+              }
+            `
+                : '<p style="font-size:13.5px; color:var(--color-text-muted);">No lessons authored in this course yet.</p>'
+            }
+          </div>
+        </div>
+      `
+          : ''
+      }
     `
         : activeTab === 'lessons'
           ? `
       <div class="card" style="margin-bottom:20px;">
-        <div class="lab-grid-2">
+        <div class="lab-grid-3">
           <div class="field">
             <label class="field-label" for="builder-course-select">Target Course</label>
             <select class="select" id="builder-course-select">
@@ -343,11 +676,22 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             </select>
           </div>
           <div class="field">
-            <label class="field-label" for="builder-phase-select">Target Phase</label>
+            <label class="field-label" for="builder-phase-select">Target Module / Phase</label>
             <select class="select" id="builder-phase-select">
               ${phases
                 .map(
-                  (p) => `<option value="${escapeHtml(p.id)}" ${p.id === selectedPhaseId ? 'selected' : ''}>Phase ${p.position}: ${escapeHtml(p.title)}</option>`
+                  (p) => `<option value="${escapeHtml(p.id)}" ${p.id === selectedPhaseId ? 'selected' : ''}>Module ${p.position}: ${escapeHtml(p.title)}</option>`
+                )
+                .join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="builder-lesson-select">Load Existing Lesson or Create New</label>
+            <select class="select" id="builder-lesson-select">
+              <option value="" ${!editingLessonId ? 'selected' : ''}>+ Create new lesson</option>
+              ${phaseLessons
+                .map(
+                  (l, i) => `<option value="${escapeHtml(l.id)}" ${l.id === editingLessonId ? 'selected' : ''}>Edit ${i + 1}: ${escapeHtml(l.title)}</option>`
                 )
                 .join('')}
             </select>
@@ -357,27 +701,37 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
 
       <div class="lab-split">
         <section class="card">
-          <h2 class="section-heading">Visual JSON Block Lesson Builder (No Raw HTML)</h2>
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+            <h2 class="section-heading" style="margin:0;">${editingLessonId ? `Editing Lesson: ${escapeHtml(lessonDraft.title)}` : 'Visual JSON Block Lesson Builder (No Raw HTML)'}</h2>
+            ${editingLessonId ? `<button type="button" class="btn btn-ghost btn-sm" id="reset-lesson-builder-btn">New blank lesson</button>` : ''}
+          </div>
           <form id="admin-lesson-form" class="form-stack">
-            <div class="lab-grid-2">
+            <div class="lab-grid-3">
               <div class="field">
                 <label class="field-label" for="les-title">Lesson title</label>
-                <input class="input" id="les-title" name="title" required placeholder="e.g. Audience Exclusions &amp; Retargeting" />
+                <input class="input" id="les-title" name="title" data-les-field="title" required value="${escapeHtml(lessonDraft.title)}" placeholder="e.g. Audience Exclusions &amp; Retargeting" />
               </div>
               <div class="field">
                 <label class="field-label" for="les-mins">Est. minutes</label>
-                <input class="input" id="les-mins" name="estMinutes" type="number" min="5" max="180" value="25" />
+                <input class="input" id="les-mins" name="estMinutes" data-les-field="estMinutes" type="number" min="5" max="180" value="${Number(lessonDraft.estMinutes || 25)}" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="les-pub">Publication status</label>
+                <select class="select" id="les-pub" name="publicationStatus" data-les-field="publicationStatus">
+                  <option value="published" ${lessonDraft.publicationStatus === 'published' ? 'selected' : ''}>Published</option>
+                  <option value="draft" ${lessonDraft.publicationStatus === 'draft' ? 'selected' : ''}>Draft</option>
+                </select>
               </div>
             </div>
 
             <div class="field">
               <label class="field-label" for="les-intro">Lesson introduction</label>
-              <textarea class="textarea" id="les-intro" name="introduction" style="min-height:60px;" required placeholder="Concise opening framing what the learner will understand…"></textarea>
+              <textarea class="textarea" id="les-intro" name="introduction" data-les-field="introduction" style="min-height:60px;" required placeholder="Concise opening framing what the learner will understand…">${escapeHtml(lessonDraft.introduction)}</textarea>
             </div>
 
             <div class="field">
               <label class="field-label" for="les-obj">Learning objectives (one per line)</label>
-              <textarea class="textarea" id="les-obj" name="objectives" style="min-height:60px;" placeholder="Define custom audiences&#10;Configure 7-day exclusion windows"></textarea>
+              <textarea class="textarea" id="les-obj" name="objectives" data-les-field="objectives" style="min-height:60px;" placeholder="Define custom audiences&#10;Configure 7-day exclusion windows">${escapeHtml(lessonDraft.objectives)}</textarea>
             </div>
 
             <!-- Structured Content Blocks -->
@@ -431,12 +785,48 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
               </div>
             </div>
 
-            <div class="field">
-              <label class="field-label" for="les-summary">Summary &amp; key takeaways</label>
-              <textarea class="textarea" id="les-summary" name="summary" style="min-height:56px;" placeholder="Recap the core lesson takeaway…"></textarea>
+            <!-- Further Reading External Resources -->
+            <div style="border-top:1px solid var(--color-border); padding-top:14px;">
+              <strong style="color:var(--color-navy); display:block; margin-bottom:8px;">Supplementary Further Reading (${draftResources.length})</strong>
+              ${
+                draftResources.length > 0
+                  ? `
+                <div class="divider-list" style="margin-bottom:10px;">
+                  ${draftResources
+                    .map(
+                      (r, i) => `
+                    <div class="divider-row">
+                      <span style="font-size:13px;"><strong>${escapeHtml(r.title)}</strong> (${escapeHtml(r.url)})</span>
+                      <button type="button" class="btn btn-danger btn-sm" data-del-res="${i}">Remove</button>
+                    </div>
+                  `
+                    )
+                    .join('')}
+                </div>
+              `
+                  : ''
+              }
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <input class="input" id="res-title" placeholder="Resource title" style="flex:1; min-width:160px;" />
+                <input class="input" id="res-url" placeholder="https://developer.mozilla.org/..." style="flex:1.4; min-width:200px;" />
+                <button type="button" class="btn btn-secondary btn-sm" id="add-res-btn">+ Add resource</button>
+              </div>
             </div>
 
-            <button type="submit" class="btn btn-primary" ${!activePhase ? 'disabled' : ''}>Save Lesson to Phase</button>
+            <div class="field">
+              <label class="field-label" for="les-summary">Lesson summary</label>
+              <textarea class="textarea" id="les-summary" name="summary" data-les-field="summary" style="min-height:56px;" placeholder="Recap the core lesson takeaway…">${escapeHtml(lessonDraft.summary)}</textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="les-takeaways">Key takeaways (one per line)</label>
+              <textarea class="textarea" id="les-takeaways" name="takeaways" data-les-field="takeaways" style="min-height:54px;">${escapeHtml(lessonDraft.takeaways)}</textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="les-criteria">Completion criteria</label>
+              <input class="input" id="les-criteria" name="completionCriteria" data-les-field="completionCriteria" value="${escapeHtml(lessonDraft.completionCriteria)}" />
+            </div>
+
+            <button type="submit" class="btn btn-primary" ${!activePhase ? 'disabled' : ''}>${editingLessonId ? 'Update Lesson' : 'Save New Lesson to Module'}</button>
           </form>
         </section>
 
@@ -594,7 +984,9 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       // Courses tab handlers
       root.querySelector('#admin-course-skill')?.addEventListener('change', (e) => {
         selectedSkillId = e.target.value;
-        const nextCourses = courses.filter((c) => c.skillId === selectedSkillId);
+        const nextCourses = courses.filter(
+          (c) => c.skillId === selectedSkillId || (c.associatedSkillIds || []).includes(selectedSkillId)
+        );
         selectedCourseId = nextCourses[0]?.id || null;
         selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
         rerender({ silent: true });
@@ -607,24 +999,126 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         rerender({ silent: true });
       });
 
+      root.querySelectorAll('[data-course-form-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          courseFormMode = btn.dataset.courseFormMode;
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelectorAll('[data-set-course-status]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!activeCourse) return;
+          try {
+            await adminSetCourseStatus(activeCourse.id, btn.dataset.setCourseStatus);
+            showToast(`Course status updated to ${btn.dataset.setCourseStatus}.`, 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err?.message || 'Cannot change course status.', 'error');
+          }
+        });
+      });
+
+      root.querySelector('#create-course-version-btn')?.addEventListener('click', async () => {
+        if (!activeCourse) return;
+        const notes = root.querySelector('#version-notes-input')?.value || '';
+        try {
+          const ver = await adminCreateCourseVersion(activeCourse.id, notes);
+          showToast(`Version v${ver?.versionNumber || Number(activeCourse.version || 1) + 1} snapshot created.`, 'success');
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err?.message || 'Unable to create version snapshot.', 'error');
+        }
+      });
+
+      root.querySelector('#open-course-preview')?.addEventListener('click', () => {
+        previewCourseOpen = true;
+        rerender({ silent: true });
+      });
+      root.querySelector('#close-course-preview')?.addEventListener('click', () => {
+        previewCourseOpen = false;
+        rerender({ silent: true });
+      });
+      root.querySelector('#course-preview-backdrop')?.addEventListener('click', (e) => {
+        if (e.target.id === 'course-preview-backdrop') {
+          previewCourseOpen = false;
+          rerender({ silent: true });
+        }
+      });
+      root.querySelector('#preview-lesson-select')?.addEventListener('change', (e) => {
+        previewLessonId = e.target.value;
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-move-phase]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!activeCourse) return;
+          const phId = btn.dataset.movePhase;
+          const dir = Number(btn.dataset.dir);
+          const ids = phases.map((p) => p.id);
+          const idx = ids.indexOf(phId);
+          const target = idx + dir;
+          if (idx < 0 || target < 0 || target >= ids.length) return;
+          [ids[idx], ids[target]] = [ids[target], ids[idx]];
+          await adminReorderPhases(activeCourse.id, ids);
+          showToast('Module order updated.', 'success');
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelectorAll('[data-toggle-phase-pub]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!activeCourse) return;
+          const ph = phases.find((p) => p.id === btn.dataset.togglePhasePub);
+          if (!ph) return;
+          const nextPub = (ph.publicationStatus || 'published') === 'published' ? 'draft' : 'published';
+          await adminUpsertPhase({
+            ...ph,
+            courseId: activeCourse.id,
+            publicationStatus: nextPub,
+          });
+          showToast(`Module "${ph.title}" set to ${nextPub}.`, 'success');
+          rerender({ silent: true });
+        });
+      });
+
       root.querySelector('#admin-course-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const fd = new FormData(e.currentTarget);
+        const form = e.currentTarget;
+        const fd = new FormData(form);
+        const associatedSkillIds = fd.getAll('associatedSkillIds').map(String).filter(Boolean);
+        const primarySkillId = associatedSkillIds[0] || editCourseObj?.skillId || selectedSkillId;
         try {
           await adminUpsertCourse({
-            skillId: selectedSkillId,
+            id: editCourseObj?.id || undefined,
+            skillId: primarySkillId,
+            associatedSkillIds,
+            slug: String(fd.get('slug') || ''),
             title: String(fd.get('title')),
             description: String(fd.get('description')),
+            targetAudience: String(fd.get('targetAudience') || ''),
+            authorName: String(fd.get('authorName') || ''),
+            thumbnailUrl: String(fd.get('thumbnailUrl') || ''),
             difficulty: String(fd.get('difficulty')),
             publicationStatus: String(fd.get('publicationStatus')),
             estimatedDurationWeeks: Number(fd.get('estimatedDurationWeeks') || 4),
             recommendedWeeklyHours: Number(fd.get('recommendedWeeklyHours') || 4),
+            recommendedSchedule: String(fd.get('recommendedSchedule') || ''),
+            prerequisites: String(fd.get('prerequisites') || ''),
             outcomes: String(fd.get('outcomes') || ''),
+            completionRules: {
+              requireAllRequiredLessons: Boolean(fd.get('ruleLessons')),
+              requireAllActivities: Boolean(fd.get('ruleActivities')),
+              requireAllAssessments: Boolean(fd.get('ruleAssessments')),
+              requireChallengeSubmission: true,
+              requireChallengeApproval: Boolean(fd.get('ruleChallengeApproval')),
+            },
           });
-          showToast('Course created under selected skill.', 'success');
+          showToast(editCourseObj ? 'Course updated.' : 'Course created under selected skill.', 'success');
+          courseFormMode = 'edit';
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to create course.', 'error');
+          showToast(err?.message || 'Unable to save course.', 'error');
         }
       });
 
@@ -637,14 +1131,49 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             courseId: activeCourse.id,
             title: String(fd.get('title')),
             summary: String(fd.get('summary')),
+            objectives: String(fd.get('objectives') || ''),
             difficulty: String(fd.get('difficulty')),
             estHours: Number(fd.get('estHours') || 3),
           });
-          showToast('Phase added to course.', 'success');
+          showToast('Module added to course.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to add phase.', 'error');
+          showToast(err?.message || 'Unable to add module.', 'error');
         }
+      });
+
+      root.querySelector('#admin-activity-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!activeCourse) return;
+        const fd = new FormData(e.currentTarget);
+        try {
+          await adminUpsertActivity({
+            courseId: activeCourse.id,
+            phaseId: String(fd.get('phaseId')),
+            title: String(fd.get('title')),
+            description: String(fd.get('description')),
+            instructions: String(fd.get('instructions')),
+            expectedOutput: String(fd.get('expectedOutput')),
+            estMinutes: Number(fd.get('estMinutes') || 25),
+          });
+          showToast('Practical activity added to module.', 'success');
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err?.message || 'Unable to add practical activity.', 'error');
+        }
+      });
+
+      root.querySelectorAll('[data-edit-lesson-btn]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const ph = phases.find((p) => p.id === btn.dataset.phaseId);
+          const les = (ph?.lessons || []).find((l) => l.id === btn.dataset.editLessonBtn);
+          if (ph && les) {
+            selectedPhaseId = ph.id;
+            loadLessonIntoBuilder(les);
+            activeTab = 'lessons';
+            rerender({ silent: true });
+          }
+        });
       });
 
       root.querySelectorAll('[data-del-lesson]').forEach((btn) => {
@@ -661,12 +1190,34 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         selectedCourseId = e.target.value;
         const nextC = courses.find((c) => c.id === selectedCourseId);
         selectedPhaseId = nextC?.phases?.[0]?.id || null;
+        resetLessonBuilder();
         rerender({ silent: true });
       });
 
       root.querySelector('#builder-phase-select')?.addEventListener('change', (e) => {
         selectedPhaseId = e.target.value;
+        resetLessonBuilder();
         rerender({ silent: true });
+      });
+
+      root.querySelector('#builder-lesson-select')?.addEventListener('change', (e) => {
+        const lid = e.target.value;
+        const found = phaseLessons.find((l) => l.id === lid) || null;
+        loadLessonIntoBuilder(found);
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#reset-lesson-builder-btn')?.addEventListener('click', () => {
+        resetLessonBuilder();
+        rerender({ silent: true });
+      });
+
+      // Sync top-level lesson draft fields live on input
+      root.querySelectorAll('[data-les-field]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const f = el.dataset.lesField;
+          lessonDraft[f] = f === 'estMinutes' ? Number(el.value || 25) : el.value;
+        });
       });
 
       // Sync draft block edits live on input
@@ -749,15 +1300,34 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         });
       });
 
+      root.querySelector('#add-res-btn')?.addEventListener('click', () => {
+        const title = root.querySelector('#res-title')?.value.trim();
+        const url = root.querySelector('#res-url')?.value.trim();
+        if (!title || !url || (!url.startsWith('https://') && !url.startsWith('http://'))) {
+          showToast('Enter both a resource title and a valid https:// URL.', 'error');
+          return;
+        }
+        draftResources.push({ title, url, resourceType: 'article' });
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-del-res]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          draftResources.splice(Number(btn.dataset.delRes), 1);
+          rerender({ silent: true });
+        });
+      });
+
       root.querySelector('#admin-lesson-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (!activeCourse || !activePhase) {
-          showToast('Select a valid course and phase first.', 'error');
+          showToast('Select a valid course and module first.', 'error');
           return;
         }
         const fd = new FormData(e.currentTarget);
         try {
           await adminUpsertLesson({
+            id: editingLessonId || undefined,
             courseId: activeCourse.id,
             phaseId: activePhase.id,
             title: String(fd.get('title')),
@@ -766,12 +1336,14 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             estMinutes: Number(fd.get('estMinutes') || 25),
             blocks: structuredClone(draftBlocks),
             videos: structuredClone(draftVideos),
+            furtherReading: structuredClone(draftResources),
             summary: String(fd.get('summary') || ''),
-            takeaways: [],
+            takeaways: String(fd.get('takeaways') || ''),
+            completionCriteria: String(fd.get('completionCriteria') || ''),
+            publicationStatus: String(fd.get('publicationStatus') || 'published'),
           });
-          draftBlocks = [createEmptyBlock('heading'), createEmptyBlock('paragraph')];
-          draftVideos = [];
-          showToast('Self-contained lesson saved to phase!', 'success');
+          showToast(editingLessonId ? 'Lesson updated!' : 'New lesson saved to module!', 'success');
+          resetLessonBuilder();
           rerender({ silent: true });
         } catch (err) {
           showToast(err?.message || 'Unable to save lesson.', 'error');
@@ -804,9 +1376,12 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       root.querySelectorAll('[data-add-course-skill]').forEach((btn) => {
         btn.addEventListener('click', () => {
           selectedSkillId = btn.dataset.addCourseSkill;
-          const nextCourses = courses.filter((c) => c.skillId === selectedSkillId);
+          const nextCourses = courses.filter(
+            (c) => c.skillId === selectedSkillId || (c.associatedSkillIds || []).includes(selectedSkillId)
+          );
           selectedCourseId = nextCourses[0]?.id || null;
           selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
+          courseFormMode = 'create';
           activeTab = 'courses';
           rerender({ silent: true });
         });

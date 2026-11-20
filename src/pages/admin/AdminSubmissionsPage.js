@@ -142,7 +142,12 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
                 <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
                   ${
                     activeSub.evidenceUrl
-                      ? `<a href="${escapeHtml(activeSub.evidenceUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Open evidence link ${icon('externalLink', 13)}</a>`
+                      ? `<a href="${escapeHtml(activeSub.evidenceUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Open project link ${icon('externalLink', 13)}</a>`
+                      : ''
+                  }
+                  ${
+                    activeSub.repoUrl
+                      ? `<a href="${escapeHtml(activeSub.repoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Open repository ${icon('externalLink', 13)}</a>`
                       : ''
                   }
                   ${

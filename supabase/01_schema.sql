@@ -42,6 +42,7 @@ alter table public.skills add column if not exists category_id uuid references p
 alter table public.skills add column if not exists competency_expectations text not null default '';
 alter table public.skills add column if not exists prerequisites jsonb not null default '[]'::jsonb;
 alter table public.skills add column if not exists publication_status text not null default 'published';
+alter table public.skills add column if not exists supported_by_course_slug text;
 
 create table if not exists public.courses (
   id uuid primary key default gen_random_uuid(),
@@ -49,16 +50,45 @@ create table if not exists public.courses (
   slug text not null unique,
   title text not null,
   description text not null default '',
+  target_audience text not null default '',
   outcomes jsonb not null default '[]'::jsonb,
   difficulty text not null default 'Beginner' check (difficulty in ('Beginner', 'Intermediate', 'Advanced')),
   estimated_duration_weeks integer not null default 4,
   recommended_weekly_hours numeric(4,1) not null default 4.0,
   recommended_schedule text not null default 'Self-paced weekly milestones',
   prerequisites jsonb not null default '[]'::jsonb,
-  completion_rules jsonb not null default '{"requireAllRequiredLessons":true,"requireAllAssessments":true,"requireChallengeApproval":true}'::jsonb,
+  thumbnail_url text not null default '',
+  author_name text not null default '',
+  completion_rules jsonb not null default '{"requireAllRequiredLessons":true,"requireAllActivities":true,"requireAllAssessments":true,"requireChallengeSubmission":true,"requireChallengeApproval":true}'::jsonb,
   publication_status text not null default 'published' check (publication_status in ('published', 'draft', 'archived')),
+  version integer not null default 1,
   position integer not null default 1,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.courses add column if not exists target_audience text not null default '';
+alter table public.courses add column if not exists thumbnail_url text not null default '';
+alter table public.courses add column if not exists author_name text not null default '';
+alter table public.courses add column if not exists version integer not null default 1;
+alter table public.courses add column if not exists updated_at timestamptz not null default now();
+
+create table if not exists public.course_skills (
+  course_id uuid not null references public.courses(id) on delete cascade,
+  skill_id uuid not null references public.skills(id) on delete cascade,
+  is_primary boolean not null default false,
+  created_at timestamptz not null default now(),
+  primary key (course_id, skill_id)
+);
+
+create table if not exists public.course_versions (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.courses(id) on delete cascade,
+  version_number integer not null,
+  change_notes text not null default '',
+  snapshot jsonb not null default '{}'::jsonb,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  unique (course_id, version_number)
 );
 
 create table if not exists public.phases (
@@ -78,6 +108,7 @@ alter table public.phases add column if not exists objectives jsonb not null def
 alter table public.phases add column if not exists difficulty text not null default 'Beginner';
 alter table public.phases add column if not exists est_hours numeric(5,1) not null default 2.0;
 alter table public.phases add column if not exists completion_requirements jsonb not null default '[]'::jsonb;
+alter table public.phases add column if not exists publication_status text not null default 'published';
 
 create table if not exists public.lessons (
   id uuid primary key default gen_random_uuid(),
@@ -92,21 +123,44 @@ create table if not exists public.lessons (
   summary text not null default '',
   takeaways jsonb not null default '[]'::jsonb,
   further_reading jsonb not null default '[]'::jsonb,
+  completion_criteria text not null default '',
+  publication_status text not null default 'published' check (publication_status in ('published', 'draft', 'archived')),
   is_required boolean not null default true,
   created_at timestamptz not null default now(),
   unique (phase_id, position)
+);
+alter table public.lessons add column if not exists completion_criteria text not null default '';
+alter table public.lessons add column if not exists publication_status text not null default 'published';
+
+create table if not exists public.lesson_resources (
+  id uuid primary key default gen_random_uuid(),
+  lesson_id uuid not null references public.lessons(id) on delete cascade,
+  title text not null,
+  url text not null,
+  resource_type text not null default 'article',
+  position integer not null default 1,
+  created_at timestamptz not null default now(),
+  unique (lesson_id, url)
 );
 
 create table if not exists public.activities (
   id uuid primary key default gen_random_uuid(),
   phase_id uuid not null references public.phases(id) on delete cascade,
+  lesson_id uuid references public.lessons(id) on delete set null,
   position integer not null,
   title text not null,
   description text not null default '',
+  instructions text not null default '',
+  expected_output text not null default '',
   est_minutes integer not null default 20,
+  is_required boolean not null default true,
   resources jsonb not null default '[]'::jsonb,
   unique (phase_id, position)
 );
+alter table public.activities add column if not exists lesson_id uuid references public.lessons(id) on delete set null;
+alter table public.activities add column if not exists instructions text not null default '';
+alter table public.activities add column if not exists expected_output text not null default '';
+alter table public.activities add column if not exists is_required boolean not null default true;
 
 create table if not exists public.quizzes (
   id uuid primary key default gen_random_uuid(),
@@ -179,6 +233,10 @@ alter table public.challenges add column if not exists submission_format text no
 alter table public.challenges add column if not exists max_score integer not null default 20;
 alter table public.challenges add column if not exists passing_score integer not null default 14;
 alter table public.challenges add column if not exists deadline_days integer;
+alter table public.challenges add column if not exists allowed_evidence_types jsonb not null default '["written","file","project_url","repo_url","screenshot","audio","video"]'::jsonb;
+alter table public.challenges add column if not exists allowed_mime_types jsonb not null default '[]'::jsonb;
+alter table public.challenges add column if not exists max_file_size_mb integer not null default 25;
+alter table public.challenges add column if not exists is_required boolean not null default true;
 
 create table if not exists public.course_enrollments (
   id uuid primary key default gen_random_uuid(),
@@ -186,8 +244,21 @@ create table if not exists public.course_enrollments (
   course_id uuid not null references public.courses(id) on delete cascade,
   skill_id uuid not null references public.skills(id) on delete cascade,
   status text not null default 'active' check (status in ('active', 'paused', 'completed')),
+  completion_state text not null default 'in_progress' check (completion_state in ('in_progress', 'awaiting_practical_assessment', 'completed', 'completed_verified')),
   enrolled_at timestamptz not null default now(),
   projected_completion_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now(),
+  unique (user_id, course_id)
+);
+alter table public.course_enrollments add column if not exists completion_state text not null default 'in_progress';
+
+create table if not exists public.course_completions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  course_id uuid not null references public.courses(id) on delete cascade,
+  completion_state text not null check (completion_state in ('in_progress', 'awaiting_practical_assessment', 'completed', 'completed_verified')),
+  practical_approved boolean not null default false,
   completed_at timestamptz,
   updated_at timestamptz not null default now(),
   unique (user_id, course_id)
@@ -279,6 +350,7 @@ create table if not exists public.submissions (
 );
 alter table public.submissions add column if not exists course_id uuid references public.courses(id) on delete set null;
 alter table public.submissions add column if not exists submission_text text not null default '';
+alter table public.submissions add column if not exists repo_url text;
 
 create table if not exists public.user_skills (
   id uuid primary key default gen_random_uuid(),
@@ -312,13 +384,18 @@ create table if not exists public.opportunities (
 
 create index if not exists idx_skills_category on public.skills(category_id);
 create index if not exists idx_courses_skill on public.courses(skill_id, position);
+create index if not exists idx_course_skills_skill on public.course_skills(skill_id, course_id);
 create index if not exists idx_phases_course on public.phases(course_id, position);
 create index if not exists idx_lessons_phase on public.lessons(phase_id, position);
+create index if not exists idx_lesson_resources_lesson on public.lesson_resources(lesson_id, position);
+create index if not exists idx_activities_phase on public.activities(phase_id, position);
 create index if not exists idx_quizzes_course on public.quizzes(course_id);
 create index if not exists idx_questions_quiz on public.questions(quiz_id, position);
 create index if not exists idx_challenges_course on public.challenges(course_id);
 create index if not exists idx_course_enrollments_user on public.course_enrollments(user_id, status);
+create index if not exists idx_course_completions_user on public.course_completions(user_id, completion_state);
 create index if not exists idx_lesson_progress_user on public.lesson_progress(user_id, course_id, completed);
+create index if not exists idx_activity_progress_user on public.activity_progress(user_id, activity_id, completed);
 create index if not exists idx_quiz_attempts_user_quiz on public.quiz_attempts(user_id, quiz_id);
 create index if not exists idx_submissions_status on public.submissions(status, created_at desc);
 create index if not exists idx_user_skills_user on public.user_skills(user_id);

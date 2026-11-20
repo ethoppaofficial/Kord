@@ -29,6 +29,71 @@ export async function listAssessmentsForCourse(courseId) {
   return (getDemoState().quizzes || []).filter((q) => q.courseId === courseId);
 }
 
+export async function listAllQuizzes() {
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase
+      .from('quizzes')
+      .select('id, skill_id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts');
+    if (error) throw error;
+    return (data || []).map((q) => ({
+      id: q.id,
+      skillId: q.skill_id,
+      courseId: q.course_id,
+      phaseId: q.phase_id,
+      lessonId: q.lesson_id,
+      quizType: q.quiz_type,
+      title: q.title,
+      description: q.description,
+      passPercent: q.pass_percent,
+      timeLimitMinutes: q.time_limit_minutes,
+      maxAttempts: q.max_attempts,
+    }));
+  }
+  return (getDemoState().quizzes || []).map((q) => ({
+    id: q.id,
+    skillId: q.skillId,
+    courseId: q.courseId || null,
+    phaseId: q.phaseId || null,
+    lessonId: q.lessonId || null,
+    quizType: q.quizType,
+    title: q.title,
+    description: q.description,
+    passPercent: q.passPercent,
+    timeLimitMinutes: q.timeLimitMinutes || null,
+    maxAttempts: q.maxAttempts || null,
+  }));
+}
+
+export async function getUserAllQuizAttempts(userId) {
+  if (!userId) return [];
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase
+      .from('quiz_attempts')
+      .select('id, user_id, quiz_id, course_id, attempt_number, score, total, percentage, passed, review_status, manual_feedback, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map((a) => ({
+      id: a.id,
+      userId: a.user_id,
+      quizId: a.quiz_id,
+      courseId: a.course_id,
+      attemptNumber: a.attempt_number || 1,
+      score: a.score,
+      total: a.total,
+      percentage: a.percentage,
+      passed: a.passed,
+      reviewStatus: a.review_status || 'auto_graded',
+      manualFeedback: a.manual_feedback || '',
+      createdAt: a.created_at,
+    }));
+  }
+
+  return (getDemoState().quizAttempts || [])
+    .filter((a) => a.userId === userId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
 /**
  * Learner-safe assessment loader.
  * NEVER returns correctIndex, answerConfig, or explanation before submission.

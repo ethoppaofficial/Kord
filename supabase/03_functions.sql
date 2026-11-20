@@ -104,32 +104,72 @@ security definer
 set search_path = public
 as $$
 declare
-  v_skill_id uuid;
+  v_primary_skill_id uuid;
+  v_rules jsonb := '{}'::jsonb;
   v_req_lessons integer := 0;
   v_done_lessons integer := 0;
+  v_req_activities integer := 0;
+  v_done_activities integer := 0;
   v_req_quizzes integer := 0;
   v_passed_quizzes integer := 0;
   v_req_challenges integer := 0;
+  v_submitted_challenges integer := 0;
   v_approved_challenges integer := 0;
+  v_lessons_ok boolean := false;
+  v_activities_ok boolean := true;
+  v_quizzes_ok boolean := false;
+  v_challenges_sub_ok boolean := true;
+  v_challenges_app_ok boolean := false;
+  v_practical_approved boolean := false;
+  v_instructional_done boolean := false;
+  v_completion_state text := 'in_progress';
   v_course_done boolean := false;
+  v_has_content boolean := false;
+  v_skill_rec record;
   v_pub_courses integer := 0;
-  v_done_courses integer := 0;
+  v_done_verified_courses integer := 0;
 begin
-  select skill_id into v_skill_id from public.courses where id = p_course_id;
-  if v_skill_id is null then
+  select skill_id, coalesce(completion_rules, '{}'::jsonb)
+  into v_primary_skill_id, v_rules
+  from public.courses
+  where id = p_course_id;
+
+  if v_primary_skill_id is null then
     return;
   end if;
 
   select count(*) into v_req_lessons
   from public.lessons l
   join public.phases p on p.id = l.phase_id
-  where p.course_id = p_course_id and l.is_required = true;
+  where p.course_id = p_course_id
+    and p.publication_status = 'published'
+    and l.publication_status = 'published'
+    and l.is_required = true;
 
   select count(*) into v_done_lessons
   from public.lesson_progress lp
   join public.lessons l on l.id = lp.lesson_id
   join public.phases p on p.id = l.phase_id
-  where p.course_id = p_course_id and l.is_required = true and lp.user_id = p_user_id and lp.completed = true;
+  where p.course_id = p_course_id
+    and l.is_required = true
+    and lp.user_id = p_user_id
+    and lp.completed = true;
+
+  select count(*) into v_req_activities
+  from public.activities a
+  join public.phases p on p.id = a.phase_id
+  where p.course_id = p_course_id
+    and p.publication_status = 'published'
+    and a.is_required = true;
+
+  select count(*) into v_done_activities
+  from public.activity_progress ap
+  join public.activities a on a.id = ap.activity_id
+  join public.phases p on p.id = a.phase_id
+  where p.course_id = p_course_id
+    and a.is_required = true
+    and ap.user_id = p_user_id
+    and ap.completed = true;
 
   select count(*) into v_req_quizzes
   from public.quizzes where course_id = p_course_id;
@@ -137,43 +177,106 @@ begin
   select count(distinct qa.quiz_id) into v_passed_quizzes
   from public.quiz_attempts qa
   join public.quizzes q on q.id = qa.quiz_id
-  where q.course_id = p_course_id and qa.user_id = p_user_id and qa.passed = true and qa.review_status <> 'pending_review';
+  where q.course_id = p_course_id
+    and qa.user_id = p_user_id
+    and qa.passed = true
+    and qa.review_status <> 'pending_review';
 
   select count(*) into v_req_challenges
-  from public.challenges where course_id = p_course_id;
+  from public.challenges where course_id = p_course_id and is_required = true;
+
+  select count(distinct s.challenge_id) into v_submitted_challenges
+  from public.submissions s
+  join public.challenges c on c.id = s.challenge_id
+  where c.course_id = p_course_id and s.user_id = p_user_id;
 
   select count(distinct s.challenge_id) into v_approved_challenges
   from public.submissions s
   join public.challenges c on c.id = s.challenge_id
   where c.course_id = p_course_id and s.user_id = p_user_id and s.status = 'approved';
 
-  v_course_done := (v_done_lessons >= v_req_lessons)
-                   and (v_passed_quizzes >= v_req_quizzes)
-                   and (v_approved_challenges >= v_req_challenges);
+  v_has_content := (v_req_lessons + v_req_activities + v_req_quizzes + v_req_challenges) > 0;
+  v_lessons_ok := coalesce((v_rules ->> 'requireAllRequiredLessons')::boolean, true) = false or v_done_lessons >= v_req_lessons;
+  v_activities_ok := coalesce((v_rules ->> 'requireAllActivities')::boolean, true) = false or v_done_activities >= v_req_activities;
+  v_quizzes_ok := coalesce((v_rules ->> 'requireAllAssessments')::boolean, true) = false or v_passed_quizzes >= v_req_quizzes;
+  v_challenges_sub_ok := coalesce((v_rules ->> 'requireChallengeSubmission')::boolean, true) = false or v_submitted_challenges >= v_req_challenges;
+  v_challenges_app_ok := coalesce((v_rules ->> 'requireChallengeApproval')::boolean, true) = false or v_approved_challenges >= v_req_challenges;
+  v_practical_approved := v_req_challenges > 0 and v_approved_challenges >= v_req_challenges;
+  v_instructional_done := v_has_content and v_lessons_ok and v_activities_ok and v_quizzes_ok;
 
-  if v_course_done then
-    update public.course_enrollments
-    set status = 'completed',
-        completed_at = coalesce(completed_at, now()),
-        updated_at = now()
-    where user_id = p_user_id and course_id = p_course_id;
-
-    perform public.upgrade_user_skill_level(p_user_id, v_skill_id, 'demonstrated');
+  if v_instructional_done then
+    if coalesce((v_rules ->> 'requireChallengeApproval')::boolean, true) and v_req_challenges > 0 then
+      if v_practical_approved then
+        v_completion_state := 'completed_verified';
+      else
+        v_completion_state := 'awaiting_practical_assessment';
+      end if;
+    elsif v_challenges_sub_ok then
+      if v_practical_approved then
+        v_completion_state := 'completed_verified';
+      else
+        v_completion_state := 'completed';
+      end if;
+    end if;
   end if;
 
-  select count(*) into v_pub_courses
-  from public.courses
-  where skill_id = v_skill_id and publication_status = 'published';
+  v_course_done := v_completion_state in ('completed', 'completed_verified');
 
-  select count(*) into v_done_courses
-  from public.course_enrollments ce
-  join public.courses c on c.id = ce.course_id
-  where c.skill_id = v_skill_id and c.publication_status = 'published'
-    and ce.user_id = p_user_id and ce.status = 'completed';
+  update public.course_enrollments
+  set status = case when v_course_done then 'completed' else status end,
+      completion_state = v_completion_state,
+      completed_at = case when v_course_done then coalesce(completed_at, now()) else completed_at end,
+      updated_at = now()
+  where user_id = p_user_id and course_id = p_course_id;
 
-  if v_pub_courses > 0 and v_done_courses >= v_pub_courses then
-    perform public.upgrade_user_skill_level(p_user_id, v_skill_id, 'verified');
-  end if;
+  insert into public.course_completions (user_id, course_id, completion_state, practical_approved, completed_at, updated_at)
+  values (
+    p_user_id,
+    p_course_id,
+    v_completion_state,
+    v_practical_approved,
+    case when v_course_done then now() else null end,
+    now()
+  )
+  on conflict (user_id, course_id) do update set
+    completion_state = excluded.completion_state,
+    practical_approved = excluded.practical_approved,
+    completed_at = coalesce(public.course_completions.completed_at, excluded.completed_at),
+    updated_at = now();
+
+  for v_skill_rec in
+    select distinct skill_id from (
+      select v_primary_skill_id as skill_id
+      union
+      select cs.skill_id from public.course_skills cs where cs.course_id = p_course_id
+    ) s
+  loop
+    if v_done_lessons > 0 or v_done_activities > 0 then
+      perform public.upgrade_user_skill_level(p_user_id, v_skill_rec.skill_id, 'practising');
+    end if;
+
+    if v_course_done then
+      perform public.upgrade_user_skill_level(p_user_id, v_skill_rec.skill_id, 'demonstrated');
+    end if;
+
+    select count(distinct c.id) into v_pub_courses
+    from public.courses c
+    left join public.course_skills cs on cs.course_id = c.id
+    where c.publication_status = 'published'
+      and (c.skill_id = v_skill_rec.skill_id or cs.skill_id = v_skill_rec.skill_id);
+
+    select count(distinct c.id) into v_done_verified_courses
+    from public.courses c
+    left join public.course_skills cs on cs.course_id = c.id
+    join public.course_completions cc on cc.course_id = c.id and cc.user_id = p_user_id
+    where c.publication_status = 'published'
+      and (c.skill_id = v_skill_rec.skill_id or cs.skill_id = v_skill_rec.skill_id)
+      and cc.completion_state = 'completed_verified';
+
+    if v_pub_courses > 0 and v_done_verified_courses >= v_pub_courses then
+      perform public.upgrade_user_skill_level(p_user_id, v_skill_rec.skill_id, 'verified');
+    end if;
+  end loop;
 end;
 $$;
 
@@ -302,13 +405,11 @@ begin
   returning id into v_attempt_id;
 
   if v_passed then
-    if v_quiz.quiz_type in ('skill_check', 'course_exam') then
-      perform public.upgrade_user_skill_level(auth.uid(), v_quiz.skill_id, 'demonstrated');
-    else
-      perform public.upgrade_user_skill_level(auth.uid(), v_quiz.skill_id, 'practising');
-    end if;
+    perform public.upgrade_user_skill_level(auth.uid(), v_quiz.skill_id, 'practising');
     if v_quiz.course_id is not null then
       perform public.evaluate_course_and_skill_progression(auth.uid(), v_quiz.course_id);
+    elsif v_quiz.quiz_type in ('skill_check', 'course_exam') then
+      perform public.upgrade_user_skill_level(auth.uid(), v_quiz.skill_id, 'demonstrated');
     end if;
   end if;
 
@@ -387,5 +488,145 @@ begin
     raise exception 'Administrator access required';
   end if;
   return query select * from public.questions where quiz_id = p_quiz_id order by position asc;
+end;
+$$;
+
+create or replace function public.admin_upsert_question(
+  p_id uuid,
+  p_quiz_id uuid,
+  p_position integer,
+  p_prompt text,
+  p_options jsonb,
+  p_correct_index integer,
+  p_explanation text,
+  p_question_type text default 'multiple_choice',
+  p_difficulty text default 'medium',
+  p_marks integer default 1,
+  p_context_text text default '',
+  p_answer_config jsonb default '{}'::jsonb
+)
+returns public.questions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.questions;
+begin
+  if not public.is_admin() then
+    raise exception 'Administrator access required';
+  end if;
+
+  if p_id is not null then
+    update public.questions
+    set position = coalesce(p_position, position),
+        question_type = coalesce(p_question_type, question_type),
+        difficulty = coalesce(p_difficulty, difficulty),
+        marks = greatest(1, coalesce(p_marks, marks)),
+        prompt = p_prompt,
+        context_text = coalesce(p_context_text, ''),
+        options = coalesce(p_options, '[]'::jsonb),
+        correct_index = greatest(0, coalesce(p_correct_index, 0)),
+        answer_config = coalesce(p_answer_config, '{}'::jsonb),
+        explanation = coalesce(p_explanation, '')
+    where id = p_id
+    returning * into v_row;
+    if found then return v_row; end if;
+  end if;
+
+  insert into public.questions (
+    quiz_id, position, question_type, difficulty, marks, prompt, context_text, options, correct_index, answer_config, explanation
+  )
+  values (
+    p_quiz_id, coalesce(p_position, 1), coalesce(p_question_type, 'multiple_choice'), coalesce(p_difficulty, 'medium'),
+    greatest(1, coalesce(p_marks, 1)), p_prompt, coalesce(p_context_text, ''), coalesce(p_options, '[]'::jsonb),
+    greatest(0, coalesce(p_correct_index, 0)), coalesce(p_answer_config, '{}'::jsonb), coalesce(p_explanation, '')
+  )
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+create or replace function public.admin_reorder_phases(
+  p_course_id uuid,
+  p_phase_ids uuid[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_idx integer := 1;
+  v_pid uuid;
+begin
+  if not public.is_admin() then
+    raise exception 'Administrator access required';
+  end if;
+
+  foreach v_pid in array p_phase_ids loop
+    update public.phases
+    set position = v_idx
+    where id = v_pid and course_id = p_course_id;
+    v_idx := v_idx + 1;
+  end loop;
+
+  update public.courses set updated_at = now() where id = p_course_id;
+end;
+$$;
+
+create or replace function public.admin_create_course_version(
+  p_course_id uuid,
+  p_change_notes text default ''
+)
+returns public.course_versions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_course public.courses;
+  v_next_ver integer;
+  v_phase_cnt integer := 0;
+  v_lesson_cnt integer := 0;
+  v_ver_row public.course_versions;
+begin
+  if not public.is_admin() then
+    raise exception 'Administrator access required';
+  end if;
+
+  select * into v_course from public.courses where id = p_course_id;
+  if not found then
+    raise exception 'Course not found';
+  end if;
+
+  v_next_ver := coalesce(v_course.version, 1) + 1;
+  select count(*) into v_phase_cnt from public.phases where course_id = p_course_id;
+  select count(*) into v_lesson_cnt
+  from public.lessons l
+  join public.phases p on p.id = l.phase_id
+  where p.course_id = p_course_id;
+
+  update public.courses
+  set version = v_next_ver, updated_at = now()
+  where id = p_course_id;
+
+  insert into public.course_versions (course_id, version_number, change_notes, snapshot, created_by)
+  values (
+    p_course_id,
+    v_next_ver,
+    coalesce(p_change_notes, ''),
+    jsonb_build_object(
+      'title', v_course.title,
+      'difficulty', v_course.difficulty,
+      'phaseCount', v_phase_cnt,
+      'lessonCount', v_lesson_cnt
+    ),
+    auth.uid()
+  )
+  on conflict (course_id, version_number) do update set change_notes = excluded.change_notes
+  returning * into v_ver_row;
+
+  return v_ver_row;
 end;
 $$;

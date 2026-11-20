@@ -3,6 +3,7 @@ import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
 import { recomputeCourseAndSkillStatus } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
+import { validateEvidenceFile } from '../validators.js';
 
 export async function getUserSubmissions(userId, challengeId = null) {
   if (!isDemoMode && supabase) {
@@ -27,12 +28,19 @@ export async function submitChallengeEvidence({
   challengeId,
   courseId = null,
   evidenceUrl,
+  repoUrl = '',
   file,
   submissionText = '',
   explanation,
   rubricMax,
+  challenge = null,
   idempotencyKey,
 }) {
+  if (file) {
+    const fileErr = validateEvidenceFile(file, challenge || {});
+    if (fileErr) throw new Error(fileErr);
+  }
+
   const effectiveKey =
     idempotencyKey ||
     buildIdempotencyKey(
@@ -40,6 +48,7 @@ export async function submitChallengeEvidence({
       userId,
       challengeId,
       evidenceUrl || '',
+      repoUrl || '',
       file?.name || '',
       submissionText || '',
       explanation
@@ -66,6 +75,7 @@ export async function submitChallengeEvidence({
               challenge_id: challengeId,
               course_id: courseId || null,
               evidence_url: evidenceUrl || null,
+              repo_url: repoUrl || null,
               file_path: filePath,
               file_name: fileName,
               submission_text: submissionText || '',
@@ -87,14 +97,15 @@ export async function submitChallengeEvidence({
       );
       if (existing) return existing;
 
-      const challenge = (state.challenges || []).find((c) => c.id === challengeId);
+      const resolvedChallenge = challenge || (state.challenges || []).find((c) => c.id === challengeId);
       const filePath = file ? `${userId}/${challengeId}/${file.name}` : null;
       const newSub = {
         id: `sub-${Date.now()}`,
         userId,
         challengeId,
-        courseId: courseId || challenge?.courseId || null,
+        courseId: courseId || resolvedChallenge?.courseId || null,
         evidenceUrl: evidenceUrl?.trim() || null,
+        repoUrl: repoUrl?.trim() || null,
         filePath,
         fileName: file ? file.name : null,
         submissionText: String(submissionText || '').trim(),
@@ -231,6 +242,7 @@ function mapSubmission(s) {
     challengeId: s.challenge_id,
     courseId: s.course_id || null,
     evidenceUrl: s.evidence_url,
+    repoUrl: s.repo_url || null,
     filePath: s.file_path,
     fileName: s.file_name,
     submissionText: s.submission_text || '',

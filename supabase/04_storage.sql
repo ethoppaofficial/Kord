@@ -1,9 +1,36 @@
 -- 04_storage.sql
 -- Idempotent private evidence bucket scoped to <user-id>/... and administrators
 
-insert into storage.buckets (id, name, public)
-values ('evidence', 'evidence', false)
-on conflict (id) do nothing;
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'evidence',
+  'evidence',
+  false,
+  52428800,
+  array[
+    'application/pdf',
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'text/plain',
+    'text/markdown',
+    'text/csv',
+    'application/zip',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'audio/mpeg',
+    'audio/wav',
+    'audio/mp4',
+    'audio/webm',
+    'audio/ogg',
+    'video/mp4',
+    'video/webm',
+    'video/quicktime'
+  ]
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists "evidence_upload_own_folder" on storage.objects;
 create policy "evidence_upload_own_folder"

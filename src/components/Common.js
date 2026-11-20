@@ -1,5 +1,6 @@
 import { escapeHtml } from '../lib/formatters.js';
 import { icon } from '../lib/icons.js';
+import { renderCourseThumbnailHtml } from '../lib/courseThumbnails.js';
 
 export function renderProgressRail({
   label = 'Progress',
@@ -28,6 +29,8 @@ export function renderStatusBadge(status) {
     approved: { cls: 'status-green', ic: 'checkCircle', text: 'Approved' },
     verified: { cls: 'status-green', ic: 'checkCircle', text: 'Verified' },
     completed: { cls: 'status-green', ic: 'checkCircle', text: 'Completed' },
+    completed_verified: { cls: 'status-green', ic: 'checkCircle', text: 'Completed · Verified' },
+    awaiting_practical_assessment: { cls: 'status-amber', ic: 'clock', text: 'Awaiting practical assessment' },
     passed: { cls: 'status-green', ic: 'checkCircle', text: 'Passed' },
     published: { cls: 'status-blue', ic: 'book', text: 'Published' },
     active: { cls: 'status-blue', ic: 'play', text: 'Active' },
@@ -97,7 +100,11 @@ export function renderSkillCard(
                 detail: `${pct}%`,
               })
             : `<div style="font-size:12.5px; color:var(--color-text-muted); padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
-                Competency published · Courses coming soon
+                ${
+                  skill.supportedByCourseSlug
+                    ? 'Covered via flagship foundational course pathway'
+                    : 'Competency published · Awaiting course development'
+                }
               </div>`
         }
 
@@ -109,6 +116,75 @@ export function renderSkillCard(
           <a href="/skills/${escapeHtml(skill.slug)}" data-link class="btn btn-secondary btn-sm">
             ${courseCount > 0 ? 'View courses' : 'View skill'} ${icon('arrowRight', 14)}
           </a>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+export function renderCourseCard(course, { progress = null, enrollment = null, index = 0 } = {}) {
+  const phaseCount = (course.phases || []).length;
+  const lessonCount = (course.phases || []).reduce(
+    (sum, p) => sum + (p.lessons || []).length,
+    0
+  );
+  const pct = progress ? Number(progress.progressPercent ?? progress.percent ?? 0) : 0;
+  const totalLessons = progress?.requiredLessonsCount ?? progress?.totalLessons ?? lessonCount;
+  const completedLessons = progress?.completedLessonsCount ?? 0;
+  const durationLabel = course.estimatedDurationWeeks
+    ? `${course.estimatedDurationWeeks} weeks`
+    : course.estimatedDuration || '6 weeks';
+  const statusKey =
+    progress?.completionState && enrollment
+      ? progress.completionState
+      : enrollment
+        ? enrollment.completionState || 'in_progress'
+        : course.publicationStatus || 'published';
+
+  return `
+    <article class="course-card view-enter" style="animation-delay:${Math.min(index, 6) * 25}ms;">
+      ${renderCourseThumbnailHtml(course, { height: '164px' })}
+      <div class="course-card-body">
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div class="meta-line">
+            <span>${escapeHtml(course.difficulty || 'Beginner')}</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span class="mono-num">${escapeHtml(durationLabel)}</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span class="mono-num">${phaseCount} modules · ${lessonCount} lessons</span>
+          </div>
+          <h3 style="font-size:1.12rem;">
+            <a href="/courses/${escapeHtml(course.slug)}" data-link style="color:var(--color-navy);">
+              ${escapeHtml(course.title)}
+            </a>
+          </h3>
+          <p class="line-clamp-2" style="font-size:14px; color:var(--color-text-secondary);">
+            ${escapeHtml(course.description)}
+          </p>
+          <div class="meta-line" style="font-size:12.5px;">
+            <span>By ${escapeHtml(course.authorName || 'Kord Curriculum Team')}</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span class="mono-num">v${Number(course.version || 1)}</span>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          ${
+            enrollment && progress
+              ? renderProgressRail({
+                  label: `Course progress (${completedLessons}/${totalLessons} lessons)`,
+                  value: pct,
+                  max: 100,
+                  detail: `${pct}%`,
+                })
+              : ''
+          }
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:10px; border-top:1px solid var(--color-border); flex-wrap:wrap;">
+            <div>${renderStatusBadge(statusKey)}</div>
+            <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn ${enrollment ? 'btn-primary' : 'btn-secondary'} btn-sm">
+              ${enrollment ? 'Continue course' : 'Explore course'} ${icon('arrowRight', 14)}
+            </a>
+          </div>
         </div>
       </div>
     </article>

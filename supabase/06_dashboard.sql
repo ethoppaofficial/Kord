@@ -10,6 +10,7 @@ as $$
 declare
   v_uid uuid := auth.uid();
   v_completed_lessons integer := 0;
+  v_completed_activities integer := 0;
   v_total_minutes integer := 0;
   v_active_courses integer := 0;
   v_completed_courses integer := 0;
@@ -29,6 +30,10 @@ begin
   from public.lesson_progress lp
   join public.lessons l on l.id = lp.lesson_id
   where lp.user_id = v_uid and lp.completed = true;
+
+  select count(*) into v_completed_activities
+  from public.activity_progress ap
+  where ap.user_id = v_uid and ap.completed = true;
 
   select
     count(*) filter (where status = 'active'),
@@ -65,6 +70,7 @@ begin
       'activeCourses', v_active_courses,
       'completedCourses', v_completed_courses,
       'completedLessons', v_completed_lessons,
+      'completedActivities', v_completed_activities,
       'minutesLearned', v_total_minutes
     ),
     'understanding', jsonb_build_object(

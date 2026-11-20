@@ -80,6 +80,8 @@ export async function getDashboardData(userId) {
 
   const userLessonProgress = (state.lessonProgress || []).filter((lp) => lp.userId === userId);
   const completedProgress = userLessonProgress.filter((lp) => lp.completed);
+  const userActivityProgress = (state.activityProgress || []).filter((ap) => ap.userId === userId);
+  const completedActivitiesCount = userActivityProgress.filter((ap) => ap.completed).length;
 
   const completedEntries = completedProgress.map((lp) => {
     const lesson = lessonById.get(lp.lessonId);
@@ -112,6 +114,7 @@ export async function getDashboardData(userId) {
       const progress = computeCourseProgress({
         course,
         lessonProgress: userLessonProgress.filter((lp) => lp.courseId === course.id),
+        activityProgress: userActivityProgress.filter((ap) => ap.courseId === course.id),
         assessments: state.quizzes || [],
         quizAttempts: attempts,
         challenges: state.challenges || [],
@@ -127,6 +130,7 @@ export async function getDashboardData(userId) {
         difficulty: course.difficulty,
         estimatedDurationWeeks: course.estimatedDurationWeeks,
         status: enr.status,
+        completionState: progress.completionState,
         progress,
       };
     })
@@ -156,7 +160,7 @@ export async function getDashboardData(userId) {
       activeRoadmaps: activeCourses,
       pausedRoadmaps: pausedCourses,
       completedLessons: completedProgress.length,
-      completedActivities: completedProgress.length,
+      completedActivities: completedActivitiesCount,
       minutesLearned,
     },
     understanding: {

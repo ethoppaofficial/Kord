@@ -1,5 +1,6 @@
 import { resolveCourseHierarchy, renderHierarchyGuard } from '../../lib/courseNavigation.js';
 import { enrollInCourse, setCourseEnrollmentStatus } from '../../lib/repositories/progressRepository.js';
+import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
 import { escapeHtml, formatDate, formatMinutes } from '../../lib/formatters.js';
 import { icon } from '../../lib/icons.js';
 import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDrawer } from '../../components/CourseOutlineDrawer.js';
@@ -67,43 +68,52 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
           : ''
       }
 
-      <div class="page-header">
-        <div>
-          <div class="meta-line" style="margin-bottom:4px;">
-            <span>${escapeHtml(course.skill?.title || 'Skill Pathway')}</span>
-            <span class="meta-sep" aria-hidden="true">·</span>
-            <span>${escapeHtml(course.difficulty)}</span>
-            <span class="meta-sep" aria-hidden="true">·</span>
-            <span class="mono-num">${course.estimatedDurationWeeks} weeks (${course.recommendedWeeklyHours}h/wk)</span>
-            <span class="meta-sep" aria-hidden="true">·</span>
-            <span class="mono-num">${orderedPhases.length} phases · ${courseProgress.totalLessons} lessons</span>
+      <div class="card" style="padding:0; overflow:hidden; margin-bottom:22px;">
+        ${renderCourseThumbnailHtml(course, { height: '210px' })}
+        <div style="padding:20px 24px; display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:260px;">
+            <div class="meta-line" style="margin-bottom:6px;">
+              <span>${escapeHtml(course.skill?.title || 'Skill Pathway')}</span>
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <span>${escapeHtml(course.difficulty)}</span>
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <span class="mono-num">${course.estimatedDurationWeeks} weeks (${course.recommendedWeeklyHours}h/wk)</span>
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <span class="mono-num">${orderedPhases.length} modules · ${courseProgress.totalLessons} lessons · ${courseProgress.totalActivities} activities</span>
+            </div>
+            <h1 class="page-title">${escapeHtml(course.title)}</h1>
+            <p class="page-subtitle" style="margin-top:6px;">${escapeHtml(course.description)}</p>
+            <div class="meta-line" style="margin-top:10px; font-size:12.5px;">
+              <span>Instructor: <strong>${escapeHtml(course.authorName || 'Kord Curriculum Studio')}</strong></span>
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <span class="mono-num">Version ${Number(course.version || 1)}</span>
+              ${course.updatedAt ? `<span class="meta-sep" aria-hidden="true">·</span><span>Updated ${formatDate(course.updatedAt)}</span>` : ''}
+            </div>
           </div>
-          <h1 class="page-title">${escapeHtml(course.title)}</h1>
-          <p class="page-subtitle">${escapeHtml(course.description)}</p>
-        </div>
 
-        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-          ${
-            enrollment
-              ? `
-                ${courseProgress.isCompleted ? renderStatusBadge('completed') : renderStatusBadge(enrollment.status)}
-                ${
-                  resumeEntry
-                    ? `<a href="${escapeHtml(resumeEntry.url)}" data-link class="btn btn-primary btn-sm">
-                        ${courseProgress.completedLessonsCount > 0 ? 'Continue learning' : 'Start Phase 1'} ${icon('arrowRight', 14)}
-                      </a>`
-                    : ''
-                }
-                ${
-                  !courseProgress.isCompleted
-                    ? `<button type="button" class="btn btn-secondary btn-sm" id="course-pause-btn">
-                        ${enrollment.status === 'paused' ? 'Resume course' : 'Pause course'}
-                      </button>`
-                    : ''
-                }
-              `
-              : `<button type="button" class="btn btn-primary" id="course-enroll-btn">Enroll in course</button>`
-          }
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            ${
+              enrollment
+                ? `
+                  ${renderStatusBadge(courseProgress.completionState || (courseProgress.isCompleted ? 'completed' : enrollment.status))}
+                  ${
+                    resumeEntry
+                      ? `<a href="${escapeHtml(resumeEntry.url)}" data-link class="btn btn-primary btn-sm">
+                          ${courseProgress.completedLessonsCount > 0 ? 'Continue learning' : 'Start Module 1'} ${icon('arrowRight', 14)}
+                        </a>`
+                      : ''
+                  }
+                  ${
+                    !courseProgress.isCompleted
+                      ? `<button type="button" class="btn btn-secondary btn-sm" id="course-pause-btn">
+                          ${enrollment.status === 'paused' ? 'Resume course' : 'Pause course'}
+                        </button>`
+                      : ''
+                  }
+                `
+                : `<button type="button" class="btn btn-primary" id="course-enroll-btn">Enroll in course</button>`
+            }
+          </div>
         </div>
       </div>
 
@@ -120,15 +130,15 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
           })}
           <div class="kpi-strip">
             <div class="kpi-box" style="padding:12px 14px;">
-              <div class="kpi-label">Phases completed</div>
+              <div class="kpi-label">Modules completed</div>
               <div class="kpi-value mono-num" style="font-size:1.25rem;">${courseProgress.completedPhasesCount}/${courseProgress.totalPhasesCount}</div>
             </div>
             <div class="kpi-box" style="padding:12px 14px;">
-              <div class="kpi-label">Lessons completed</div>
-              <div class="kpi-value mono-num" style="font-size:1.25rem;">${courseProgress.completedLessonsCount}/${courseProgress.requiredLessonsCount}</div>
+              <div class="kpi-label">Lessons &amp; activities</div>
+              <div class="kpi-value mono-num" style="font-size:1.25rem;">${courseProgress.completedLessonsCount + courseProgress.completedActivitiesCount}/${courseProgress.requiredLessonsCount + courseProgress.requiredActivitiesCount}</div>
             </div>
             <div class="kpi-box" style="padding:12px 14px;">
-              <div class="kpi-label">Assessments &amp; challenges</div>
+              <div class="kpi-label">Checks &amp; capstone</div>
               <div class="kpi-value mono-num" style="font-size:1.25rem;">${courseProgress.passedAssessmentsCount + courseProgress.approvedChallengesCount}/${courseProgress.assessmentsCount + courseProgress.challengesCount}</div>
             </div>
             <div class="kpi-box" style="padding:12px 14px;">
@@ -172,6 +182,7 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
                     const pp = phaseProgressById[phase.id];
                     const phaseUrl = `/courses/${course.slug}/phases/${phase.id}`;
                     const lessons = phase.lessons || [];
+                    const activitiesCount = (phase.activities || []).length;
                     const phaseAssCount = assessments.filter((a) => a.phaseId === phase.id).length;
                     const phaseChalCount = challenges.filter((c) => c.phaseId === phase.id).length;
 
@@ -180,13 +191,14 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
                           <div>
                             <div class="meta-line" style="margin-bottom:4px;">
-                              <span>Phase ${phase.position}</span>
+                              <span>Module ${phase.position}</span>
                               <span class="meta-sep" aria-hidden="true">·</span>
                               <span>${escapeHtml(phase.difficulty || course.difficulty)}</span>
                               <span class="meta-sep" aria-hidden="true">·</span>
                               <span class="mono-num">${phase.estHours || 2} hrs</span>
                               <span class="meta-sep" aria-hidden="true">·</span>
                               <span class="mono-num">${lessons.length} ${lessons.length === 1 ? 'lesson' : 'lessons'}</span>
+                              ${activitiesCount > 0 ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num">${activitiesCount} ${activitiesCount === 1 ? 'activity' : 'activities'}</span>` : ''}
                               ${phaseAssCount > 0 ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num">${phaseAssCount} assessment</span>` : ''}
                               ${phaseChalCount > 0 ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num">${phaseChalCount} challenge</span>` : ''}
                             </div>
@@ -260,11 +272,32 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
           }
 
           <section class="card" style="display:flex; flex-direction:column; gap:12px;">
-            <h2 style="font-size:1.05rem;">Schedule &amp; prerequisites</h2>
+            <h2 style="font-size:1.05rem;">Audience, Schedule &amp; Prerequisites</h2>
+            ${
+              course.targetAudience
+                ? `<div style="font-size:13.5px; color:var(--color-text-secondary);"><strong style="color:var(--color-navy);">Who this course is for:</strong> ${escapeHtml(course.targetAudience)}</div>`
+                : ''
+            }
             <div style="font-size:13.5px; color:var(--color-text-secondary);">
               <strong style="color:var(--color-navy);">Recommended schedule:</strong>
               ${escapeHtml(course.recommendedSchedule || `${course.recommendedWeeklyHours} hours/week over ${course.estimatedDurationWeeks} weeks`)}
             </div>
+            ${
+              course.associatedSkills?.length
+                ? `
+              <div>
+                <strong style="font-size:13px; color:var(--color-navy);">Connected competencies (${course.associatedSkills.length}):</strong>
+                <div style="display:flex; flex-direction:column; gap:4px; margin-top:6px;">
+                  ${course.associatedSkills
+                    .map(
+                      (sk) => `<a href="/skills/${escapeHtml(sk.slug)}" data-link style="font-size:13px;">${escapeHtml(sk.title)} (${escapeHtml(sk.category)})</a>`
+                    )
+                    .join('')}
+                </div>
+              </div>
+            `
+                : ''
+            }
             ${
               course.prerequisites?.length
                 ? `
@@ -279,7 +312,7 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
             }
             <div style="padding:10px 12px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-size:12.5px; color:var(--color-text-secondary);">
               <strong style="color:var(--color-navy);">Completion criteria:</strong>
-              Complete all required lessons across phases, pass required course assessments, and earn administrator approval on practical challenges.
+              Finish all required lessons and practical activities, pass graded assessments, and earn administrator approval on the practical capstone. Passing quizzes alone leaves status at <em>Awaiting practical assessment</em>.
             </div>
           </section>
 

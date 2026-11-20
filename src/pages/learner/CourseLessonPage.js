@@ -211,6 +211,17 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
             : ''
         }
 
+        ${
+          lesson.completionCriteria
+            ? `
+          <div class="lesson-callout lesson-definition" style="margin-top:18px;">
+            <div class="lesson-callout-kicker">Completion criteria</div>
+            <div style="font-size:13.5px; color:var(--color-navy);">${escapeHtml(lesson.completionCriteria)}</div>
+          </div>
+        `
+            : ''
+        }
+
         <!-- Study Notes & Explicit Completion Controls -->
         <div style="margin-top:22px; padding-top:18px; border-top:1px solid var(--color-border);">
           <div class="field" style="margin-bottom:14px;">

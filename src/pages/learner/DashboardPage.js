@@ -1,15 +1,17 @@
 import { getDashboardData } from '../../dashboard/dashboardData.js';
+import { listAllCourses } from '../../lib/repositories/contentRepository.js';
 import { escapeHtml, formatMinutes, formatDate } from '../../lib/formatters.js';
 import { buildUserGreeting } from '../../lib/greeting.js';
-import { renderOpportunityCard, renderStatusBadge, renderEmptyState, renderProgressRail } from '../../components/Common.js';
+import { renderOpportunityCard, renderCourseCard, renderStatusBadge, renderEmptyState, renderProgressRail } from '../../components/Common.js';
 import { getSavedOpportunityIds, toggleSavedOpportunity } from './OpportunitiesPage.js';
 import { showToast } from '../../components/Toast.js';
 
 export async function renderDashboardPage({ session }) {
   const user = session.user;
-  const [data, greetingInfo] = await Promise.all([
+  const [data, greetingInfo, publishedCourses] = await Promise.all([
     getDashboardData(user.id),
     buildUserGreeting(user),
+    listAllCourses({ includeDrafts: false }),
   ]);
   const savedIds = getSavedOpportunityIds(user.id);
 
@@ -96,7 +98,25 @@ export async function renderDashboardPage({ session }) {
             </div>
           </div>
         `
-            : ''
+            : publishedCourses.length > 0
+              ? `
+          <div class="card" style="margin-bottom:18px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+              <div>
+                <h3 style="font-size:1.05rem;">Available Flagship Courses (${publishedCourses.length})</h3>
+                <p style="font-size:13px; color:var(--color-text-muted); margin-top:2px;">Start any multi-module course below to track lessons, practical exercises, assessments, and verified mastery.</p>
+              </div>
+              <a href="/explore" data-link style="font-size:13px; font-weight:600;">Browse all ${publishedCourses.length} courses &amp; 99 skills →</a>
+            </div>
+            <div class="course-catalog-grid">
+              ${publishedCourses
+                .slice(0, 4)
+                .map((course, idx) => renderCourseCard(course, { index: idx }))
+                .join('')}
+            </div>
+          </div>
+        `
+              : ''
         }
 
         <div class="lab-grid-2">

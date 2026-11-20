@@ -1,11 +1,24 @@
-import { listCategories, listSkills, listAllCourses } from '../../lib/repositories/contentRepository.js';
-import { getCourseEnrollments, getLessonProgress } from '../../lib/repositories/progressRepository.js';
+import {
+  listCategories,
+  listSkills,
+  listAllCourses,
+  listAllChallenges,
+} from '../../lib/repositories/contentRepository.js';
+import {
+  getCourseEnrollments,
+  getLessonProgress,
+  getActivityProgress,
+} from '../../lib/repositories/progressRepository.js';
+import {
+  listAllQuizzes,
+  getUserAllQuizAttempts,
+} from '../../lib/repositories/quizRepository.js';
+import { getUserSubmissions } from '../../lib/repositories/submissionRepository.js';
 import { getUserSkills } from '../../lib/repositories/skillsRepository.js';
-import { getDemoState } from '../../lib/demo/demoStore.js';
 import { SKILL_LEVELS } from '../../lib/constants.js';
 import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../lib/progressionEngine.js';
 import { escapeHtml } from '../../lib/formatters.js';
-import { renderSkillCard, renderEmptyState } from '../../components/Common.js';
+import { renderSkillCard, renderCourseCard, renderEmptyState } from '../../components/Common.js';
 
 let filterState = {
   search: '',
@@ -16,33 +29,51 @@ let filterState = {
 
 export async function renderExplorePage({ session }) {
   const userId = session.user.id;
-  const [categories, skills, allCourses, enrollments, lessonProgress, userSkills] = await Promise.all([
+  const [
+    categories,
+    skills,
+    allCourses,
+    quizzes,
+    challenges,
+    enrollments,
+    lessonProgress,
+    activityProgress,
+    quizAttempts,
+    submissions,
+    userSkills,
+  ] = await Promise.all([
     listCategories(),
     listSkills(),
     listAllCourses({ includeDrafts: false }),
+    listAllQuizzes(),
+    listAllChallenges(),
     getCourseEnrollments(userId),
     getLessonProgress(userId),
+    getActivityProgress(userId),
+    getUserAllQuizAttempts(userId),
+    getUserSubmissions(userId),
     getUserSkills(userId),
   ]);
-
-  const demoState = getDemoState();
-  const quizzes = demoState.quizzes || [];
-  const challenges = demoState.challenges || [];
-  const quizAttempts = (demoState.quizAttempts || []).filter((a) => a.userId === userId);
-  const submissions = (demoState.submissions || []).filter((s) => s.userId === userId);
 
   const userSkillById = new Map(userSkills.map((us) => [us.skillId, us]));
   const coursesBySkill = new Map();
   const courseProgressById = {};
+  const enrollmentByCourseId = new Map(enrollments.map((e) => [e.courseId, e]));
 
   allCourses.forEach((course) => {
-    if (!coursesBySkill.has(course.skillId)) coursesBySkill.set(course.skillId, []);
-    coursesBySkill.get(course.skillId).push(course);
+    const linkedIds = Array.from(
+      new Set([course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean))
+    );
+    linkedIds.forEach((sid) => {
+      if (!coursesBySkill.has(sid)) coursesBySkill.set(sid, []);
+      coursesBySkill.get(sid).push(course);
+    });
 
-    const enr = enrollments.find((e) => e.courseId === course.id) || null;
+    const enr = enrollmentByCourseId.get(course.id) || null;
     courseProgressById[course.id] = computeCourseProgress({
       course,
       lessonProgress: lessonProgress.filter((lp) => lp.courseId === course.id),
+      activityProgress: activityProgress.filter((ap) => ap.courseId === course.id),
       assessments: quizzes,
       quizAttempts,
       challenges,
@@ -98,9 +129,9 @@ export async function renderExplorePage({ session }) {
         withCourses.length > 0
           ? `
         <section style="margin-bottom:32px;">
-          <h2 class="section-heading">Skills with Available Courses (${withCourses.length})</h2>
+          <h2 class="section-heading">Skills with Published Courses (${withCourses.length})</h2>
           <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">
-            Skills with published, multi-phase courses ready for immediate enrollment.
+            Competencies connected directly to Kord's structured multi-module courses and graded practical capstones.
           </p>
           <div class="lab-grid-3">${withCourses.map((s, i) => buildCard(s, i)).join('')}</div>
         </section>
@@ -111,9 +142,9 @@ export async function renderExplorePage({ session }) {
         withoutCourses.length > 0
           ? `
         <section>
-          <h2 class="section-heading">Skills Without Courses Yet (${withoutCourses.length})</h2>
+          <h2 class="section-heading">Competencies Awaiting Dedicated Courses (${withoutCourses.length})</h2>
           <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">
-            Published competencies awaiting course development. You can inspect outcomes and declare any competency now.
+            Published competencies without a standalone course yet. Several link directly to foundational flagship courses; others are queued for future curriculum development.
           </p>
           <div class="lab-grid-3">${withoutCourses.map((s, i) => buildCard(s, i + withCourses.length)).join('')}</div>
         </section>
@@ -129,13 +160,37 @@ export async function renderExplorePage({ session }) {
     html: `
       <div class="page-header">
         <div>
-          <h1 class="page-title">Explore Skills &amp; Courses</h1>
-          <p class="page-subtitle">Browse ${skills.length} competencies across ${categories.length} categories. Skills exist independently and may host zero, one, or multiple structured courses.</p>
+          <h1 class="page-title">Explore Skills &amp; Flagship Courses</h1>
+          <p class="page-subtitle">Start with Kord's complete multi-module courses or browse ${skills.length} competencies across ${categories.length} categories.</p>
         </div>
         <span class="mono-num" id="explore-count" style="font-size:13px; color:var(--color-text-muted);">
           ${initialFiltered.length} of ${skills.length} skills
         </span>
       </div>
+
+      ${
+        allCourses.length > 0
+          ? `
+        <section style="margin-bottom:32px;">
+          <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+            <h2 class="section-heading" style="margin:0;">Published Courses (${allCourses.length})</h2>
+            <span style="font-size:13px; color:var(--color-text-muted);">Full multi-module curricula with guided lessons, practical activities, graded checks, and capstone projects</span>
+          </div>
+          <div class="course-catalog-grid">
+            ${allCourses
+              .map((course, idx) =>
+                renderCourseCard(course, {
+                  index: idx,
+                  progress: courseProgressById[course.id],
+                  enrollment: enrollmentByCourseId.get(course.id) || null,
+                })
+              )
+              .join('')}
+          </div>
+        </section>
+      `
+          : ''
+      }
 
       <div class="card" style="padding:16px; margin-bottom:22px; display:flex; flex-direction:column; gap:12px;">
         <div class="filter-bar" style="margin-bottom:0;">
@@ -165,7 +220,7 @@ export async function renderExplorePage({ session }) {
           <div class="segmented" role="group" aria-label="Filter by course availability">
             <button type="button" class="segmented-btn ${filterState.courseFilter === 'all' ? 'is-active' : ''}" data-course-filter="all">All skills</button>
             <button type="button" class="segmented-btn ${filterState.courseFilter === 'with_courses' ? 'is-active' : ''}" data-course-filter="with_courses">Courses available</button>
-            <button type="button" class="segmented-btn ${filterState.courseFilter === 'no_courses' ? 'is-active' : ''}" data-course-filter="no_courses">No courses yet</button>
+            <button type="button" class="segmented-btn ${filterState.courseFilter === 'no_courses' ? 'is-active' : ''}" data-course-filter="no_courses">Awaiting course</button>
           </div>
         </div>
       </div>

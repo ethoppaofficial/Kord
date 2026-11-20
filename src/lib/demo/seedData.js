@@ -2,6 +2,8 @@ import { ADMIN_EMAIL, DEFAULT_CATEGORIES } from '../constants.js';
 import { createCatalogSkills } from './catalogSkillsSeed.js';
 import { createFlagshipCurriculumSeed } from './flagshipCoursesSeed.js';
 
+export const CURRENT_SEED_VERSION = 6;
+
 export function createInitialSeed() {
   const now = Date.now();
   const daysAgo = (d, hour = 10) => {
@@ -35,7 +37,7 @@ export function createInitialSeed() {
 
   const categories = DEFAULT_CATEGORIES.map((c) => ({ ...c }));
   const skills = createCatalogSkills();
-  const { courses, quizzes, privateQuizAnswers, challenges } = createFlagshipCurriculumSeed();
+  const { courses, quizzes, privateQuizAnswers, challenges, courseVersions } = createFlagshipCurriculumSeed();
 
   const opportunities = [
     {
@@ -272,11 +274,13 @@ export function createInitialSeed() {
   ];
 
   return {
+    seedVersion: CURRENT_SEED_VERSION,
     users,
     currentUserId: null, // Strict guest auth gate
     categories,
     skills,
     courses,
+    courseVersions,
     quizzes,
     privateQuizAnswers,
     challenges,
@@ -286,6 +290,7 @@ export function createInitialSeed() {
     lessonProgress: [],
     quizAttempts: [],
     submissions: [],
+    courseCompletions: [],
     // Keep legacy empty arrays so older references degrade safely if touched
     enrollments: [],
     activityProgress: [],

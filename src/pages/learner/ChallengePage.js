@@ -134,6 +134,11 @@ export async function renderChallengePage({ params, session, navigate, rerender 
                 ? `<p style="margin-top:10px; font-size:13px; color:var(--color-text-muted);"><strong>Accepted formats:</strong> ${escapeHtml(challenge.deliverableHint || challenge.submissionFormat)}</p>`
                 : ''
             }
+            ${
+              challenge.allowedEvidenceTypes?.length
+                ? `<p style="margin-top:6px; font-size:12.5px; color:var(--color-text-muted);"><strong>Permitted evidence:</strong> ${escapeHtml(challenge.allowedEvidenceTypes.join(', '))} · Max upload ${Number(challenge.maxFileSizeMb || 25)} MB</p>`
+                : ''
+            }
           </section>
 
           <section>
@@ -159,23 +164,30 @@ export async function renderChallengePage({ params, session, navigate, rerender 
             <h2 class="section-heading">${submissions.length > 0 ? 'Resubmit or add new evidence' : 'Submit your evidence'}</h2>
             <form id="challenge-form" class="form-stack" novalidate>
               <div class="field">
-                <label class="field-label" for="evidence-url">Evidence link (optional if uploading a file or pasting text)</label>
-                <input class="input" id="evidence-url" name="evidenceUrl" type="url" placeholder="https://docs.google.com/…" />
+                <label class="field-label" for="evidence-url">Live Project / Portfolio / Video URL (optional)</label>
+                <input class="input" id="evidence-url" name="evidenceUrl" type="url" placeholder="https://docs.google.com/… or deployed URL" />
                 <div class="field-error" data-error-for="evidenceUrl"></div>
               </div>
 
               <div class="field">
-                <span class="field-label">Upload evidence file (optional)</span>
+                <label class="field-label" for="evidence-repo-url">Code / Design Repository Link (optional)</label>
+                <input class="input" id="evidence-repo-url" name="repoUrl" type="url" placeholder="https://github.com/username/project or Figma link" />
+                <div class="field-error" data-error-for="repoUrl"></div>
+              </div>
+
+              <div class="field">
+                <span class="field-label">Upload evidence file (optional, max ${Number(challenge.maxFileSizeMb || 25)} MB)</span>
                 <div class="dropzone" id="evidence-dropzone" tabindex="0" role="button" aria-label="Choose or drop evidence file">
                   <div style="color:var(--color-blue); margin-bottom:4px;">${icon('upload', 20)}</div>
                   <div id="dropzone-label" style="font-size:14px; font-weight:600; color:var(--color-navy);">
                     Drop a file here or click to browse
                   </div>
                   <div id="dropzone-meta" style="font-size:12px; color:var(--color-text-muted); margin-top:2px;">
-                    Stored in private user-scoped evidence storage
+                    ${challenge.allowedMimeTypes?.length ? `Allowed MIME types: ${escapeHtml(challenge.allowedMimeTypes.join(', '))}` : 'Stored in private user-scoped evidence storage'}
                   </div>
                 </div>
                 <input class="sr-only" id="evidence-file" name="evidenceFile" type="file" />
+                <div class="field-error" data-error-for="file"></div>
                 <div style="display:flex; justify-content:flex-end;">
                   <button type="button" class="btn btn-ghost btn-sm" id="clear-file-btn" style="display:none;">Remove selected file</button>
                 </div>
@@ -225,8 +237,9 @@ export async function renderChallengePage({ params, session, navigate, rerender 
                   </div>
                   <p style="font-size:13px; color:var(--color-text-secondary);">${escapeHtml(sub.explanation)}</p>
                   ${sub.submissionText ? `<div style="padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:6px; font-size:12.5px; white-space:pre-line;">${escapeHtml(sub.submissionText)}</div>` : ''}
-                  <div style="font-size:12px; color:var(--color-text-muted);">
-                    ${sub.evidenceUrl ? `URL: <a href="${escapeHtml(sub.evidenceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sub.evidenceUrl)}</a>` : ''}
+                  <div style="font-size:12px; color:var(--color-text-muted); display:flex; flex-direction:column; gap:3px;">
+                    ${sub.evidenceUrl ? `<div>Project URL: <a href="${escapeHtml(sub.evidenceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sub.evidenceUrl)}</a></div>` : ''}
+                    ${sub.repoUrl ? `<div>Repository URL: <a href="${escapeHtml(sub.repoUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sub.repoUrl)}</a></div>` : ''}
                     ${sub.fileName ? `<div>File: ${escapeHtml(sub.fileName)}</div>` : ''}
                   </div>
                   ${
@@ -256,6 +269,7 @@ export async function renderChallengePage({ params, session, navigate, rerender 
       bindCourseOutlineDrawer(root);
       const form = root.querySelector('#challenge-form');
       const urlEl = root.querySelector('#evidence-url');
+      const repoUrlEl = root.querySelector('#evidence-repo-url');
       const fileEl = root.querySelector('#evidence-file');
       const subTextEl = root.querySelector('#submission-text');
       const dropzone = root.querySelector('#evidence-dropzone');
@@ -272,8 +286,9 @@ export async function renderChallengePage({ params, session, navigate, rerender 
 
       const updateReadiness = () => {
         const hasValidUrl = urlEl.value.trim().length > 0 && isValidUrl(urlEl.value.trim());
+        const hasValidRepo = repoUrlEl.value.trim().length > 0 && isValidUrl(repoUrlEl.value.trim());
         const hasText = subTextEl.value.trim().length >= 20;
-        const hasEvidence = Boolean(selectedFile) || hasValidUrl || hasText;
+        const hasEvidence = Boolean(selectedFile) || hasValidUrl || hasValidRepo || hasText;
         const expLen = expEl.value.trim().length;
         const hasExplanation = expLen >= 20;
 
@@ -328,6 +343,7 @@ export async function renderChallengePage({ params, session, navigate, rerender 
       fileEl?.addEventListener('change', () => setFile(fileEl.files?.[0] || null));
       clearBtn?.addEventListener('click', () => setFile(null));
       urlEl?.addEventListener('input', updateReadiness);
+      repoUrlEl?.addEventListener('input', updateReadiness);
       subTextEl?.addEventListener('input', updateReadiness);
       expEl?.addEventListener('input', updateReadiness);
 
@@ -336,17 +352,18 @@ export async function renderChallengePage({ params, session, navigate, rerender 
         const submissionText = subTextEl.value.trim();
         const payload = {
           evidenceUrl: urlEl.value.trim(),
+          repoUrl: repoUrlEl.value.trim(),
           file: selectedFile,
+          submissionText,
           explanation: expEl.value.trim(),
+          challenge,
         };
 
         const errors = validateSubmissionForm(payload);
-        // Allow direct submissionText if at least 20 chars
-        if (errors.evidence && submissionText.length >= 20) {
-          delete errors.evidence;
-        }
         root.querySelector('[data-error-for="evidence"]').textContent = errors.evidence || '';
         root.querySelector('[data-error-for="evidenceUrl"]').textContent = errors.evidenceUrl || '';
+        root.querySelector('[data-error-for="repoUrl"]').textContent = errors.repoUrl || '';
+        root.querySelector('[data-error-for="file"]').textContent = errors.file || '';
         root.querySelector('[data-error-for="explanation"]').textContent = errors.explanation || '';
         if (Object.keys(errors).length > 0) return;
 
@@ -358,10 +375,12 @@ export async function renderChallengePage({ params, session, navigate, rerender 
             challengeId: challenge.id,
             courseId: challenge.courseId || null,
             evidenceUrl: payload.evidenceUrl,
+            repoUrl: payload.repoUrl,
             file: payload.file,
             submissionText,
             explanation: payload.explanation,
             rubricMax,
+            challenge,
           });
           showToast('Evidence submitted for administrator review.', 'success');
           rerender({ silent: true });

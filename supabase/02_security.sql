@@ -18,13 +18,17 @@ alter table public.profiles enable row level security;
 alter table public.categories enable row level security;
 alter table public.skills enable row level security;
 alter table public.courses enable row level security;
+alter table public.course_skills enable row level security;
+alter table public.course_versions enable row level security;
 alter table public.phases enable row level security;
 alter table public.lessons enable row level security;
+alter table public.lesson_resources enable row level security;
 alter table public.activities enable row level security;
 alter table public.quizzes enable row level security;
 alter table public.questions enable row level security;
 alter table public.challenges enable row level security;
 alter table public.course_enrollments enable row level security;
+alter table public.course_completions enable row level security;
 alter table public.lesson_progress enable row level security;
 alter table public.enrollments enable row level security;
 alter table public.activity_progress enable row level security;
@@ -58,15 +62,30 @@ create policy "catalog_read_courses" on public.courses for select using (publica
 drop policy if exists "catalog_admin_courses" on public.courses;
 create policy "catalog_admin_courses" on public.courses for all using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "catalog_read_course_skills" on public.course_skills;
+create policy "catalog_read_course_skills" on public.course_skills for select using (true);
+drop policy if exists "catalog_admin_course_skills" on public.course_skills;
+create policy "catalog_admin_course_skills" on public.course_skills for all using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "catalog_read_course_versions" on public.course_versions;
+create policy "catalog_read_course_versions" on public.course_versions for select using (true);
+drop policy if exists "catalog_admin_course_versions" on public.course_versions;
+create policy "catalog_admin_course_versions" on public.course_versions for all using (public.is_admin()) with check (public.is_admin());
+
 drop policy if exists "catalog_read_phases" on public.phases;
-create policy "catalog_read_phases" on public.phases for select using (true);
+create policy "catalog_read_phases" on public.phases for select using (publication_status = 'published' or public.is_admin());
 drop policy if exists "catalog_admin_phases" on public.phases;
 create policy "catalog_admin_phases" on public.phases for all using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_lessons" on public.lessons;
-create policy "catalog_read_lessons" on public.lessons for select using (true);
+create policy "catalog_read_lessons" on public.lessons for select using (publication_status = 'published' or public.is_admin());
 drop policy if exists "catalog_admin_lessons" on public.lessons;
 create policy "catalog_admin_lessons" on public.lessons for all using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "catalog_read_lesson_resources" on public.lesson_resources;
+create policy "catalog_read_lesson_resources" on public.lesson_resources for select using (true);
+drop policy if exists "catalog_admin_lesson_resources" on public.lesson_resources;
+create policy "catalog_admin_lesson_resources" on public.lesson_resources for all using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_activities" on public.activities;
 create policy "catalog_read_activities" on public.activities for select using (true);
@@ -101,6 +120,10 @@ drop policy if exists "course_enrollments_own_only" on public.course_enrollments
 create policy "course_enrollments_own_only" on public.course_enrollments
   for all using (user_id = auth.uid() and not public.is_admin())
   with check (user_id = auth.uid() and not public.is_admin());
+
+drop policy if exists "course_completions_own_or_admin" on public.course_completions;
+create policy "course_completions_own_or_admin" on public.course_completions
+  for select using (user_id = auth.uid() or public.is_admin());
 
 drop policy if exists "lesson_progress_own_only" on public.lesson_progress;
 create policy "lesson_progress_own_only" on public.lesson_progress

@@ -1,13 +1,22 @@
-import { getSkillBySlug } from '../../lib/repositories/contentRepository.js';
+import {
+  getSkillBySlug,
+  listAllChallenges,
+} from '../../lib/repositories/contentRepository.js';
 import {
   getCourseEnrollments,
   enrollInCourse,
   getLessonProgress,
+  getActivityProgress,
 } from '../../lib/repositories/progressRepository.js';
+import {
+  listAllQuizzes,
+  getUserAllQuizAttempts,
+} from '../../lib/repositories/quizRepository.js';
+import { getUserSubmissions } from '../../lib/repositories/submissionRepository.js';
 import { getUserSkills, declareUserSkill } from '../../lib/repositories/skillsRepository.js';
 import { listRankedOpportunities } from '../../lib/repositories/opportunityRepository.js';
-import { getDemoState } from '../../lib/demo/demoStore.js';
 import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../lib/progressionEngine.js';
+import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
 import { escapeHtml } from '../../lib/formatters.js';
 import { icon } from '../../lib/icons.js';
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
@@ -26,18 +35,27 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
   }
 
   const userId = session?.user?.id || null;
-  const [enrollments, lessonProgress, userSkills, opportunities] = await Promise.all([
+  const [
+    enrollments,
+    lessonProgress,
+    activityProgress,
+    quizzes,
+    challenges,
+    quizAttempts,
+    submissions,
+    userSkills,
+    opportunities,
+  ] = await Promise.all([
     userId ? getCourseEnrollments(userId) : Promise.resolve([]),
     userId ? getLessonProgress(userId) : Promise.resolve([]),
+    userId ? getActivityProgress(userId) : Promise.resolve([]),
+    listAllQuizzes(),
+    listAllChallenges(),
+    userId ? getUserAllQuizAttempts(userId) : Promise.resolve([]),
+    userId ? getUserSubmissions(userId) : Promise.resolve([]),
     userId ? getUserSkills(userId) : Promise.resolve([]),
     listRankedOpportunities(userId),
   ]);
-
-  const state = getDemoState();
-  const quizzes = state.quizzes || [];
-  const challenges = state.challenges || [];
-  const quizAttempts = userId ? (state.quizAttempts || []).filter((a) => a.userId === userId) : [];
-  const submissions = userId ? (state.submissions || []).filter((s) => s.userId === userId) : [];
 
   const userSkill = userSkills.find((us) => us.skillId === skill.id) || null;
   const courses = skill.courses || [];
@@ -48,6 +66,7 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
     courseProgressById[course.id] = computeCourseProgress({
       course,
       lessonProgress: lessonProgress.filter((lp) => lp.courseId === course.id),
+      activityProgress: activityProgress.filter((ap) => ap.courseId === course.id),
       assessments: quizzes,
       quizAttempts,
       challenges,
@@ -131,63 +150,73 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
                     const lessonCount = prog.totalLessons;
 
                     return `
-                      <article class="card card-interactive" style="display:flex; flex-direction:column; gap:14px;">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
-                          <div>
-                            <div class="meta-line" style="margin-bottom:4px;">
-                              <span>Course ${idx + 1}</span>
-                              <span class="meta-sep" aria-hidden="true">·</span>
-                              <span>${escapeHtml(course.difficulty)}</span>
-                              <span class="meta-sep" aria-hidden="true">·</span>
-                              <span class="mono-num">${course.estimatedDurationWeeks} weeks (${course.recommendedWeeklyHours}h/wk)</span>
-                              <span class="meta-sep" aria-hidden="true">·</span>
-                              <span class="mono-num">${phaseCount} phases · ${lessonCount} lessons</span>
+                      <article class="course-card">
+                        ${renderCourseThumbnailHtml(course, { height: '150px' })}
+                        <div class="course-card-body">
+                          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+                            <div>
+                              <div class="meta-line" style="margin-bottom:4px;">
+                                <span>Course ${idx + 1}</span>
+                                <span class="meta-sep" aria-hidden="true">·</span>
+                                <span>${escapeHtml(course.difficulty)}</span>
+                                <span class="meta-sep" aria-hidden="true">·</span>
+                                <span class="mono-num">${course.estimatedDurationWeeks} weeks (${course.recommendedWeeklyHours}h/wk)</span>
+                                <span class="meta-sep" aria-hidden="true">·</span>
+                                <span class="mono-num">${phaseCount} modules · ${lessonCount} lessons</span>
+                              </div>
+                              <h3 style="font-size:1.15rem;">${escapeHtml(course.title)}</h3>
+                              <div style="font-size:12.5px; color:var(--color-text-muted); margin-top:2px;">
+                                Instructor: ${escapeHtml(course.authorName || 'Kord Curriculum Studio')} · v${Number(course.version || 1)}
+                              </div>
                             </div>
-                            <h3 style="font-size:1.15rem;">${escapeHtml(course.title)}</h3>
-                          </div>
-                          ${
-                            prog.isCompleted
-                              ? renderStatusBadge('completed')
-                              : enr
-                                ? renderStatusBadge(enr.status)
-                                : '<span class="status-tag status-neutral">Not enrolled</span>'
-                          }
-                        </div>
-
-                        <p style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(course.description)}</p>
-
-                        ${
-                          course.outcomes?.length
-                            ? `
-                          <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:3px;">
-                            ${course.outcomes.slice(0, 3).map((o) => `<li>${escapeHtml(o)}</li>`).join('')}
-                          </ul>
-                        `
-                            : ''
-                        }
-
-                        ${renderProgressRail({
-                          label: 'Course completion',
-                          value: prog.progressPercent,
-                          max: 100,
-                          detail: `${prog.completedLessonsCount}/${prog.requiredLessonsCount} lessons · ${prog.progressPercent}%`,
-                        })}
-
-                        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding-top:10px; border-top:1px solid var(--color-border); flex-wrap:wrap;">
-                          <span style="font-size:12.5px; color:var(--color-text-muted);">
-                            Recommended pace: ${escapeHtml(course.recommendedSchedule || 'Self-paced weekly milestones')}
-                          </span>
-                          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                            <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-secondary btn-sm">Course details</a>
                             ${
                               enr
-                                ? `<a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-primary btn-sm">
-                                    Continue course ${icon('arrowRight', 14)}
-                                  </a>`
-                                : `<button type="button" class="btn btn-primary btn-sm" data-enroll-course="${escapeHtml(course.id)}" data-course-slug="${escapeHtml(course.slug)}">
-                                    Enroll in course
-                                  </button>`
+                                ? renderStatusBadge(prog.completionState || enr.status)
+                                : '<span class="status-tag status-neutral">Not enrolled</span>'
                             }
+                          </div>
+
+                          <p style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(course.description)}</p>
+
+                          ${
+                            course.targetAudience
+                              ? `<p style="font-size:13px; color:var(--color-text-muted);"><strong>Target audience:</strong> ${escapeHtml(course.targetAudience)}</p>`
+                              : ''
+                          }
+
+                          ${
+                            course.outcomes?.length
+                              ? `
+                            <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:3px;">
+                              ${course.outcomes.slice(0, 3).map((o) => `<li>${escapeHtml(o)}</li>`).join('')}
+                            </ul>
+                          `
+                              : ''
+                          }
+
+                          ${renderProgressRail({
+                            label: 'Course completion',
+                            value: prog.progressPercent,
+                            max: 100,
+                            detail: `${prog.completedLessonsCount}/${prog.requiredLessonsCount} lessons · ${prog.progressPercent}%`,
+                          })}
+
+                          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding-top:10px; border-top:1px solid var(--color-border); flex-wrap:wrap;">
+                            <span style="font-size:12.5px; color:var(--color-text-muted);">
+                              Recommended pace: ${escapeHtml(course.recommendedSchedule || 'Self-paced weekly milestones')}
+                            </span>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                              <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-secondary btn-sm">Course details</a>
+                              ${
+                                enr
+                                  ? `<a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-primary btn-sm">
+                                      Continue course ${icon('arrowRight', 14)}
+                                    </a>`
+                                  : `<button type="button" class="btn btn-primary btn-sm" data-enroll-course="${escapeHtml(course.id)}" data-course-slug="${escapeHtml(course.slug)}">
+                                      Enroll in course
+                                    </button>`
+                              }
+                            </div>
                           </div>
                         </div>
                       </article>
@@ -196,9 +225,23 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
                   .join('')}
               </div>
             `
-                : `
+                : skill.supportedByCourseSlug
+                  ? `
+              <div class="card-workspace" style="display:flex; flex-direction:column; gap:10px;">
+                <h3 style="font-size:1.05rem;">Covered via flagship foundational pathway</h3>
+                <p style="font-size:14px; color:var(--color-text-secondary);">
+                  While a standalone course exclusively for ${escapeHtml(skill.title)} is not published yet, this competency is actively developed inside Kord's foundational curriculum.
+                </p>
+                <div>
+                  <a href="/courses/${escapeHtml(skill.supportedByCourseSlug)}" data-link class="btn btn-primary btn-sm">
+                    Open supporting flagship course ${icon('arrowRight', 14)}
+                  </a>
+                </div>
+              </div>
+            `
+                  : `
               <div class="state-box" style="padding:28px 20px;">
-                <h3 style="font-size:1.05rem;">No courses available yet</h3>
+                <h3 style="font-size:1.05rem;">Awaiting course development</h3>
                 <p>No courses are available for this skill yet. Check back later as new learning pathways are added.</p>
                 <a href="/explore" data-link class="btn btn-secondary btn-sm">Browse skills with courses</a>
               </div>
@@ -223,12 +266,12 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
                     detail: `${overall.completedCoursesCount}/${overall.totalPublishedCourses} courses`,
                   })
                 : `<div style="font-size:13px; color:var(--color-text-secondary); padding:10px 12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
-                    Courses for ${escapeHtml(skill.title)} are not published yet. This skill cannot be marked completed or verified until published courses exist and are finished.
+                    Dedicated courses for ${escapeHtml(skill.title)} are not published yet. This skill cannot be marked completed or verified until published courses exist and are finished with approved practical evidence.
                   </div>`
             }
 
             <div style="font-size:13px; color:var(--color-text-secondary); line-height:1.5; padding:10px 12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
-              <strong>Verification rule:</strong> Completing a single course upgrades this skill to <strong>Demonstrated</strong>. Earning <strong>Verified</strong> requires completing <strong>all published courses</strong> associated with ${escapeHtml(skill.title)} with approved assessments and challenges.
+              <strong>Verification rule:</strong> Passing quizzes alone does not verify competence. Earning <strong>Verified</strong> requires completing <strong>all published courses</strong> associated with ${escapeHtml(skill.title)} with administrator-approved practical work.
             </div>
 
             <button type="button" class="btn btn-secondary btn-sm" id="declare-btn" ${userSkill ? 'disabled' : ''}>

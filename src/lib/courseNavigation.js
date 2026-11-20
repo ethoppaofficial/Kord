@@ -2,6 +2,7 @@ import { getCourseBySlug } from './repositories/contentRepository.js';
 import {
   getCourseEnrollments,
   getLessonProgress,
+  getActivityProgress,
   enrollInCourse,
 } from './repositories/progressRepository.js';
 import { getQuizAttempts } from './repositories/quizRepository.js';
@@ -28,9 +29,10 @@ export async function resolveCourseHierarchy({
     return { status: 'not_found' };
   }
 
-  const [enrollments, lessonProgress, submissions] = await Promise.all([
+  const [enrollments, lessonProgress, activityProgress, submissions] = await Promise.all([
     userId ? getCourseEnrollments(userId) : Promise.resolve([]),
     userId ? getLessonProgress(userId, course.id) : Promise.resolve([]),
+    userId ? getActivityProgress(userId, course.id) : Promise.resolve([]),
     userId ? getUserSubmissions(userId) : Promise.resolve([]),
   ]);
 
@@ -51,6 +53,9 @@ export async function resolveCourseHierarchy({
     .sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
     .map((p) => ({
       ...p,
+      activities: (p.activities || [])
+        .slice()
+        .sort((a, b) => Number(a.position || 0) - Number(b.position || 0)),
       lessons: (p.lessons || [])
         .slice()
         .sort((a, b) => Number(a.position || 0) - Number(b.position || 0)),
@@ -60,6 +65,7 @@ export async function resolveCourseHierarchy({
   const courseProgress = computeCourseProgress({
     course: normalizedCourse,
     lessonProgress,
+    activityProgress,
     assessments,
     quizAttempts,
     challenges,
@@ -68,6 +74,7 @@ export async function resolveCourseHierarchy({
   });
 
   const progressByLesson = new Map(lessonProgress.map((lp) => [lp.lessonId, lp]));
+  const progressByActivity = new Map(activityProgress.map((ap) => [ap.activityId, ap]));
 
   // Flattened ordered lesson index across all phases (respecting explicit position order)
   const flattenedLessons = [];
@@ -145,6 +152,8 @@ export async function resolveCourseHierarchy({
     courseProgress,
     phaseProgressById: courseProgress.phaseProgressById || {},
     progressByLesson,
+    activityProgress,
+    progressByActivity,
     assessments,
     challenges,
     quizAttempts,

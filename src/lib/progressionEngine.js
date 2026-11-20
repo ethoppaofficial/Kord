@@ -3,11 +3,13 @@
  *
  * Rules:
  * - Viewing a phase or lesson page NEVER marks it complete automatically.
- * - Phase completion evaluates completed required lessons, passed phase assessments, and approved phase challenges.
- * - Course progress tracks required lessons, required assessments, and required challenges across ordered phases.
- * - Calendar time elapsed NEVER marks a course complete; completion requires earned requirements.
- * - Parent Skill becomes 'verified' ONLY when ALL published courses under that skill are completed
- *   (and a skill with 0 published courses is NEVER automatically marked completed or verified).
+ * - Phase completion evaluates completed required lessons, required practical activities,
+ *   passed phase assessments, and approved phase challenges.
+ * - Course completion evaluates configured completionRules and distinguishes cleanly between:
+ *   'in_progress', 'awaiting_practical_assessment', 'completed', and 'completed_verified'.
+ * - Quizzes NEVER independently award practical competence or verified status.
+ * - Parent Skill becomes 'verified' ONLY when ALL published courses associated with that skill
+ *   are completed with practical approval (0-course skills never auto-complete or auto-verify).
  */
 
 export function computeProjectedCompletionDate({ enrolledAt, remainingMinutes, recommendedWeeklyHours }) {
@@ -22,12 +24,13 @@ export function computeProjectedCompletionDate({ enrolledAt, remainingMinutes, r
 export function computePhaseProgress({
   phase,
   lessonProgress = [],
+  activityProgress = [],
   assessments = [],
   quizAttempts = [],
   challenges = [],
   submissions = [],
 }) {
-  const orderedLessons = (phase?.lessons || phase?.activities || [])
+  const orderedLessons = (phase?.lessons || [])
     .slice()
     .sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
   const requiredLessons = orderedLessons.filter((l) => l.isRequired !== false);
@@ -44,6 +47,15 @@ export function computePhaseProgress({
       return sum + Number(lp?.minutesSpent || l.estMinutes || 25);
     }, 0);
 
+  const orderedActivities = (phase?.activities || [])
+    .slice()
+    .sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+  const requiredActivities = orderedActivities.filter((a) => a.isRequired !== false);
+  const completedActivitySet = new Set(
+    activityProgress.filter((ap) => ap.completed).map((ap) => ap.activityId)
+  );
+  const completedActivitiesCount = requiredActivities.filter((a) => completedActivitySet.has(a.id)).length;
+
   const phaseAssessments = assessments.filter((q) => q.phaseId === phase?.id);
   const passedAssessmentsCount = phaseAssessments.filter((q) =>
     quizAttempts.some((a) => a.quizId === q.id && a.passed && a.reviewStatus !== 'pending_review')
@@ -54,13 +66,22 @@ export function computePhaseProgress({
     submissions.some((s) => s.challengeId === c.id && s.status === 'approved')
   ).length;
 
-  const totalUnits = requiredLessons.length + phaseAssessments.length + phaseChallenges.length;
-  const doneUnits = completedLessonsCount + passedAssessmentsCount + approvedChallengesCount;
+  const totalUnits =
+    requiredLessons.length +
+    requiredActivities.length +
+    phaseAssessments.length +
+    phaseChallenges.length;
+  const doneUnits =
+    completedLessonsCount +
+    completedActivitiesCount +
+    passedAssessmentsCount +
+    approvedChallengesCount;
   const progressPercent = totalUnits > 0 ? Math.min(100, Math.round((doneUnits / totalUnits) * 100)) : 0;
 
   const isCompleted =
     totalUnits > 0 &&
     completedLessonsCount >= requiredLessons.length &&
+    completedActivitiesCount >= requiredActivities.length &&
     passedAssessmentsCount >= phaseAssessments.length &&
     approvedChallengesCount >= phaseChallenges.length;
 
@@ -69,6 +90,9 @@ export function computePhaseProgress({
     totalLessons: orderedLessons.length,
     requiredLessonsCount: requiredLessons.length,
     completedLessonsCount,
+    totalActivities: orderedActivities.length,
+    requiredActivitiesCount: requiredActivities.length,
+    completedActivitiesCount,
     assessmentsCount: phaseAssessments.length,
     passedAssessmentsCount,
     challengesCount: phaseChallenges.length,
@@ -84,6 +108,7 @@ export function computePhaseProgress({
 export function computeCourseProgress({
   course,
   lessonProgress = [],
+  activityProgress = [],
   assessments = [],
   quizAttempts = [],
   challenges = [],
@@ -94,15 +119,19 @@ export function computeCourseProgress({
     .slice()
     .sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
 
+  const courseAssessments = assessments.filter((q) => q.courseId === course.id);
+  const courseChallenges = challenges.filter((c) => c.courseId === course.id);
+
   const phaseProgressById = {};
   let completedPhasesCount = 0;
   phases.forEach((p) => {
     const pp = computePhaseProgress({
       phase: p,
       lessonProgress,
-      assessments: assessments.filter((q) => q.courseId === course.id),
+      activityProgress,
+      assessments: courseAssessments,
       quizAttempts,
-      challenges: challenges.filter((c) => c.courseId === course.id),
+      challenges: courseChallenges,
       submissions,
     });
     phaseProgressById[p.id] = pp;
@@ -110,12 +139,23 @@ export function computeCourseProgress({
   });
 
   const allLessons = phases.flatMap((p) =>
-    (p.lessons || p.activities || []).slice().sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
+    (p.lessons || []).slice().sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
   );
   const requiredLessons = allLessons.filter((l) => l.isRequired !== false);
-  const completedSet = new Set(lessonProgress.filter((lp) => lp.completed).map((lp) => lp.lessonId || lp.activityId));
-
+  const completedSet = new Set(
+    lessonProgress.filter((lp) => lp.completed).map((lp) => lp.lessonId || lp.activityId)
+  );
   const doneLessonsCount = requiredLessons.filter((l) => completedSet.has(l.id)).length;
+
+  const allActivities = phases.flatMap((p) =>
+    (p.activities || []).slice().sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
+  );
+  const requiredActivities = allActivities.filter((a) => a.isRequired !== false);
+  const completedActSet = new Set(
+    activityProgress.filter((ap) => ap.completed).map((ap) => ap.activityId)
+  );
+  const doneActivitiesCount = requiredActivities.filter((a) => completedActSet.has(a.id)).length;
+
   const totalLessonMinutes = allLessons.reduce((sum, l) => sum + Number(l.estMinutes || 20), 0);
   const completedLessonMinutes = allLessons
     .filter((l) => completedSet.has(l.id))
@@ -125,35 +165,65 @@ export function computeCourseProgress({
     }, 0);
   const remainingMinutes = Math.max(0, totalLessonMinutes - completedLessonMinutes);
 
-  const courseAssessments = assessments.filter((q) => q.courseId === course.id);
   const passedAssessmentsCount = courseAssessments.filter((q) =>
     quizAttempts.some((a) => a.quizId === q.id && a.passed && a.reviewStatus !== 'pending_review')
   ).length;
 
-  const courseChallenges = challenges.filter((c) => c.courseId === course.id);
+  const submittedChallengesCount = courseChallenges.filter((c) =>
+    submissions.some((s) => s.challengeId === c.id)
+  ).length;
   const approvedChallengesCount = courseChallenges.filter((c) =>
     submissions.some((s) => s.challengeId === c.id && s.status === 'approved')
   ).length;
 
   const rules = course?.completionRules || {
     requireAllRequiredLessons: true,
+    requireAllActivities: true,
     requireAllAssessments: true,
+    requireChallengeSubmission: true,
     requireChallengeApproval: true,
   };
 
   const lessonsOk = !rules.requireAllRequiredLessons || doneLessonsCount >= requiredLessons.length;
+  const activitiesOk = rules.requireAllActivities === false || doneActivitiesCount >= requiredActivities.length;
   const assessmentsOk = !rules.requireAllAssessments || passedAssessmentsCount >= courseAssessments.length;
-  const challengesOk = !rules.requireChallengeApproval || approvedChallengesCount >= courseChallenges.length;
+  const challengesSubmittedOk =
+    rules.requireChallengeSubmission === false || submittedChallengesCount >= courseChallenges.length;
+  const challengesApprovedOk =
+    !rules.requireChallengeApproval || approvedChallengesCount >= courseChallenges.length;
 
-  const totalUnits = requiredLessons.length + courseAssessments.length + courseChallenges.length;
-  const doneUnits = doneLessonsCount + passedAssessmentsCount + approvedChallengesCount;
+  const hasContent =
+    requiredLessons.length > 0 ||
+    requiredActivities.length > 0 ||
+    courseAssessments.length > 0 ||
+    courseChallenges.length > 0;
+
+  const totalUnits =
+    requiredLessons.length +
+    requiredActivities.length +
+    courseAssessments.length +
+    courseChallenges.length;
+  const doneUnits =
+    doneLessonsCount +
+    doneActivitiesCount +
+    passedAssessmentsCount +
+    approvedChallengesCount;
   const progressPercent = totalUnits > 0 ? Math.min(100, Math.round((doneUnits / totalUnits) * 100)) : 0;
 
+  const instructionalDone = hasContent && lessonsOk && activitiesOk && assessmentsOk;
+  const practicalApproved = courseChallenges.length > 0 && approvedChallengesCount >= courseChallenges.length;
+
+  let completionState = 'in_progress';
+  if (instructionalDone) {
+    if (rules.requireChallengeApproval && courseChallenges.length > 0) {
+      completionState = practicalApproved ? 'completed_verified' : 'awaiting_practical_assessment';
+    } else if (challengesSubmittedOk) {
+      completionState = practicalApproved ? 'completed_verified' : 'completed';
+    }
+  }
+
   const isCompleted =
-    (requiredLessons.length > 0 || courseAssessments.length > 0 || courseChallenges.length > 0) &&
-    lessonsOk &&
-    assessmentsOk &&
-    challengesOk;
+    completionState === 'completed' || completionState === 'completed_verified';
 
   const projectedCompletionAt = computeProjectedCompletionDate({
     enrolledAt: enrollment?.enrolledAt,
@@ -165,12 +235,16 @@ export function computeCourseProgress({
     totalLessons: allLessons.length,
     requiredLessonsCount: requiredLessons.length,
     completedLessonsCount: doneLessonsCount,
+    totalActivities: allActivities.length,
+    requiredActivitiesCount: requiredActivities.length,
+    completedActivitiesCount: doneActivitiesCount,
     totalPhasesCount: phases.length,
     completedPhasesCount,
     phaseProgressById,
     assessmentsCount: courseAssessments.length,
     passedAssessmentsCount,
     challengesCount: courseChallenges.length,
+    submittedChallengesCount,
     approvedChallengesCount,
     progressPercent,
     actualMinutesSpent: completedLessonMinutes,
@@ -178,8 +252,11 @@ export function computeCourseProgress({
     remainingMinutes,
     projectedCompletionAt,
     lessonsOk,
+    activitiesOk,
     assessmentsOk,
-    challengesOk,
+    challengesOk: challengesApprovedOk,
+    practicalApproved,
+    completionState,
     isCompleted,
   };
 }
@@ -199,16 +276,25 @@ export function computeOverallSkillCourseProgress({
 
   let sumPct = 0;
   let completedCoursesCount = 0;
+  let verifiedCoursesCount = 0;
   publishedCourses.forEach((c) => {
     const p = courseProgressById[c.id];
     sumPct += p?.progressPercent || 0;
     if (p?.isCompleted) completedCoursesCount += 1;
+    if (
+      p?.completionState === 'completed_verified' ||
+      (p?.isCompleted && c.completionRules?.requireChallengeApproval === false)
+    ) {
+      verifiedCoursesCount += 1;
+    }
   });
 
   return {
     totalPublishedCourses: publishedCourses.length,
     completedCoursesCount,
+    verifiedCoursesCount,
     averagePercent: Math.round(sumPct / publishedCourses.length),
     allCoursesCompleted: completedCoursesCount === publishedCourses.length,
+    allCoursesVerified: verifiedCoursesCount === publishedCourses.length,
   };
 }

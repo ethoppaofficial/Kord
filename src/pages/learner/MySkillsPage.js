@@ -1,8 +1,21 @@
-import { listSkills, listAllCourses } from '../../lib/repositories/contentRepository.js';
-import { getCourseEnrollments, getLessonProgress } from '../../lib/repositories/progressRepository.js';
+import {
+  listSkills,
+  listAllCourses,
+  listAllChallenges,
+} from '../../lib/repositories/contentRepository.js';
+import {
+  getCourseEnrollments,
+  getLessonProgress,
+  getActivityProgress,
+} from '../../lib/repositories/progressRepository.js';
+import {
+  listAllQuizzes,
+  getUserAllQuizAttempts,
+} from '../../lib/repositories/quizRepository.js';
+import { getUserSubmissions } from '../../lib/repositories/submissionRepository.js';
 import { getUserSkills, declareUserSkill } from '../../lib/repositories/skillsRepository.js';
-import { getDemoState } from '../../lib/demo/demoStore.js';
 import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../lib/progressionEngine.js';
+import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
 import { PROGRESSION_LADDER, PROGRESSION_WEIGHT } from '../../lib/constants.js';
 import { escapeHtml, formatDate } from '../../lib/formatters.js';
 import { renderStatusBadge, renderEmptyState, renderProgressRail } from '../../components/Common.js';
@@ -10,19 +23,29 @@ import { showToast } from '../../components/Toast.js';
 
 export async function renderMySkillsPage({ session, rerender }) {
   const userId = session.user.id;
-  const [skills, allCourses, enrollments, lessonProgress, userSkills] = await Promise.all([
+  const [
+    skills,
+    allCourses,
+    quizzes,
+    challenges,
+    enrollments,
+    lessonProgress,
+    activityProgress,
+    quizAttempts,
+    submissions,
+    userSkills,
+  ] = await Promise.all([
     listSkills(),
     listAllCourses({ includeDrafts: false }),
+    listAllQuizzes(),
+    listAllChallenges(),
     getCourseEnrollments(userId),
     getLessonProgress(userId),
+    getActivityProgress(userId),
+    getUserAllQuizAttempts(userId),
+    getUserSubmissions(userId),
     getUserSkills(userId),
   ]);
-
-  const state = getDemoState();
-  const quizzes = state.quizzes || [];
-  const challenges = state.challenges || [];
-  const quizAttempts = (state.quizAttempts || []).filter((a) => a.userId === userId);
-  const submissions = (state.submissions || []).filter((s) => s.userId === userId);
 
   const courseProgressById = {};
   allCourses.forEach((course) => {
@@ -30,6 +53,7 @@ export async function renderMySkillsPage({ session, rerender }) {
     courseProgressById[course.id] = computeCourseProgress({
       course,
       lessonProgress: lessonProgress.filter((lp) => lp.courseId === course.id),
+      activityProgress: activityProgress.filter((ap) => ap.courseId === course.id),
       assessments: quizzes,
       quizAttempts,
       challenges,
@@ -46,7 +70,7 @@ export async function renderMySkillsPage({ session, rerender }) {
       <div class="page-header">
         <div>
           <h1 class="page-title">My Learning &amp; Skill Progression</h1>
-          <p class="page-subtitle">Track individual course progress and how your courses contribute toward earning Verified skill status.</p>
+          <p class="page-subtitle">Track individual course progress, practical activity completion, and how approved capstones elevate your skills to Verified.</p>
         </div>
         <a href="/explore" data-link class="btn btn-primary btn-sm">Explore courses</a>
       </div>
@@ -78,32 +102,41 @@ export async function renderMySkillsPage({ session, rerender }) {
                 if (!course) return '';
                 const prog = courseProgressById[course.id];
                 const skill = skills.find((s) => s.id === course.skillId);
+                const statusKey = prog.completionState || enr.completionState || enr.status;
                 return `
-                  <article class="card" style="display:flex; flex-direction:column; gap:12px;">
-                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
-                      <div>
-                        <div class="meta-line" style="margin-bottom:2px;">
-                          <span>${escapeHtml(skill?.title || 'Skill')}</span>
-                          <span class="meta-sep" aria-hidden="true">·</span>
-                          <span>${escapeHtml(course.difficulty)}</span>
+                  <article class="course-card">
+                    ${renderCourseThumbnailHtml(course, { height: '132px' })}
+                    <div class="course-card-body">
+                      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+                        <div>
+                          <div class="meta-line" style="margin-bottom:2px;">
+                            <span>${escapeHtml(skill?.title || 'Skill Pathway')}</span>
+                            <span class="meta-sep" aria-hidden="true">·</span>
+                            <span>${escapeHtml(course.difficulty)}</span>
+                            <span class="meta-sep" aria-hidden="true">·</span>
+                            <span class="mono-num">v${Number(course.version || 1)}</span>
+                          </div>
+                          <a href="/courses/${escapeHtml(course.slug)}" data-link style="font-size:1.05rem; font-weight:700; color:var(--color-navy);">
+                            ${escapeHtml(course.title)}
+                          </a>
+                          <div style="font-size:12px; color:var(--color-text-muted); margin-top:2px;">
+                            By ${escapeHtml(course.authorName || 'Kord Curriculum Studio')}
+                          </div>
                         </div>
-                        <a href="/courses/${escapeHtml(course.slug)}" data-link style="font-size:1.05rem; font-weight:700; color:var(--color-navy);">
-                          ${escapeHtml(course.title)}
-                        </a>
+                        ${renderStatusBadge(statusKey)}
                       </div>
-                      ${prog.isCompleted ? renderStatusBadge('completed') : renderStatusBadge(enr.status)}
-                    </div>
 
-                    ${renderProgressRail({
-                      label: `${prog.completedLessonsCount}/${prog.requiredLessonsCount} lessons · ${prog.passedAssessmentsCount}/${prog.assessmentsCount} assessments`,
-                      value: prog.progressPercent,
-                      max: 100,
-                      detail: `${prog.progressPercent}%`,
-                    })}
+                      ${renderProgressRail({
+                        label: `${prog.completedLessonsCount}/${prog.requiredLessonsCount} lessons · ${prog.completedActivitiesCount}/${prog.requiredActivitiesCount} activities · ${prog.passedAssessmentsCount}/${prog.assessmentsCount} checks`,
+                        value: prog.progressPercent,
+                        max: 100,
+                        detail: `${prog.progressPercent}%`,
+                      })}
 
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:12.5px; color:var(--color-text-muted);">
-                      <span>${prog.isCompleted ? 'Completed' : `Est. target: ${formatDate(prog.projectedCompletionAt)}`}</span>
-                      <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-secondary btn-sm">Continue course →</a>
+                      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:12.5px; color:var(--color-text-muted); flex-wrap:wrap;">
+                        <span>${prog.isCompleted ? 'Completed' : prog.completionState === 'awaiting_practical_assessment' ? 'Instructional work done · Submit/await capstone review' : `Est. target: ${formatDate(prog.projectedCompletionAt)}`}</span>
+                        <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-secondary btn-sm">Continue course →</a>
+                      </div>
                     </div>
                   </article>
                 `;
@@ -130,7 +163,9 @@ export async function renderMySkillsPage({ session, rerender }) {
                 .map((us) => {
                   const skill = skills.find((s) => s.id === us.skillId);
                   if (!skill) return '';
-                  const skillCourses = allCourses.filter((c) => c.skillId === skill.id);
+                  const skillCourses = allCourses.filter(
+                    (c) => c.skillId === skill.id || (c.associatedSkillIds || []).includes(skill.id)
+                  );
                   const overall = computeOverallSkillCourseProgress({
                     publishedCourses: skillCourses,
                     courseProgressById,
