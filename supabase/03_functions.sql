@@ -294,7 +294,9 @@ declare
   v_quiz public.quizzes;
   v_q record;
   v_raw jsonb;
+  v_raw_text text;
   v_selected integer;
+  v_opt_len integer;
   v_score integer := 0;
   v_total integer := 0;
   v_pct integer := 0;
@@ -306,6 +308,9 @@ declare
   v_attempt_id uuid;
   v_attempt_num integer := 1;
   v_is_correct boolean;
+  v_sel_sorted jsonb;
+  v_exp_sorted jsonb;
+  v_clean_answers jsonb := '{}'::jsonb;
 begin
   if auth.uid() is null or public.is_admin() then
     raise exception 'Learner authentication required';
@@ -318,6 +323,7 @@ begin
       return jsonb_build_object(
         'attemptId', v_existing.id,
         'quizId', v_existing.quiz_id,
+        'attemptNumber', v_existing.attempt_number,
         'score', v_existing.score,
         'total', v_existing.total,
         'percentage', v_existing.percentage,
@@ -331,6 +337,24 @@ begin
   select * into v_quiz from public.quizzes where id = p_quiz_id;
   if not found then
     raise exception 'Assessment not found';
+  end if;
+
+  if v_quiz.course_id is not null then
+    if not exists (
+      select 1 from public.courses
+      where id = v_quiz.course_id and publication_status = 'published'
+    ) then
+      raise exception 'Course assessment is not currently published';
+    end if;
+
+    if not exists (
+      select 1 from public.course_enrollments
+      where user_id = auth.uid()
+        and course_id = v_quiz.course_id
+        and status in ('active', 'completed')
+    ) then
+      raise exception 'Active course enrollment required to submit this assessment';
+    end if;
   end if;
 
   select count(*) + 1 into v_attempt_num
@@ -349,22 +373,45 @@ begin
     v_total := v_total + coalesce(v_q.marks, 1);
     v_raw := p_answers -> (v_q.id::text);
     v_is_correct := false;
+    v_opt_len := coalesce(jsonb_array_length(v_q.options), 0);
+
+    if v_raw is not null then
+      v_clean_answers := v_clean_answers || jsonb_build_object(v_q.id::text, v_raw);
+    end if;
 
     if v_q.question_type in ('short_answer', 'long_form', 'practical_submission') then
       v_has_manual := true;
     elsif v_q.question_type = 'multiple_select' then
-      v_is_correct := coalesce(v_raw, '[]'::jsonb) = coalesce(v_q.answer_config -> 'correctIndices', '[]'::jsonb);
+      if v_raw is not null and jsonb_typeof(v_raw) = 'array' then
+        select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_sel_sorted
+        from jsonb_array_elements_text(v_raw) val
+        where val ~ '^\d+$' and val::int >= 0 and val::int < v_opt_len;
+
+        select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_exp_sorted
+        from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'correctIndices', '[]'::jsonb)) val
+        where val ~ '^\d+$';
+
+        v_is_correct := jsonb_array_length(v_exp_sorted) > 0 and v_sel_sorted = v_exp_sorted;
+      end if;
     elsif v_q.question_type = 'fill_blank' then
       v_is_correct := exists (
         select 1
         from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'acceptedAnswers', '[]'::jsonb)) acc
         where lower(trim(acc)) = lower(trim(coalesce(v_raw #>> '{}', '')))
+          and trim(coalesce(v_raw #>> '{}', '')) <> ''
       );
     elsif v_q.question_type = 'ordering' then
-      v_is_correct := coalesce(v_raw, '[]'::jsonb) = coalesce(v_q.answer_config -> 'correctOrder', '[]'::jsonb);
+      if v_raw is not null and jsonb_typeof(v_raw) = 'array' then
+        v_is_correct := v_raw = coalesce(v_q.answer_config -> 'correctOrder', '[]'::jsonb);
+      end if;
     else
-      v_selected := coalesce((v_raw #>> '{}')::integer, -1);
-      v_is_correct := (v_selected = v_q.correct_index);
+      v_raw_text := trim(coalesce(v_raw #>> '{}', ''));
+      if v_raw_text ~ '^\d+$' then
+        v_selected := v_raw_text::integer;
+        if v_selected >= 0 and (v_opt_len = 0 or v_selected < v_opt_len) then
+          v_is_correct := (v_selected = v_q.correct_index);
+        end if;
+      end if;
     end if;
 
     if v_is_correct then
@@ -399,7 +446,7 @@ begin
     user_id, quiz_id, course_id, attempt_number, answers, score, total, percentage, passed, review_status, idempotency_key
   )
   values (
-    auth.uid(), p_quiz_id, v_quiz.course_id, v_attempt_num, p_answers, v_score, v_total, v_pct, v_passed, v_review_status, p_idempotency_key
+    auth.uid(), p_quiz_id, v_quiz.course_id, v_attempt_num, v_clean_answers, v_score, v_total, v_pct, v_passed, v_review_status, p_idempotency_key
   )
   on conflict (user_id, idempotency_key) do update set score = excluded.score
   returning id into v_attempt_id;
@@ -442,8 +489,14 @@ set search_path = public
 as $$
 declare
   v_sub public.submissions;
-  v_skill_id uuid;
-  v_course_id uuid;
+  v_challenge public.challenges;
+  v_crit jsonb;
+  v_crit_id text;
+  v_crit_max integer;
+  v_crit_score integer;
+  v_calc_total integer := 0;
+  v_calc_max integer := 0;
+  v_clean_scores jsonb := '{}'::jsonb;
 begin
   if not public.is_admin() then
     raise exception 'Administrator access required';
@@ -453,23 +506,57 @@ begin
     raise exception 'Invalid status';
   end if;
 
+  select * into v_sub from public.submissions where id = p_submission_id;
+  if not found then
+    raise exception 'Submission not found';
+  end if;
+
+  if v_sub.user_id = auth.uid() then
+    raise exception 'Reviewers cannot approve or evaluate their own submissions';
+  end if;
+
+  select * into v_challenge from public.challenges where id = v_sub.challenge_id;
+  if found and jsonb_typeof(v_challenge.rubric) = 'array' and jsonb_array_length(v_challenge.rubric) > 0 then
+    for v_crit in select value from jsonb_array_elements(v_challenge.rubric) loop
+      v_crit_id := v_crit ->> 'id';
+      v_crit_max := greatest(1, coalesce((v_crit ->> 'maxPoints')::integer, 5));
+      if coalesce(p_rubric_scores ->> v_crit_id, '') ~ '^-?\d+$' then
+        v_crit_score := (p_rubric_scores ->> v_crit_id)::integer;
+      else
+        v_crit_score := 0;
+      end if;
+      if v_crit_score < 0 or v_crit_score > v_crit_max then
+        raise exception 'Rubric score for % must be between 0 and %', v_crit_id, v_crit_max;
+      end if;
+      v_calc_total := v_calc_total + v_crit_score;
+      v_calc_max := v_calc_max + v_crit_max;
+      v_clean_scores := v_clean_scores || jsonb_build_object(v_crit_id, v_crit_score);
+    end loop;
+  else
+    v_calc_total := greatest(0, coalesce(p_rubric_total, 0));
+    v_calc_max := greatest(1, coalesce(p_rubric_max, v_challenge.max_score, 20));
+    if v_calc_total > v_calc_max then
+      raise exception 'Rubric total cannot exceed maximum score';
+    end if;
+    v_clean_scores := coalesce(p_rubric_scores, '{}'::jsonb);
+  end if;
+
   update public.submissions
   set status = p_status,
-      rubric_scores = p_rubric_scores,
-      rubric_total = p_rubric_total,
-      rubric_max = p_rubric_max,
-      feedback = p_feedback,
+      rubric_scores = v_clean_scores,
+      rubric_total = v_calc_total,
+      rubric_max = v_calc_max,
+      feedback = trim(coalesce(p_feedback, '')),
       reviewed_by = auth.uid(),
       reviewed_at = now()
   where id = p_submission_id
   returning * into v_sub;
 
   if v_sub.status = 'approved' then
-    select skill_id, course_id into v_skill_id, v_course_id from public.challenges where id = v_sub.challenge_id;
-    if v_course_id is not null then
-      perform public.evaluate_course_and_skill_progression(v_sub.user_id, v_course_id);
-    elsif v_skill_id is not null then
-      perform public.upgrade_user_skill_level(v_sub.user_id, v_skill_id, 'verified');
+    if v_challenge.course_id is not null then
+      perform public.evaluate_course_and_skill_progression(v_sub.user_id, v_challenge.course_id);
+    elsif v_challenge.skill_id is not null then
+      perform public.upgrade_user_skill_level(v_sub.user_id, v_challenge.skill_id, 'verified');
     end if;
   end if;
 

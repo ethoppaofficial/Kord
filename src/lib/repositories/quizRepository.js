@@ -97,15 +97,19 @@ export async function getUserAllQuizAttempts(userId) {
 /**
  * Learner-safe assessment loader.
  * NEVER returns correctIndex, answerConfig, or explanation before submission.
+ * Returns empty questions list if learner is not enrolled in a course-scoped assessment.
  */
-export async function getQuizForLearner(quizId) {
+export async function getQuizForLearner(quizId, { userId = null, includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
     const { data: quiz, error } = await supabase
       .from('quizzes')
-      .select('id, skill_id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts, shuffle_questions, requires_manual_review, skills(id, slug, title), courses(id, slug, title)')
+      .select('id, skill_id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts, shuffle_questions, requires_manual_review, skills(id, slug, title, publication_status), courses(id, slug, title, publication_status)')
       .eq('id', quizId)
       .single();
     if (error || !quiz) return null;
+    if (!includeDrafts && quiz.course_id && quiz.courses?.publication_status !== 'published') {
+      return null;
+    }
 
     const { data: questions, error: qErr } = await supabase
       .from('questions')
@@ -149,6 +153,18 @@ export async function getQuizForLearner(quizId) {
   const skill = (state.skills || []).find((s) => s.id === quiz.skillId) || null;
   const course = quiz.courseId ? (state.courses || []).find((c) => c.id === quiz.courseId) || null : null;
 
+  if (!includeDrafts) {
+    if (course && course.publicationStatus !== 'published') return null;
+    if (!course && skill && skill.publicationStatus !== 'published') return null;
+  }
+
+  let hasAccess = true;
+  if (userId && quiz.courseId) {
+    hasAccess = (state.courseEnrollments || []).some(
+      (e) => e.userId === userId && e.courseId === quiz.courseId && (e.status === 'active' || e.status === 'completed')
+    );
+  }
+
   return {
     id: quiz.id,
     skillId: quiz.skillId,
@@ -165,19 +181,22 @@ export async function getQuizForLearner(quizId) {
     maxAttempts: quiz.maxAttempts || null,
     shuffleQuestions: Boolean(quiz.shuffleQuestions),
     requiresManualReview: Boolean(quiz.requiresManualReview),
-    questions: (quiz.questions || [])
-      .slice()
-      .sort((a, b) => a.position - b.position)
-      .map((q) => ({
-        id: q.id,
-        position: q.position,
-        questionType: q.questionType || 'multiple_choice',
-        difficulty: q.difficulty || 'medium',
-        marks: Number(q.marks || 1),
-        prompt: q.prompt,
-        contextText: q.contextText || '',
-        options: q.options || [],
-      })),
+    enrollmentRequired: Boolean(userId && quiz.courseId && !hasAccess),
+    questions: hasAccess
+      ? (quiz.questions || [])
+          .slice()
+          .sort((a, b) => a.position - b.position)
+          .map((q) => ({
+            id: q.id,
+            position: q.position,
+            questionType: q.questionType || 'multiple_choice',
+            difficulty: q.difficulty || 'medium',
+            marks: Number(q.marks || 1),
+            prompt: q.prompt,
+            contextText: q.contextText || '',
+            options: q.options || [],
+          }))
+      : [],
   };
 }
 
@@ -228,8 +247,26 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
       }
 
       const state = getDemoState();
+      const actor = (state.users || []).find((u) => u.id === userId);
+      if (!actor || actor.role === 'admin') {
+        throw new Error('Learner authentication required to submit an assessment.');
+      }
+
       const quiz = (state.quizzes || []).find((q) => q.id === quizId);
       if (!quiz) throw new Error('Assessment not found');
+
+      if (quiz.courseId) {
+        const course = (state.courses || []).find((c) => c.id === quiz.courseId);
+        if (!course || course.publicationStatus !== 'published') {
+          throw new Error('Course assessment is not currently published.');
+        }
+        const enrolled = (state.courseEnrollments || []).some(
+          (e) => e.userId === userId && e.courseId === quiz.courseId && (e.status === 'active' || e.status === 'completed')
+        );
+        if (!enrolled) {
+          throw new Error('Active course enrollment required before submitting this assessment.');
+        }
+      }
 
       // Deduplicate identical double-click / replay submissions
       const existing = (state.quizAttempts || []).find(
@@ -650,8 +687,15 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
     let didPass = false;
 
     updateDemoState((draft) => {
+      const reviewer = (draft.users || []).find((u) => u.id === reviewerId);
+      if (!reviewer || reviewer.role !== 'admin') {
+        throw new Error('Administrator authorization required to grade assessments.');
+      }
       const attempt = (draft.quizAttempts || []).find((a) => a.id === attemptId);
       if (!attempt) throw new Error('Assessment attempt not found');
+      if (attempt.userId === reviewerId) {
+        throw new Error('Reviewers cannot grade their own assessment attempts.');
+      }
       const quiz = (draft.quizzes || []).find((q) => q.id === attempt.quizId);
       if (!quiz) throw new Error('Assessment not found');
 

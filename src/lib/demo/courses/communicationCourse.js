@@ -3,13 +3,7 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildCommunicationCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-communication-public-speaking';
   const skillId = 'skill-public-speaking';
-  const associatedSkillIds = [
-    'skill-public-speaking',
-    'skill-effective-communication',
-    'skill-presentation-skills',
-    'skill-persuasion-and-influence',
-    'skill-active-listening',
-  ];
+  const associatedSkillIds = ['skill-public-speaking'];
   const now = '2026-10-04T09:00:00.000Z';
 
   const phases = [
@@ -653,10 +647,10 @@ export function buildCommunicationCourse({ buildLesson, buildActivity, addAssess
     maxScore: 25,
     passingScore: 18,
     rubric: [
-      { id: 'r1', label: 'Presentation Structure & Timing', description: 'Crisp opening hook, 3 clear pillars, strong closing CTA, ~2 minutes total.', maxPoints: 7 },
-      { id: 'r2', label: 'Vocal Clarity, Pacing & Pauses', description: 'Steady conversational speed, natural emphasis, minimal fillers, clean audio.', maxPoints: 6 },
-      { id: 'r3', label: 'Presence & Audience Framing', description: 'Direct eye/camera engagement, grounded posture, and audience-relevant examples.', maxPoints: 6 },
-      { id: 'r4', label: 'Outline Quality & Honest Self-Reflection', description: 'Clean keyword outline paired with concrete 3-pass observations.', maxPoints: 6 },
+      { id: 'r1', label: 'Presentation Structure & Timing', description: 'Crisp opening hook, 3 clear pillars, strong closing CTA, ~2 minutes total.', maxPoints: 7, weightPercent: 28 },
+      { id: 'r2', label: 'Vocal Clarity, Pacing & Pauses', description: 'Steady conversational speed, natural emphasis, minimal fillers, clean audio.', maxPoints: 6, weightPercent: 24 },
+      { id: 'r3', label: 'Presence & Audience Framing', description: 'Direct eye/camera engagement, grounded posture, and audience-relevant examples.', maxPoints: 6, weightPercent: 24 },
+      { id: 'r4', label: 'Outline Quality & Honest Self-Reflection', description: 'Clean keyword outline paired with concrete 3-pass observations.', maxPoints: 6, weightPercent: 24 },
     ],
   };
 

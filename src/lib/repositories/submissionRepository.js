@@ -36,6 +36,19 @@ export async function submitChallengeEvidence({
   challenge = null,
   idempotencyKey,
 }) {
+  const cleanExplanation = String(explanation || '').trim();
+  if (cleanExplanation.length < 20) {
+    throw new Error('Explain what you produced and how it meets the brief (at least 20 characters).');
+  }
+  const hasAnyDeliverable = Boolean(
+    (evidenceUrl && evidenceUrl.trim()) ||
+      (repoUrl && repoUrl.trim()) ||
+      file ||
+      (submissionText && submissionText.trim().length >= 20)
+  );
+  if (!hasAnyDeliverable) {
+    throw new Error('Provide at least one permitted deliverable (URL, file upload, or written response).');
+  }
   if (file) {
     const fileErr = validateEvidenceFile(file, challenge || {});
     if (fileErr) throw new Error(fileErr);
@@ -51,7 +64,7 @@ export async function submitChallengeEvidence({
       repoUrl || '',
       file?.name || '',
       submissionText || '',
-      explanation
+      cleanExplanation
     );
 
   return runIdempotent(
@@ -79,7 +92,7 @@ export async function submitChallengeEvidence({
               file_path: filePath,
               file_name: fileName,
               submission_text: submissionText || '',
-              explanation,
+              explanation: cleanExplanation,
               rubric_max: rubricMax || 20,
               idempotency_key: effectiveKey,
             },
@@ -92,12 +105,38 @@ export async function submitChallengeEvidence({
       }
 
       const state = getDemoState();
+      const actor = (state.users || []).find((u) => u.id === userId);
+      if (!actor || actor.role === 'admin') {
+        throw new Error('Learner account required to submit practical evidence.');
+      }
+
       const existing = (state.submissions || []).find(
         (s) => s.userId === userId && s.idempotencyKey === effectiveKey
       );
       if (existing) return existing;
 
       const resolvedChallenge = challenge || (state.challenges || []).find((c) => c.id === challengeId);
+      if (!resolvedChallenge) throw new Error('Practical challenge not found.');
+
+      const targetCourseId = courseId || resolvedChallenge.courseId || null;
+      if (targetCourseId) {
+        const course = (state.courses || []).find((c) => c.id === targetCourseId);
+        if (!course || course.publicationStatus !== 'published') {
+          throw new Error('Course practical challenge is not currently published.');
+        }
+        const enrolled = (state.courseEnrollments || []).some(
+          (e) => e.userId === userId && e.courseId === targetCourseId && (e.status === 'active' || e.status === 'completed')
+        );
+        if (!enrolled) {
+          throw new Error('Active course enrollment required before submitting practical evidence.');
+        }
+      }
+
+      if (file) {
+        const fileErr = validateEvidenceFile(file, resolvedChallenge);
+        if (fileErr) throw new Error(fileErr);
+      }
+
       const filePath = file ? `${userId}/${challengeId}/${file.name}` : null;
       const newSub = {
         id: `sub-${Date.now()}`,
@@ -208,18 +247,56 @@ export async function adminReviewSubmission({
     let targetCourseId = null;
 
     updateDemoState((draft) => {
+      if (!['approved', 'needs_revision'].includes(status)) {
+        throw new Error('Invalid review status. Must be approved or needs_revision.');
+      }
+      const reviewer = (draft.users || []).find((u) => u.id === reviewerId);
+      if (!reviewer || reviewer.role !== 'admin') {
+        throw new Error('Administrator authorization required to review practical submissions.');
+      }
+
       const sub = (draft.submissions || []).find((s) => s.id === submissionId);
       if (!sub) throw new Error('Submission not found');
+      if (sub.userId === reviewerId) {
+        throw new Error('Reviewers cannot approve or evaluate their own submissions.');
+      }
+
+      const challenge = (draft.challenges || []).find((c) => c.id === sub.challengeId);
+      let validatedTotal = 0;
+      let validatedMax = 0;
+      const cleanScores = {};
+
+      if (challenge && Array.isArray(challenge.rubric) && challenge.rubric.length > 0) {
+        for (const criterion of challenge.rubric) {
+          const maxPts = Math.max(1, Number(criterion.maxPoints || 5));
+          const rawScore = Number(rubricScores?.[criterion.id] ?? 0);
+          if (!Number.isFinite(rawScore) || rawScore < 0 || rawScore > maxPts) {
+            throw new Error(
+              `Rubric score for "${criterion.label || criterion.id}" must be between 0 and ${maxPts}.`
+            );
+          }
+          cleanScores[criterion.id] = rawScore;
+          validatedTotal += rawScore;
+          validatedMax += maxPts;
+        }
+      } else {
+        validatedTotal = Math.max(0, Number(rubricTotal || 0));
+        validatedMax = Math.max(1, Number(rubricMax || challenge?.maxScore || 20));
+        if (validatedTotal > validatedMax) {
+          throw new Error('Rubric total score cannot exceed maximum score.');
+        }
+        Object.assign(cleanScores, rubricScores || {});
+      }
+
       sub.status = status;
-      sub.rubricScores = rubricScores;
-      sub.rubricTotal = rubricTotal;
-      sub.rubricMax = rubricMax;
-      sub.feedback = feedback.trim();
+      sub.rubricScores = cleanScores;
+      sub.rubricTotal = validatedTotal;
+      sub.rubricMax = validatedMax;
+      sub.feedback = String(feedback || '').trim();
       sub.reviewedBy = reviewerId;
       sub.reviewedAt = new Date().toISOString();
 
       targetUserId = sub.userId;
-      const challenge = (draft.challenges || []).find((c) => c.id === sub.challengeId);
       targetSkillId = challenge?.skillId || null;
       targetCourseId = sub.courseId || challenge?.courseId || null;
       return draft;

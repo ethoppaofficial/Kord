@@ -3,13 +3,7 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildDigitalMarketingCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-digital-marketing-foundations';
   const skillId = 'skill-digital-marketing-fundamentals';
-  const associatedSkillIds = [
-    'skill-digital-marketing-fundamentals',
-    'skill-content-marketing',
-    'skill-social-media-management',
-    'skill-copywriting',
-    'skill-marketing-analytics',
-  ];
+  const associatedSkillIds = ['skill-digital-marketing-fundamentals'];
   const now = '2026-10-03T09:00:00.000Z';
 
   const phases = [
@@ -659,10 +653,10 @@ export function buildDigitalMarketingCourse({ buildLesson, buildActivity, addAss
     maxScore: 25,
     passingScore: 18,
     rubric: [
-      { id: 'r1', label: 'Audience Alignment & Value Proposition', description: 'Clear ICP triggers, objections, and coherent offer positioning.', maxPoints: 6 },
-      { id: 'r2', label: '7-Day Sequencing & Copy Quality', description: 'Logical multi-day arc with specific, outcome-driven copy and clear CTAs.', maxPoints: 7 },
-      { id: 'r3', label: 'UTM Hygiene & Measurement Plan', description: 'Consistent UTM links and actionable funnel KPIs (CTR, CVR, CPA).', maxPoints: 6 },
-      { id: 'r4', label: 'Optimisation Readiness', description: 'Concrete post-launch diagnostic thresholds and A/B test hypothesis.', maxPoints: 6 },
+      { id: 'r1', label: 'Audience Alignment & Value Proposition', description: 'Clear ICP triggers, objections, and coherent offer positioning.', maxPoints: 6, weightPercent: 24 },
+      { id: 'r2', label: '7-Day Sequencing & Copy Quality', description: 'Logical multi-day arc with specific, outcome-driven copy and clear CTAs.', maxPoints: 7, weightPercent: 28 },
+      { id: 'r3', label: 'UTM Hygiene & Measurement Plan', description: 'Consistent UTM links and actionable funnel KPIs (CTR, CVR, CPA).', maxPoints: 6, weightPercent: 24 },
+      { id: 'r4', label: 'Optimisation Readiness', description: 'Concrete post-launch diagnostic thresholds and A/B test hypothesis.', maxPoints: 6, weightPercent: 24 },
     ],
   };
 

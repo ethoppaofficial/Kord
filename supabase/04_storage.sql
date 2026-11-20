@@ -39,6 +39,10 @@ with check (
   bucket_id = 'evidence'
   and (storage.foldername(name))[1] = auth.uid()::text
   and not public.is_admin()
+  and lower(storage.extension(name)) = any(array[
+    'pdf','png','jpg','jpeg','webp','txt','md','csv','zip','docx',
+    'mp3','wav','m4a','webm','ogg','mp4','mov'
+  ])
 );
 
 drop policy if exists "evidence_read_own_or_admin" on storage.objects;

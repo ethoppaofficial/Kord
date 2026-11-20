@@ -310,7 +310,7 @@ create table if not exists public.quiz_attempts (
   total integer not null,
   percentage integer not null,
   passed boolean not null,
-  review_status text not null default 'auto_graded' check (review_status in ('auto_graded', 'pending_review', 'graded')),
+  review_status text not null default 'auto_graded' check (review_status in ('auto_graded', 'pending_review', 'reviewed', 'graded')),
   manual_scores jsonb not null default '{}'::jsonb,
   manual_feedback text not null default '',
   reviewed_by uuid references public.profiles(id) on delete set null,
@@ -326,6 +326,12 @@ alter table public.quiz_attempts add column if not exists manual_scores jsonb no
 alter table public.quiz_attempts add column if not exists manual_feedback text not null default '';
 alter table public.quiz_attempts add column if not exists reviewed_by uuid references public.profiles(id) on delete set null;
 alter table public.quiz_attempts add column if not exists reviewed_at timestamptz;
+do $$
+begin
+  alter table public.quiz_attempts drop constraint if exists quiz_attempts_review_status_check;
+  alter table public.quiz_attempts add constraint quiz_attempts_review_status_check
+    check (review_status in ('auto_graded', 'pending_review', 'reviewed', 'graded'));
+end $$;
 
 create table if not exists public.submissions (
   id uuid primary key default gen_random_uuid(),

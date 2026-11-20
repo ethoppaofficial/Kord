@@ -1,7 +1,7 @@
 import { DEFAULT_CATEGORIES } from '../constants.js';
 import { slugify } from '../formatters.js';
 
-function makeSkill({ id, title, categoryId, categoryName, level = 'Beginner', summary, outcomes, expectations, prerequisites = [], supportedByCourseSlug = null }) {
+function makeSkill({ id, title, categoryId, categoryName, level = 'Beginner', summary, outcomes, expectations, prerequisites = [] }) {
   return {
     id: id || `skill-${slugify(title)}`,
     categoryId,
@@ -13,7 +13,7 @@ function makeSkill({ id, title, categoryId, categoryName, level = 'Beginner', su
     competencyExpectations:
       expectations || `Demonstrate applied understanding and produce portfolio-grade deliverables for ${title}.`,
     prerequisites,
-    supportedByCourseSlug,
+    supportedByCourseSlug: null,
     publicationStatus: 'published',
     roadmapStatus: 'full',
     estHours: level === 'Advanced' ? 24 : level === 'Intermediate' ? 14 : 8,

@@ -68,7 +68,14 @@ drop policy if exists "catalog_admin_course_skills" on public.course_skills;
 create policy "catalog_admin_course_skills" on public.course_skills for all using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_course_versions" on public.course_versions;
-create policy "catalog_read_course_versions" on public.course_versions for select using (true);
+create policy "catalog_read_course_versions" on public.course_versions
+  for select using (
+    public.is_admin()
+    or exists (
+      select 1 from public.courses c
+      where c.id = course_versions.course_id and c.publication_status = 'published'
+    )
+  );
 drop policy if exists "catalog_admin_course_versions" on public.course_versions;
 create policy "catalog_admin_course_versions" on public.course_versions for all using (public.is_admin()) with check (public.is_admin());
 
@@ -93,12 +100,38 @@ drop policy if exists "catalog_admin_activities" on public.activities;
 create policy "catalog_admin_activities" on public.activities for all using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_quizzes" on public.quizzes;
-create policy "catalog_read_quizzes" on public.quizzes for select using (true);
+create policy "catalog_read_quizzes" on public.quizzes
+  for select using (
+    public.is_admin()
+    or (
+      course_id is null and exists (
+        select 1 from public.skills s where s.id = quizzes.skill_id and s.publication_status = 'published'
+      )
+    )
+    or (
+      course_id is not null and exists (
+        select 1 from public.courses c where c.id = quizzes.course_id and c.publication_status = 'published'
+      )
+    )
+  );
 drop policy if exists "catalog_admin_quizzes" on public.quizzes;
 create policy "catalog_admin_quizzes" on public.quizzes for all using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_challenges" on public.challenges;
-create policy "catalog_read_challenges" on public.challenges for select using (true);
+create policy "catalog_read_challenges" on public.challenges
+  for select using (
+    public.is_admin()
+    or (
+      course_id is null and exists (
+        select 1 from public.skills s where s.id = challenges.skill_id and s.publication_status = 'published'
+      )
+    )
+    or (
+      course_id is not null and exists (
+        select 1 from public.courses c where c.id = challenges.course_id and c.publication_status = 'published'
+      )
+    )
+  );
 drop policy if exists "catalog_admin_challenges" on public.challenges;
 create policy "catalog_admin_challenges" on public.challenges for all using (public.is_admin()) with check (public.is_admin());
 
@@ -111,7 +144,37 @@ create policy "catalog_admin_opportunities" on public.opportunities for all usin
 revoke select on public.questions from anon, authenticated;
 grant select (id, quiz_id, position, question_type, difficulty, marks, prompt, context_text, options) on public.questions to authenticated;
 drop policy if exists "questions_read_authenticated" on public.questions;
-create policy "questions_read_authenticated" on public.questions for select to authenticated using (not public.is_admin());
+create policy "questions_read_authenticated" on public.questions
+  for select to authenticated
+  using (
+    not public.is_admin()
+    and exists (
+      select 1
+      from public.quizzes q
+      where q.id = questions.quiz_id
+        and (
+          (
+            q.course_id is null
+            and exists (
+              select 1 from public.skills s
+              where s.id = q.skill_id and s.publication_status = 'published'
+            )
+          )
+          or (
+            q.course_id is not null
+            and exists (
+              select 1
+              from public.courses c
+              join public.course_enrollments ce on ce.course_id = c.id
+              where c.id = q.course_id
+                and c.publication_status = 'published'
+                and ce.user_id = auth.uid()
+                and ce.status in ('active', 'completed')
+            )
+          )
+        )
+    )
+  );
 drop policy if exists "questions_admin_all" on public.questions;
 create policy "questions_admin_all" on public.questions for all using (public.is_admin()) with check (public.is_admin());
 

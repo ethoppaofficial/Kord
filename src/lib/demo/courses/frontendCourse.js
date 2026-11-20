@@ -3,7 +3,7 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildFrontendCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-frontend-foundations';
   const skillId = 'skill-frontend-development';
-  const associatedSkillIds = ['skill-frontend-development', 'skill-web-development'];
+  const associatedSkillIds = ['skill-frontend-development'];
   const now = '2026-10-01T09:00:00.000Z';
 
   const phases = [
@@ -758,10 +758,10 @@ export function buildFrontendCourse({ buildLesson, buildActivity, addAssessment 
     maxScore: 25,
     passingScore: 18,
     rubric: [
-      { id: 'r1', label: 'Semantic HTML5 & Accessibility', description: 'Valid landmarks, single h1, labelled form inputs, keyboard focus visibility.', maxPoints: 7 },
-      { id: 'r2', label: 'Responsive CSS Architecture', description: 'Clean Flexbox/Grid layout across mobile (375px) and desktop (1440px) with zero horizontal overflow.', maxPoints: 6 },
-      { id: 'r3', label: 'JavaScript Interactivity & Validation', description: 'Working DOM interactions (e.g. filter/FAQ) and friendly inline form validation without console errors.', maxPoints: 6 },
-      { id: 'r4', label: 'Live Deployment & Code Organisation', description: 'Working HTTPS URL with relative asset paths and clean file structure.', maxPoints: 6 },
+      { id: 'r1', label: 'Semantic HTML5 & Accessibility', description: 'Valid landmarks, single h1, labelled form inputs, keyboard focus visibility.', maxPoints: 7, weightPercent: 28 },
+      { id: 'r2', label: 'Responsive CSS Architecture', description: 'Clean Flexbox/Grid layout across mobile (375px) and desktop (1440px) with zero horizontal overflow.', maxPoints: 6, weightPercent: 24 },
+      { id: 'r3', label: 'JavaScript Interactivity & Validation', description: 'Working DOM interactions (e.g. filter/FAQ) and friendly inline form validation without console errors.', maxPoints: 6, weightPercent: 24 },
+      { id: 'r4', label: 'Live Deployment & Code Organisation', description: 'Working HTTPS URL with relative asset paths and clean file structure.', maxPoints: 6, weightPercent: 24 },
     ],
   };
 

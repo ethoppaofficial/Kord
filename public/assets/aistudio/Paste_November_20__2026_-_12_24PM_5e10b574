@@ -1,0 +1,842 @@
+# MASTER IMPLEMENTATION PROMPT: COMPLETE THE KORD COURSE CATALOGUE FOR ALL 99 COMPETENCIES
+
+## PROJECT
+
+Repository: https://github.com/ethoppaofficial/Kord
+
+Application: Kord Skill Development Platform
+
+Primary objective: Expand the existing course catalogue so that every published competency has a properly developed, relevant and functional course containing modules, lessons, learning resources, assessments and practical assignments.
+
+This is an extension of an existing application.
+
+**STRICT INSTRUCTION: Do not rewrite the application. Do not replace its architecture. Extend and improve the existing vanilla JavaScript and Supabase implementation.**
+
+---
+
+# 1. UNDERSTAND THE EXISTING APPLICATION BEFORE CHANGING ANYTHING
+
+Before implementing anything:
+
+1. Inspect the repository and its directory structure.
+2. Read the existing database schema and migrations.
+3. Inspect the existing seed files.
+4. Inspect the four published flagship courses.
+5. Understand how competencies are associated with courses.
+6. Inspect the learner-facing Explore interface.
+7. Inspect the course details and learning interfaces.
+8. Inspect the administrator content-management workflow.
+9. Understand how course publication works.
+10. Understand how lessons, activities, quizzes, challenges, submissions and progress are stored.
+11. Inspect the existing RLS policies and database functions.
+12. Identify the actual source of truth for the seven categories and 99 competencies.
+
+Do not assume table names, columns, relationships or application functions without inspecting the existing implementation.
+
+Reuse existing database structures wherever possible.
+
+Do not create duplicate tables or competing implementations for functionality that already exists.
+
+Produce a short implementation assessment before making changes.
+
+---
+
+# 2. PRIMARY REQUIREMENT: EVERY PUBLISHED COMPETENCY MUST HAVE A COURSE
+
+The existing application contains approximately 99 published competencies, but only four flagship courses have been developed.
+
+This leaves the majority of the competency catalogue without learning content.
+
+The objective is to establish complete course coverage.
+
+Existing flagship courses:
+
+1. Frontend Development Foundations.
+2. Graphic Design Foundations.
+3. Digital Marketing Foundations.
+4. Communication and Public Speaking.
+
+Target:
+
+- 99 published competencies.
+- 99 properly associated foundational courses, assuming each competency is intended to have its own course.
+- Four existing courses preserved and improved where necessary.
+- Approximately 95 additional courses, subject to verification of existing associations and duplicates.
+
+Do not duplicate existing courses.
+
+Do not create a course for a competency that already has an appropriate published course.
+
+Do not leave published competencies without a learning pathway unless there is an explicitly documented reason.
+
+Every course must belong to its correct competency and category.
+
+A competency must not receive an unrelated generic course simply to satisfy a numerical target.
+
+---
+
+# 3. PRESERVE THE SEVEN EXISTING CATEGORIES
+
+Use the existing category records and their actual competency associations as the authoritative source.
+
+The existing category structure includes:
+
+1. Communication & Interpersonal.
+2. Writing & Content Creation.
+3. Entrepreneurship & Business.
+4. Digital Marketing & Social Media.
+5. Creative & Design.
+6. Technology & Digital.
+7. Career & Professional Development.
+
+Do not create duplicate category records.
+
+Do not rename existing categories unnecessarily.
+
+Do not move competencies between categories without a clear correction supported by the existing application data.
+
+For every competency:
+
+- Identify its actual category.
+- Create or identify its appropriate course.
+- Associate the course with that competency.
+- Ensure the learner-facing interface displays the correct category.
+- Ensure category filtering returns the correct courses.
+- Ensure course counts are accurate.
+
+If a competency has multiple valid learning pathways, the existing data model should be used to support those relationships without duplicating competencies.
+
+---
+
+# 4. COURSE DEVELOPMENT REQUIREMENTS
+
+Every new course must be a real instructional experience.
+
+Do not create empty course shells.
+
+Do not use placeholder descriptions.
+
+Do not create modules containing only titles.
+
+Do not populate every course with the same generic lesson content.
+
+Do not use repetitive, AI-generated filler simply to increase the amount of content.
+
+Each course must contain the following.
+
+## A. Course information
+
+- Course title.
+- Unique slug.
+- Detailed description.
+- Learning objectives.
+- Competency association.
+- Category association through the existing competency relationship.
+- Difficulty level.
+- Estimated duration.
+- Target audience.
+- Prerequisites where appropriate.
+- Course cover image or thumbnail where supported.
+- Course version.
+- Publication status.
+- Creation and update timestamps.
+
+## B. Course curriculum
+
+Each foundational course should normally contain 6 to 8 meaningful modules.
+
+The number may differ where the competency requires a different structure.
+
+Every module must contain:
+
+- Module title.
+- Module description.
+- Learning objectives.
+- Estimated duration.
+- Display order.
+- Publication status.
+
+Modules must follow a logical progression from foundational knowledge to more advanced application.
+
+## C. Lessons
+
+Each module should normally contain 2 to 4 substantive lessons.
+
+Each lesson must contain:
+
+1. A clear title.
+2. A detailed explanation of the topic.
+3. Relevant examples.
+4. Practical illustrations.
+5. Step-by-step instructions where appropriate.
+6. Key concepts and definitions.
+7. Learning objectives.
+8. A knowledge check or reflection where appropriate.
+9. A practical activity where appropriate.
+10. Supplementary resources.
+11. Estimated completion time.
+12. Clear completion criteria.
+
+Lessons must teach something meaningful.
+
+A heading followed by two sentences is not sufficient instructional content.
+
+Write original, relevant educational material appropriate to the course level.
+
+Use external documentation, videos and articles as supplementary resources rather than replacing the instructional content.
+
+Where external resources are included, provide their title, source, URL and resource type.
+
+Do not invent external URLs.
+
+---
+
+# 5. DEVELOP COURSE CONTENT THAT IS SPECIFIC TO EACH COMPETENCY
+
+This requirement is critical.
+
+Courses must be designed around their actual competencies.
+
+For example:
+
+### Communication & Interpersonal
+
+Public Speaking must teach speech preparation, audience analysis, presentation structure, voice control, body language and delivery.
+
+Negotiation Skills must teach preparation, interests, bargaining strategies, trade-offs, objections and agreement building.
+
+Active Listening must teach listening techniques, clarification, questioning, interpretation and feedback.
+
+Conflict Resolution must teach conflict identification, de-escalation, mediation, negotiation and resolution planning.
+
+These courses must not share identical curricula simply because they belong to the same category.
+
+### Writing & Content Creation
+
+General Writing should address clarity, structure, grammar, editing and effective written communication.
+
+Professional Writing should address workplace communication, formal documents, professional tone and business correspondence.
+
+Technical Writing should address documentation, technical explanations, user instructions and information architecture.
+
+Copywriting should address persuasive writing, audience research, headlines, calls to action and conversion-focused content.
+
+### Entrepreneurship & Business
+
+Business Planning should cover business models, market research, value propositions, operations and financial projections.
+
+Sales should cover prospecting, customer discovery, presentations, objection handling and closing.
+
+Financial Literacy should cover budgeting, saving, cash flow, financial planning and basic financial decisions.
+
+### Digital Marketing & Social Media
+
+SEO should cover keyword research, on-page optimisation, technical fundamentals and performance analysis.
+
+Social Media Marketing should cover platform selection, content planning, audience engagement and analytics.
+
+Content Marketing should cover audience needs, content strategy, production, distribution and measurement.
+
+### Creative & Design
+
+Graphic Design should cover design principles, typography, colour, layout and production.
+
+UI/UX Design should cover user research, information architecture, wireframing, prototyping and usability testing.
+
+Photography should cover exposure, composition, lighting, framing and editing.
+
+### Technology & Digital
+
+Frontend Development should cover HTML, CSS, JavaScript, responsive design, DOM manipulation and deployment.
+
+Data Analysis should cover data collection, cleaning, analysis, visualisation and interpretation.
+
+Cybersecurity Fundamentals should cover security principles, threats, safe practices, access control and risk awareness.
+
+### Career & Professional Development
+
+CV Writing should cover structure, achievement statements, tailoring and professional presentation.
+
+Interview Readiness should cover preparation, question handling, communication and interview practice.
+
+Project Management should cover planning, scope, scheduling, execution, risk and evaluation.
+
+These are examples of the required level of specificity, not an exhaustive list. Generate the complete curricula using the actual competency records in Supabase.
+
+---
+
+# 6. PRACTICAL ACTIVITIES AND ASSIGNMENTS
+
+Every course must include meaningful opportunities to apply knowledge.
+
+Do not build a platform where learners only read content and answer multiple-choice questions.
+
+Each course must have practical activities distributed throughout its modules.
+
+Examples:
+
+- Frontend Development: build a responsive webpage.
+- Graphic Design: produce an original promotional flyer.
+- Public Speaking: record a structured presentation.
+- Negotiation: respond to a realistic negotiation scenario.
+- Copywriting: write promotional copy for a defined audience.
+- SEO: perform a keyword research exercise.
+- Data Analysis: analyse a provided dataset.
+- Business Planning: create a business model proposal.
+- UI/UX: design a wireframe and user flow.
+- CV Writing: prepare and submit a tailored CV.
+
+Support the existing submission architecture.
+
+Submission types should include, where appropriate:
+
+- Written responses.
+- PDF documents.
+- Images.
+- Design files where supported.
+- Audio recordings.
+- Video recordings.
+- Project URLs.
+- GitHub repository links.
+- Screenshots.
+- Other permitted evidence formats.
+
+Each practical assignment must define:
+
+- Instructions.
+- Expected deliverables.
+- Submission format.
+- Required evidence.
+- Evaluation criteria.
+- Deadline or duration where applicable.
+- Rubric.
+- Resubmission rules.
+
+Implement appropriate MIME type validation, file extension validation, upload size restrictions and storage policies.
+
+Do not trust client-side file validation alone.
+
+---
+
+# 7. KNOWLEDGE ASSESSMENTS AND QUIZZES
+
+Every course should include appropriate knowledge assessments.
+
+Provide module-level quizzes and a final assessment where appropriate.
+
+Support:
+
+- Multiple-choice questions.
+- Configurable question counts.
+- Correct answers.
+- Explanations.
+- Pass marks.
+- Time limits.
+- Attempt limits.
+- Question ordering.
+- Answer validation.
+- Attempt history.
+- Score reporting.
+
+Do not expose correct answers to the browser before submission.
+
+Scoring must happen through secure server-side logic or protected database functions.
+
+Validate answer indices and question ownership.
+
+A learner must have an active enrollment before accessing restricted assessments.
+
+Quizzes should measure understanding, not be treated as proof of practical competence.
+
+---
+
+# 8. FINAL PRACTICAL CHALLENGE FOR EVERY COURSE
+
+Every course must contain at least one substantial final practical challenge.
+
+The final challenge must require the learner to demonstrate the knowledge and skills developed throughout the course.
+
+Examples:
+
+- Frontend Development: build and deploy a responsive business website.
+- Graphic Design: create a complete promotional design for a fictional business.
+- Digital Marketing: develop a seven-day marketing campaign.
+- Public Speaking: submit a two-minute presentation with an outline and reflection.
+- Business Planning: develop a structured business proposal.
+- Data Analysis: analyse a dataset and present findings.
+- UI/UX Design: produce a user flow, wireframes and prototype.
+- Copywriting: produce a campaign copy package for a defined audience.
+
+Each final challenge must include a meaningful assessment rubric.
+
+Rubric criteria must be relevant to the specific competency.
+
+Do not reuse the same generic rubric for every course.
+
+Validate rubric weights and scores.
+
+The total rubric weight should equal 100%.
+
+Keep practical review and approval distinct from course completion and quiz results.
+
+---
+
+# 9. LEARNER EXPERIENCE
+
+Extend the existing learner interface.
+
+Learners must be able to:
+
+1. Browse all published courses.
+2. Browse by category.
+3. Filter by competency.
+4. Search for courses.
+5. Open course details.
+6. Inspect objectives and prerequisites.
+7. View modules and lessons.
+8. Enroll in a course.
+9. Access instructional content.
+10. Complete lessons.
+11. Access supplementary resources.
+12. Take quizzes.
+13. Complete practical activities.
+14. Submit evidence.
+15. View assessment results.
+16. Receive reviewer feedback.
+17. Resume learning.
+18. View progress.
+19. Complete course requirements.
+20. Access completed work in their portfolio where supported.
+
+Progress must persist in the live database.
+
+A page refresh must not erase learning progress.
+
+The learner should be able to resume from the last incomplete lesson.
+
+---
+
+# 10. COURSE COMPLETION RULES
+
+Do not mark a course complete merely because all lessons have been opened.
+
+Use the existing course completion architecture and extend it where necessary.
+
+Course completion should support configurable requirements, including:
+
+- Required lessons completed.
+- Required activities completed.
+- Required quizzes passed.
+- Required practical assignments submitted.
+- Required practical challenges approved.
+
+Distinguish between:
+
+- Not started.
+- In progress.
+- Awaiting assessment.
+- Needs improvement.
+- Completed.
+- Completed with practical evidence approved.
+
+A learner must not receive a verified practical competency status simply for uploading a file.
+
+Only authorized assessment workflows may approve practical evidence.
+
+---
+
+# 11. ADMINISTRATOR COURSE MANAGEMENT
+
+Extend the existing administrator workflow to support the full expanded catalogue.
+
+Administrators must be able to:
+
+## Course management
+
+- Create courses.
+- Edit courses.
+- Associate courses with competencies.
+- View course details.
+- Preview courses.
+- Save drafts.
+- Publish courses.
+- Unpublish courses.
+- Archive courses.
+- Manage course versions.
+
+## Module management
+
+- Create modules.
+- Edit modules.
+- Delete modules where safe.
+- Reorder modules.
+- Publish or unpublish modules.
+- Manage module objectives.
+
+## Lesson management
+
+- Create lessons.
+- Edit lesson content.
+- Reorder lessons.
+- Attach resources.
+- Manage activities.
+- Configure lesson completion requirements.
+
+## Assessment management
+
+- Create quizzes.
+- Add questions.
+- Configure answer options.
+- Set correct answers.
+- Configure pass marks.
+- Configure duration and attempts.
+- Preview assessments.
+
+## Practical challenge management
+
+- Create challenges.
+- Edit challenge instructions.
+- Configure deliverables.
+- Configure submission requirements.
+- Create rubrics.
+- Configure scoring.
+- Manage reviewer feedback.
+
+## Publishing safeguards
+
+A course must not be published as a complete learning experience if it lacks required content.
+
+Implement validation for:
+
+- Course description.
+- Learning objectives.
+- Competency association.
+- At least one published module.
+- Substantive published lessons.
+- Appropriate assessment or activity requirements.
+- Final practical challenge where required.
+
+Draft content must remain hidden from ordinary learners.
+
+All administrative actions must respect existing role permissions and RLS policies.
+
+Do not rely only on hiding administrator controls in JavaScript.
+
+---
+
+# 12. DATABASE AND SEED DATA
+
+Inspect the existing database schema and seed conventions before changing them.
+
+The existing repository already contains course and competency relationships. Reuse them.
+
+In particular, inspect the existing `courses` table, `course_skills` relationship and associated module, lesson, resource, assessment and challenge structures.
+
+Do not create duplicate versions of these tables.
+
+Create or modify migrations only where necessary.
+
+Seed all additional course content into the actual Supabase database.
+
+The seed implementation must:
+
+- Be repeatable.
+- Be idempotent.
+- Avoid duplicate courses.
+- Avoid duplicate modules and lessons.
+- Preserve existing learner enrollments.
+- Preserve activity progress.
+- Preserve quiz attempts.
+- Preserve submissions and review history.
+- Preserve existing course identifiers where possible.
+- Maintain correct foreign key relationships.
+- Maintain correct publication states.
+
+Use stable slugs or another reliable natural key for seed upserts.
+
+Do not use destructive database resets on an existing environment.
+
+Do not delete existing learner data to make seeding easier.
+
+If the existing schema cannot support a requirement, document the limitation and implement the smallest safe migration.
+
+---
+
+# 13. DATA CONSISTENCY AND LIVE APPLICATION BEHAVIOUR
+
+Ensure the live Supabase application returns consistent data across:
+
+- Explore.
+- Course catalogue.
+- Competency details.
+- Course details.
+- Learner dashboard.
+- My Courses.
+- Learning workspace.
+- Administrator dashboard.
+- Course management.
+
+The displayed course count must reflect actual published courses associated with each competency.
+
+The displayed category must be the actual category of the associated competency.
+
+Do not hardcode course counts.
+
+Do not substitute static demo data when the application is running in live mode.
+
+Ensure demo mode and live mode follow compatible data contracts.
+
+Implement proper loading, empty, success and error states.
+
+Where a competency has no published course, display an honest empty state.
+
+Where a competency has a published course, display it correctly.
+
+---
+
+# 14. SECURITY REQUIREMENTS
+
+Review the expanded course functionality for vulnerabilities.
+
+Verify:
+
+- RLS policies.
+- Course visibility permissions.
+- Administrator permissions.
+- Reviewer permissions.
+- Enrollment ownership.
+- Lesson progress ownership.
+- Quiz access permissions.
+- Server-side quiz scoring.
+- Submission ownership.
+- Storage upload policies.
+- File MIME restrictions.
+- File size restrictions.
+- Rubric score validation.
+- Course publication permissions.
+- Course version access.
+- Protection against unauthorized course modifications.
+
+Never expose Supabase service role credentials in browser code.
+
+Never trust a user-supplied role, score, completion status or reviewer identity.
+
+Do not permit learners to approve their own practical submissions.
+
+---
+
+# 15. AUTOMATED TESTING
+
+Implement tests using the testing tools already present in the repository. If there is no adequate test setup, introduce a lightweight compatible test framework without changing the application architecture.
+
+Test the following:
+
+### Catalogue tests
+
+- All 99 competencies are retrieved.
+- Every competency has the correct category.
+- Every intended competency has a course.
+- No duplicate course associations exist.
+- Course counts are accurate.
+- Unpublished courses are hidden.
+
+### Course content tests
+
+- Courses have valid descriptions.
+- Modules are correctly associated.
+- Lessons are correctly associated.
+- Lesson content is not empty.
+- Resources have valid metadata.
+- Assessments are associated correctly.
+- Practical challenges have valid instructions and rubrics.
+
+### Learner workflow tests
+
+- Course discovery.
+- Course details.
+- Enrollment.
+- Lesson access.
+- Lesson completion.
+- Quiz submission.
+- Practical assignment submission.
+- Review feedback.
+- Progress persistence.
+- Course completion.
+
+### Administrator workflow tests
+
+- Course creation.
+- Course editing.
+- Module management.
+- Lesson management.
+- Quiz configuration.
+- Challenge management.
+- Rubric management.
+- Draft saving.
+- Publishing.
+- Unpublishing.
+
+### Security tests
+
+- Learners cannot access draft courses.
+- Learners cannot modify other learners' progress.
+- Learners cannot alter quiz scores.
+- Learners cannot approve submissions.
+- Unauthorized users cannot manage courses.
+- Upload restrictions are enforced.
+
+---
+
+# 16. IMPLEMENTATION STRATEGY
+
+Do not attempt to create all 95 courses in one unverified operation.
+
+Work category by category.
+
+Recommended sequence:
+
+1. Communication & Interpersonal.
+2. Writing & Content Creation.
+3. Entrepreneurship & Business.
+4. Digital Marketing & Social Media.
+5. Creative & Design.
+6. Technology & Digital.
+7. Career & Professional Development.
+
+For each category:
+
+1. Retrieve all existing competencies.
+2. Verify existing course associations.
+3. Identify missing courses.
+4. Design competency-specific curricula.
+5. Generate substantive instructional lessons.
+6. Add resources and practical activities.
+7. Add assessments.
+8. Add final practical challenges and rubrics.
+9. Seed the content safely.
+10. Verify database relationships.
+11. Test learner access.
+12. Test administrator management.
+13. Verify category and course counts.
+
+Do not proceed to the next category while the current category has unresolved structural or data-integrity errors.
+
+If the complete content volume is too large for a single implementation session, complete and verify a category before continuing in subsequent sessions.
+
+Maintain a progress report showing completed and outstanding categories.
+
+---
+
+# 17. USER INTERFACE AND DESIGN
+
+Preserve Kord's existing visual identity and interface conventions.
+
+Do not redesign the entire platform.
+
+Improve only the interfaces needed to support the expanded catalogue.
+
+The Explore page should show:
+
+- Category.
+- Competency.
+- Published course count.
+- Course cards.
+- Difficulty.
+- Estimated duration.
+- Module count.
+- Course description.
+- Enrollment action.
+
+The course page should provide clear navigation between modules and lessons.
+
+The learning workspace should make it easy to understand:
+
+- What the learner is studying.
+- What has been completed.
+- What comes next.
+- What assessments are required.
+- What practical work must be submitted.
+
+Ensure responsive behaviour on mobile, tablet and desktop.
+
+Avoid overcrowded course cards and excessively long catalogue pages.
+
+---
+
+# 18. DEFINITION OF DONE
+
+This implementation is not complete simply because database records have been inserted.
+
+It is complete only when:
+
+1. Every intended published competency has an appropriate course.
+2. All courses belong to their correct competencies.
+3. All courses appear in their respective categories.
+4. All courses contain meaningful modules.
+5. All modules contain substantive lessons.
+6. Learners can access instructional content.
+7. Learners can complete activities.
+8. Learners can take assessments.
+9. Learners can submit practical evidence.
+10. Authorized reviewers can evaluate submissions.
+11. Learners can see feedback.
+12. Progress is correctly persisted.
+13. Course completion rules work.
+14. Administrators can manage the full course structure.
+15. Publishing and draft controls work.
+16. Existing four flagship courses remain functional.
+17. Existing learner records remain intact.
+18. Live Supabase mode works.
+19. Automated tests pass.
+20. No critical security or data-integrity issues remain.
+
+---
+
+# 19. REQUIRED FINAL IMPLEMENTATION REPORT
+
+At the end, provide a factual report containing:
+
+- Existing courses inspected.
+- New courses created.
+- Competencies covered.
+- Courses per category.
+- Modules created.
+- Lessons created.
+- Practical activities created.
+- Quizzes and assessments created.
+- Final challenges created.
+- Rubrics created.
+- Database migrations added.
+- Seed files modified.
+- Application files modified.
+- Security changes.
+- Automated tests executed.
+- Test results.
+- Outstanding issues.
+- Any competencies intentionally left without courses and the reason.
+
+Provide the exact Git commit hashes for completed changes.
+
+Do not claim a feature was implemented unless the corresponding code or database changes exist and have been tested.
+
+Do not claim live database seeding succeeded unless it was actually executed and verified.
+
+Do not silently skip difficult competencies.
+
+## FINAL DIRECTIVE
+
+The goal is not to make Kord look like it has a large course catalogue.
+
+The goal is to make Kord a functional skill-development platform where every published competency has a relevant, structured and practical learning pathway.
+
+Preserve the existing application.
+
+Extend the existing architecture.
+
+Build meaningful content.
+
+Maintain data integrity.
+
+Verify everything end to end.
+
+**Do not stop after creating course records. Complete the actual learning experience.**

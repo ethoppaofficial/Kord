@@ -3,12 +3,7 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildGraphicDesignCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-graphic-design-foundations';
   const skillId = 'skill-graphic-design';
-  const associatedSkillIds = [
-    'skill-graphic-design',
-    'skill-visual-communication',
-    'skill-brand-identity-design',
-    'skill-canva-design',
-  ];
+  const associatedSkillIds = ['skill-graphic-design'];
   const now = '2026-10-02T09:00:00.000Z';
 
   const phases = [
@@ -665,10 +660,10 @@ export function buildGraphicDesignCourse({ buildLesson, buildActivity, addAssess
     maxScore: 25,
     passingScore: 18,
     rubric: [
-      { id: 'r1', label: 'Visual Hierarchy & 3-Second Read', description: 'Unmistakable focal headline, clear offer details, and prominent CTA.', maxPoints: 7 },
-      { id: 'r2', label: 'Typography & Grid Alignment', description: 'Max 2 fonts, balanced scale contrast, clean alignment, and generous outer margins.', maxPoints: 6 },
-      { id: 'r3', label: 'Colour Contrast & Brand Fit', description: 'Cohesive 60-30-10 palette with legible >= 4.5:1 text contrast.', maxPoints: 6 },
-      { id: 'r4', label: 'Production Polish & Rationale', description: 'Clean export quality, zero clipped elements, and clear explanation of decisions.', maxPoints: 6 },
+      { id: 'r1', label: 'Visual Hierarchy & 3-Second Read', description: 'Unmistakable focal headline, clear offer details, and prominent CTA.', maxPoints: 7, weightPercent: 28 },
+      { id: 'r2', label: 'Typography & Grid Alignment', description: 'Max 2 fonts, balanced scale contrast, clean alignment, and generous outer margins.', maxPoints: 6, weightPercent: 24 },
+      { id: 'r3', label: 'Colour Contrast & Brand Fit', description: 'Cohesive 60-30-10 palette with legible >= 4.5:1 text contrast.', maxPoints: 6, weightPercent: 24 },
+      { id: 'r4', label: 'Production Polish & Rationale', description: 'Clean export quality, zero clipped elements, and clear explanation of decisions.', maxPoints: 6, weightPercent: 24 },
     ],
   };
 

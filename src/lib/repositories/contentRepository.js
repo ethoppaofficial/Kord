@@ -3,8 +3,9 @@ import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { slugify } from '../formatters.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import { normalizeVideoEntry } from '../videoProvider.js';
+import { validateRubricWeights, DEFAULT_ALLOWED_MIME_TYPES } from '../validators.js';
 
-export function validateCourseForPublish(course) {
+export function validateCourseForPublish(course, { assessments = null, challenges = null } = {}) {
   const errors = [];
   if (!course) {
     return { valid: false, errors: ['Course does not exist.'] };
@@ -14,6 +15,9 @@ export function validateCourseForPublish(course) {
   }
   if (!course.description || String(course.description).trim().length < 15) {
     errors.push('Course description must be at least 15 characters.');
+  }
+  if (!course.skillId) {
+    errors.push('Associate the course with a primary competency before publishing.');
   }
   if (!Array.isArray(course.outcomes) || course.outcomes.length === 0) {
     errors.push('Add at least 1 learning objective before publishing.');
@@ -31,13 +35,40 @@ export function validateCourseForPublish(course) {
       errors.push('Course must contain at least 1 published lesson before publishing.');
     } else {
       const emptyLesson = publishedLessons.find(
-        (l) => !l.title || !Array.isArray(l.blocks) || l.blocks.length === 0
+        (l) => !l.title || !Array.isArray(l.blocks) || l.blocks.length < 1
       );
       if (emptyLesson) {
-        errors.push(`Lesson "${emptyLesson.title || 'Untitled'}" needs at least 1 content block.`);
+        errors.push(`Lesson "${emptyLesson.title || 'Untitled'}" needs structured instructional blocks.`);
       }
     }
   }
+
+  const rules = course.completionRules || {};
+  const courseAssessments = assessments ?? course.assessments ?? null;
+  const courseChallenges = challenges ?? course.challenges ?? null;
+
+  if (rules.requireAllAssessments && Array.isArray(courseAssessments)) {
+    const withQuestions = courseAssessments.filter(
+      (q) => !Array.isArray(q.questions) || q.questions.length > 0
+    );
+    if (withQuestions.length === 0) {
+      errors.push('Add at least 1 knowledge assessment before publishing.');
+    }
+  }
+
+  if ((rules.requireChallengeSubmission || rules.requireChallengeApproval) && Array.isArray(courseChallenges)) {
+    if (courseChallenges.length === 0) {
+      errors.push('Add a Final Practical Challenge with a rubric before publishing.');
+    } else {
+      for (const ch of courseChallenges) {
+        const rubricCheck = validateRubricWeights(ch.rubric || []);
+        if (!rubricCheck.valid) {
+          errors.push(`Challenge "${ch.title}": ${rubricCheck.error}`);
+        }
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -1043,6 +1074,107 @@ export async function adminUpsertLesson({
   });
 }
 
+export async function adminDeletePhase(courseId, phaseId) {
+  const key = buildIdempotencyKey('admin-phase-del', courseId, phaseId, Date.now());
+  return runIdempotent(key, async () => {
+    if (!isDemoMode && supabase) {
+      const [{ data: phaseLessons }, { data: phaseActs }, { count: quizCount }] = await Promise.all([
+        supabase.from('lessons').select('id').eq('phase_id', phaseId),
+        supabase.from('activities').select('id').eq('phase_id', phaseId),
+        supabase.from('quizzes').select('id', { count: 'exact', head: true }).eq('phase_id', phaseId),
+      ]);
+      if ((quizCount || 0) > 0) {
+        throw new Error('Cannot delete a module that has linked assessments. Reassign or remove the assessment first.');
+      }
+      const lessonIds = (phaseLessons || []).map((l) => l.id);
+      if (lessonIds.length > 0) {
+        const { count: lpCount } = await supabase
+          .from('lesson_progress')
+          .select('id', { count: 'exact', head: true })
+          .in('lesson_id', lessonIds);
+        if ((lpCount || 0) > 0) {
+          throw new Error('Cannot delete a module with existing learner lesson progress. Unpublish it instead.');
+        }
+      }
+      const actIds = (phaseActs || []).map((a) => a.id);
+      if (actIds.length > 0) {
+        const { count: apCount } = await supabase
+          .from('activity_progress')
+          .select('id', { count: 'exact', head: true })
+          .in('activity_id', actIds);
+        if ((apCount || 0) > 0) {
+          throw new Error('Cannot delete a module with existing learner activity progress. Unpublish it instead.');
+        }
+      }
+      const { error } = await supabase.from('phases').delete().eq('id', phaseId).eq('course_id', courseId);
+      if (error) throw error;
+      return;
+    }
+
+    updateDemoState((draft) => {
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      const phase = course?.phases?.find((p) => p.id === phaseId);
+      if (!phase) throw new Error('Module not found');
+
+      const linkedQuiz = (draft.quizzes || []).some((q) => q.phaseId === phaseId);
+      if (linkedQuiz) {
+        throw new Error('Cannot delete a module that has linked assessments. Remove or reassign the assessment first.');
+      }
+      const lessonIds = new Set((phase.lessons || []).map((l) => l.id));
+      const hasLessonProgress = (draft.lessonProgress || []).some((lp) => lessonIds.has(lp.lessonId));
+      const actIds = new Set((phase.activities || []).map((a) => a.id));
+      const hasActivityProgress = (draft.activityProgress || []).some((ap) => actIds.has(ap.activityId));
+      if (hasLessonProgress || hasActivityProgress) {
+        throw new Error('Cannot delete a module with recorded learner progress. Unpublish the module instead.');
+      }
+
+      course.phases = (course.phases || [])
+        .filter((p) => p.id !== phaseId)
+        .map((p, idx) => ({ ...p, position: idx + 1 }));
+      course.updatedAt = new Date().toISOString();
+      return draft;
+    });
+  });
+}
+
+export async function adminReorderLessons(courseId, phaseId, orderedLessonIds) {
+  const key = buildIdempotencyKey('admin-lesson-reorder', courseId, phaseId, orderedLessonIds.join(','), Date.now());
+  return runIdempotent(key, async () => {
+    if (!isDemoMode && supabase) {
+      for (let i = 0; i < orderedLessonIds.length; i += 1) {
+        const { error } = await supabase
+          .from('lessons')
+          .update({ position: i + 1000 })
+          .eq('id', orderedLessonIds[i])
+          .eq('phase_id', phaseId);
+        if (error) throw error;
+      }
+      for (let i = 0; i < orderedLessonIds.length; i += 1) {
+        const { error } = await supabase
+          .from('lessons')
+          .update({ position: i + 1 })
+          .eq('id', orderedLessonIds[i])
+          .eq('phase_id', phaseId);
+        if (error) throw error;
+      }
+      return;
+    }
+
+    updateDemoState((draft) => {
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      const phase = course?.phases?.find((p) => p.id === phaseId);
+      if (!phase) throw new Error('Module not found');
+      const posMap = new Map(orderedLessonIds.map((lid, idx) => [lid, idx + 1]));
+      (phase.lessons || []).forEach((l) => {
+        if (posMap.has(l.id)) l.position = posMap.get(l.id);
+      });
+      phase.lessons.sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      course.updatedAt = new Date().toISOString();
+      return draft;
+    });
+  });
+}
+
 export async function adminDeleteLesson(courseId, phaseId, lessonId) {
   const key = buildIdempotencyKey('admin-lesson-del', courseId, phaseId, lessonId);
   return runIdempotent(key, async () => {
@@ -1059,6 +1191,113 @@ export async function adminDeleteLesson(courseId, phaseId, lessonId) {
       }
       return draft;
     });
+  });
+}
+
+export async function adminUpsertChallenge(payload) {
+  const cleanTitle = String(payload.title || '').trim();
+  if (cleanTitle.length < 3) {
+    throw new Error('Challenge title must be at least 3 characters.');
+  }
+  const cleanBrief = String(payload.brief || '').trim();
+  if (cleanBrief.length < 15) {
+    throw new Error('Challenge brief must be at least 15 characters.');
+  }
+
+  const normalizedRubric = (payload.rubric || []).map((r, idx) => ({
+    id: r.id || `crit-${idx + 1}`,
+    label: String(r.label || '').trim(),
+    description: String(r.description || '').trim(),
+    maxPoints: Math.max(1, Number(r.maxPoints || 5)),
+    weightPercent: Number(r.weightPercent ?? r.weight ?? 0),
+  }));
+
+  const rubricValidation = validateRubricWeights(normalizedRubric);
+  if (!rubricValidation.valid) {
+    throw new Error(rubricValidation.error);
+  }
+
+  const maxScore = rubricValidation.totalPoints;
+  const passingScore = Math.min(
+    maxScore,
+    Math.max(1, Number(payload.passingScore || Math.round(maxScore * 0.72)))
+  );
+  const expectedDeliverables = Array.isArray(payload.expectedDeliverables)
+    ? payload.expectedDeliverables.map((x) => String(x || '').trim()).filter(Boolean)
+    : String(payload.expectedDeliverables || '')
+        .split('\n')
+        .map((x) => x.trim())
+        .filter(Boolean);
+
+  const key = buildIdempotencyKey('admin-challenge', payload.id || payload.courseId || payload.skillId, cleanTitle, Date.now());
+  return runIdempotent(key, async () => {
+    if (!isDemoMode && supabase) {
+      const { data, error } = await supabase
+        .from('challenges')
+        .upsert({
+          id: payload.id || undefined,
+          skill_id: payload.skillId,
+          course_id: payload.courseId || null,
+          phase_id: payload.phaseId || null,
+          title: cleanTitle,
+          brief: cleanBrief,
+          instructions: String(payload.instructions || cleanBrief).trim(),
+          expected_deliverables: expectedDeliverables,
+          submission_format: String(payload.submissionFormat || 'Project URL, file upload, or written brief').trim(),
+          deliverable_hint: String(payload.deliverableHint || '').trim(),
+          max_score: maxScore,
+          passing_score: passingScore,
+          allowed_evidence_types: payload.allowedEvidenceTypes || ['written', 'file', 'project_url', 'screenshot'],
+          allowed_mime_types: payload.allowedMimeTypes || DEFAULT_ALLOWED_MIME_TYPES.slice(0, 6),
+          max_file_size_mb: Number(payload.maxFileSizeMb || 25),
+          is_required: payload.isRequired !== false,
+          rubric: normalizedRubric,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return mapChallenge(data);
+    }
+
+    let savedChallenge = null;
+    updateDemoState((draft) => {
+      draft.challenges = draft.challenges || [];
+      const existing = payload.id
+        ? draft.challenges.find((c) => c.id === payload.id)
+        : payload.courseId
+          ? draft.challenges.find((c) => c.courseId === payload.courseId)
+          : null;
+      const fields = {
+        skillId: payload.skillId,
+        courseId: payload.courseId || null,
+        phaseId: payload.phaseId || null,
+        title: cleanTitle,
+        brief: cleanBrief,
+        instructions: String(payload.instructions || cleanBrief).trim(),
+        expectedDeliverables,
+        submissionFormat: String(payload.submissionFormat || 'Project URL, file upload, or written brief').trim(),
+        deliverableHint: String(payload.deliverableHint || '').trim(),
+        maxScore,
+        passingScore,
+        allowedEvidenceTypes: payload.allowedEvidenceTypes || ['written', 'file', 'project_url', 'screenshot'],
+        allowedMimeTypes: payload.allowedMimeTypes || DEFAULT_ALLOWED_MIME_TYPES.slice(0, 6),
+        maxFileSizeMb: Number(payload.maxFileSizeMb || 25),
+        isRequired: payload.isRequired !== false,
+        rubric: normalizedRubric,
+      };
+      if (existing) {
+        Object.assign(existing, fields);
+        savedChallenge = existing;
+      } else {
+        savedChallenge = {
+          id: `ch-${payload.courseId || Date.now()}`,
+          ...fields,
+        };
+        draft.challenges.push(savedChallenge);
+      }
+      return draft;
+    });
+    return savedChallenge;
   });
 }
 

@@ -63,21 +63,109 @@ export const DEFAULT_ALLOWED_MIME_TYPES = [
   'video/quicktime',
 ];
 
+export const MIME_EXTENSION_MAP = {
+  'application/pdf': ['pdf'],
+  'image/png': ['png'],
+  'image/jpeg': ['jpg', 'jpeg'],
+  'image/webp': ['webp'],
+  'text/plain': ['txt'],
+  'text/markdown': ['md', 'markdown'],
+  'text/csv': ['csv'],
+  'application/zip': ['zip'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
+  'audio/mpeg': ['mp3'],
+  'audio/wav': ['wav'],
+  'audio/mp4': ['m4a', 'mp4'],
+  'audio/webm': ['webm'],
+  'audio/ogg': ['ogg'],
+  'video/mp4': ['mp4'],
+  'video/webm': ['webm'],
+  'video/quicktime': ['mov'],
+};
+
+const BLOCKED_EXTENSIONS = new Set([
+  'exe', 'bat', 'cmd', 'sh', 'js', 'mjs', 'cjs', 'html', 'htm', 'svg', 'php', 'py', 'rb', 'dll', 'msi', 'app',
+]);
+
+export function getFileExtension(fileName) {
+  const clean = String(fileName || '').trim();
+  const idx = clean.lastIndexOf('.');
+  if (idx <= 0 || idx === clean.length - 1) return '';
+  return clean.slice(idx + 1).toLowerCase();
+}
+
 export function validateEvidenceFile(file, challenge = {}) {
   if (!file) return null;
   const maxMb = Number(challenge.maxFileSizeMb || 25);
   const maxBytes = maxMb * 1024 * 1024;
+  if (Number(file.size || 0) <= 0) {
+    return 'Uploaded file appears empty.';
+  }
   if (file.size > maxBytes) {
     return `File exceeds the ${maxMb} MB maximum upload size for this assignment.`;
   }
+
+  const ext = getFileExtension(file.name);
+  if (!ext || BLOCKED_EXTENSIONS.has(ext)) {
+    return `File extension ".${ext || 'unknown'}" is not allowed for security reasons.`;
+  }
+
   const allowedMimes =
     Array.isArray(challenge.allowedMimeTypes) && challenge.allowedMimeTypes.length > 0
       ? challenge.allowedMimeTypes
       : DEFAULT_ALLOWED_MIME_TYPES;
-  if (file.type && !allowedMimes.includes(file.type)) {
-    return `File type (${file.type}) is not permitted for this assignment. Accepted types: ${allowedMimes.join(', ')}.`;
+
+  const allowedExts = new Set(
+    allowedMimes.flatMap((mime) => MIME_EXTENSION_MAP[mime] || [])
+  );
+
+  if (!allowedExts.has(ext)) {
+    return `File extension ".${ext}" is not permitted for this assignment. Accepted extensions: ${Array.from(allowedExts).map((e) => `.${e}`).join(', ')}.`;
   }
+
+  if (!file.type || !allowedMimes.includes(file.type)) {
+    return `File MIME type (${file.type || 'missing'}) is not permitted for this assignment. Accepted types: ${allowedMimes.join(', ')}.`;
+  }
+
+  const mimeExts = MIME_EXTENSION_MAP[file.type] || [];
+  if (mimeExts.length > 0 && !mimeExts.includes(ext)) {
+    return `File extension ".${ext}" does not match declared MIME type "${file.type}".`;
+  }
+
   return null;
+}
+
+export function validateRubricWeights(rubric = []) {
+  if (!Array.isArray(rubric) || rubric.length === 0) {
+    return { valid: false, totalWeight: 0, totalPoints: 0, error: 'Rubric must include at least 1 criterion.' };
+  }
+  let totalWeight = 0;
+  let totalPoints = 0;
+  for (const item of rubric) {
+    const label = String(item?.label || '').trim();
+    const maxPts = Number(item?.maxPoints || 0);
+    const weight = Number(item?.weightPercent ?? item?.weight ?? 0);
+    if (!label) {
+      return { valid: false, totalWeight, totalPoints, error: 'Every rubric criterion needs a label.' };
+    }
+    if (!Number.isFinite(maxPts) || maxPts <= 0) {
+      return { valid: false, totalWeight, totalPoints, error: `Rubric criterion "${label}" must have maxPoints > 0.` };
+    }
+    if (!Number.isFinite(weight) || weight <= 0) {
+      return { valid: false, totalWeight, totalPoints, error: `Rubric criterion "${label}" must have weightPercent > 0.` };
+    }
+    totalWeight += weight;
+    totalPoints += maxPts;
+  }
+  if (Math.round(totalWeight) !== 100) {
+    return {
+      valid: false,
+      totalWeight,
+      totalPoints,
+      error: `Rubric weights must total 100% (currently ${totalWeight}%).`,
+    };
+  }
+  return { valid: true, totalWeight, totalPoints, error: null };
 }
 
 export function validateSubmissionForm({ evidenceUrl, repoUrl, file, submissionText, explanation, challenge = {} }) {

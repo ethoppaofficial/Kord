@@ -164,7 +164,7 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
     }
   }
 
-  const quiz = await getQuizForLearner(targetQuizId);
+  const quiz = await getQuizForLearner(targetQuizId, { userId });
   if (!quiz || (courseCtx && quiz.courseId !== courseCtx.course.id)) {
     return {
       html: renderErrorState({
