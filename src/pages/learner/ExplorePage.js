@@ -20,14 +20,14 @@ import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../
 import { escapeHtml } from '../../lib/formatters.js';
 import { renderSkillCard, renderCourseCard, renderEmptyState } from '../../components/Common.js';
 
-let filterState = {
-  search: '',
-  category: 'All',
-  level: 'All',
-  courseFilter: 'all',
-};
-
 export async function renderExplorePage({ session }) {
+  let filterState = {
+    search: '',
+    category: 'All',
+    level: 'All',
+    courseFilter: 'all',
+  };
+
   const userId = session.user.id;
   const [
     categories,
@@ -82,32 +82,83 @@ export async function renderExplorePage({ session }) {
     });
   });
 
+  const skillById = new Map(skills.map((skill) => [skill.id, skill]));
+
+  function getCourseCategory(course) {
+    const linkedIds = [course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean);
+    const primarySkill = skillById.get(course.skillId);
+    if (primarySkill?.category) return primarySkill.category;
+
+    const linkedSkill = linkedIds
+      .map((skillId) => skillById.get(skillId))
+      .find((skill) => skill?.category);
+    return linkedSkill?.category || 'Other';
+  }
+
   function applyFilters() {
     const q = filterState.search.trim().toLowerCase();
     return skills.filter((s) => {
       if (filterState.category !== 'All' && s.category !== filterState.category) return false;
       if (filterState.level !== 'All' && s.level !== filterState.level) return false;
-      const count = (coursesBySkill.get(s.id) || []).length;
+      const skillCourses = coursesBySkill.get(s.id) || [];
+      const count = skillCourses.length;
       if (filterState.courseFilter === 'with_courses' && count === 0) return false;
       if (filterState.courseFilter === 'no_courses' && count > 0) return false;
-      if (q && !`${s.title} ${s.summary} ${s.category}`.toLowerCase().includes(q)) return false;
+      if (q) {
+        const matchesSkill = `${s.title} ${s.summary} ${s.category}`.toLowerCase().includes(q);
+        const matchesCourse = skillCourses.some((course) =>
+          `${course.title} ${course.description || ''}`.toLowerCase().includes(q)
+        );
+        if (!matchesSkill && !matchesCourse) return false;
+      }
       return true;
     });
   }
 
   function renderCards(filtered) {
+    const filteredSkillIds = new Set(filtered.map((skill) => skill.id));
+    const q = filterState.search.trim().toLowerCase();
+
+    const courseMatchesFilters = (course) => {
+      if (filterState.courseFilter === 'no_courses') return false;
+
+      const linkedIds = [course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean);
+      if (![...linkedIds].some((skillId) => filteredSkillIds.has(skillId))) return false;
+
+      if (q) {
+        const primarySkill = skillById.get(course.skillId);
+        const searchable = `${course.title} ${course.description || ''} ${primarySkill?.title || ''} ${primarySkill?.category || ''}`.toLowerCase();
+        if (!searchable.includes(q)) return false;
+      }
+      return true;
+    };
+
     if (filtered.length === 0) {
-      return renderEmptyState({
-        title: 'No matching skills',
-        message: 'Try clearing your search term or adjusting the category, level, and course availability filters.',
-        actionHtml: `<button type="button" class="btn btn-secondary btn-sm" id="reset-explore-filters">Clear filters</button>`,
+      const hasMatchingCourses = filterState.courseFilter !== 'no_courses' && allCourses.some((course) => {
+        const linkedIds = [course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean);
+        return linkedIds.some((skillId) => {
+          const skill = skillById.get(skillId);
+          if (!skill) return false;
+          if (filterState.category !== 'All' && skill.category !== filterState.category) return false;
+          if (filterState.level !== 'All' && skill.level !== filterState.level) return false;
+          return !q || `${course.title} ${course.description || ''} ${skill.title} ${skill.category}`.toLowerCase().includes(q);
+        });
       });
+
+      if (!hasMatchingCourses) {
+        return renderEmptyState({
+          title: 'No matching courses or skills',
+          message: 'Try clearing your search term or adjusting the category, level, and course availability filters.',
+          actionHtml: `<button type="button" class="btn btn-secondary btn-sm" id="reset-explore-filters">Clear filters</button>`,
+        });
+      }
     }
 
-    const withCourses = filtered.filter((s) => (coursesBySkill.get(s.id) || []).length > 0);
-    const withoutCourses = filtered.filter((s) => (coursesBySkill.get(s.id) || []).length === 0);
+    const categoryList = filterState.category === 'All'
+      ? categories.slice().sort((a, b) => (a.position || 0) - (b.position || 0))
+      : categories.filter((category) => category.name === filterState.category);
 
-    const buildCard = (skill, idx) => {
+    const buildSkillCard = (skill, index) => {
       const skillCourses = coursesBySkill.get(skill.id) || [];
       const overall = computeOverallSkillCourseProgress({
         publishedCourses: skillCourses,
@@ -116,7 +167,7 @@ export async function renderExplorePage({ session }) {
       const us = userSkillById.get(skill.id);
 
       return renderSkillCard(skill, {
-        index: idx,
+        index,
         completedCoursesCount: overall.completedCoursesCount,
         totalCoursesCount: skillCourses.length,
         averageCoursePct: overall.averagePercent,
@@ -124,34 +175,61 @@ export async function renderExplorePage({ session }) {
       });
     };
 
-    return `
-      ${
-        withCourses.length > 0
-          ? `
-        <section style="margin-bottom:32px;">
-          <h2 class="section-heading">Skills with Published Courses (${withCourses.length})</h2>
-          <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">
-            Competencies connected directly to Kord's structured multi-module courses and graded practical capstones.
-          </p>
-          <div class="lab-grid-3">${withCourses.map((s, i) => buildCard(s, i)).join('')}</div>
+    const sections = categoryList.map((category) => {
+      const categorySkills = filtered.filter((skill) => skill.category === category.name);
+      const categoryCourses = allCourses.filter((course) =>
+        getCourseCategory(course) === category.name && courseMatchesFilters(course)
+      );
+
+      const withCourses = categorySkills.filter((skill) => (coursesBySkill.get(skill.id) || []).length > 0);
+      const withoutCourses = categorySkills.filter((skill) => (coursesBySkill.get(skill.id) || []).length === 0);
+
+      if (categoryCourses.length === 0 && withCourses.length === 0 && withoutCourses.length === 0) return '';
+
+      return `
+        <section class="card" style="padding:18px; margin-bottom:24px;">
+          <header style="margin-bottom:18px;">
+            <h2 class="section-heading" style="margin:0 0 5px;">${escapeHtml(category.name)}</h2>
+            ${category.description ? `<p style="font-size:13px; color:var(--color-text-muted); margin:0;">${escapeHtml(category.description)}</p>` : ''}
+          </header>
+
+          ${categoryCourses.length > 0 ? `
+            <section style="margin-bottom:28px;">
+              <h3 style="font-size:15px; margin:0 0 12px;">Published Courses (${categoryCourses.length})</h3>
+              <div class="course-catalog-grid">
+                ${categoryCourses.map((course, index) => renderCourseCard(course, {
+                  index,
+                  progress: courseProgressById[course.id],
+                  enrollment: enrollmentByCourseId.get(course.id) || null,
+                })).join('')}
+              </div>
+            </section>
+          ` : ''}
+
+          ${withCourses.length > 0 ? `
+            <section style="margin-bottom:${withoutCourses.length > 0 ? '28px' : '0'};">
+              <h3 style="font-size:15px; margin:0 0 12px;">Skills with Published Courses (${withCourses.length})</h3>
+              <div class="lab-grid-3">${withCourses.map((skill, index) => buildSkillCard(skill, index)).join('')}</div>
+            </section>
+          ` : ''}
+
+          ${withoutCourses.length > 0 ? `
+            <section>
+              <h3 style="font-size:15px; margin:0 0 12px;">Skills Awaiting Dedicated Courses (${withoutCourses.length})</h3>
+              <div class="lab-grid-3">${withoutCourses.map((skill, index) => buildSkillCard(skill, index + withCourses.length)).join('')}</div>
+            </section>
+          ` : ''}
         </section>
-      `
-          : ''
-      }
-      ${
-        withoutCourses.length > 0
-          ? `
-        <section>
-          <h2 class="section-heading">Competencies Awaiting Dedicated Courses (${withoutCourses.length})</h2>
-          <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">
-            Published competencies without a standalone course yet. Several link directly to foundational flagship courses; others are queued for future curriculum development.
-          </p>
-          <div class="lab-grid-3">${withoutCourses.map((s, i) => buildCard(s, i + withCourses.length)).join('')}</div>
-        </section>
-      `
-          : ''
-      }
-    `;
+      `;
+    }).join('');
+
+    if (sections.trim()) return sections;
+
+    return renderEmptyState({
+      title: 'No matching courses or skills',
+      message: 'Try clearing your search term or adjusting the category, level, and course availability filters.',
+      actionHtml: `<button type="button" class="btn btn-secondary btn-sm" id="reset-explore-filters">Clear filters</button>`,
+    });
   }
 
   const initialFiltered = applyFilters();
@@ -168,35 +246,11 @@ export async function renderExplorePage({ session }) {
         </span>
       </div>
 
-      ${
-        allCourses.length > 0
-          ? `
-        <section style="margin-bottom:32px;">
-          <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
-            <h2 class="section-heading" style="margin:0;">Published Courses (${allCourses.length})</h2>
-            <span style="font-size:13px; color:var(--color-text-muted);">Full multi-module curricula with guided lessons, practical activities, graded checks, and capstone projects</span>
-          </div>
-          <div class="course-catalog-grid">
-            ${allCourses
-              .map((course, idx) =>
-                renderCourseCard(course, {
-                  index: idx,
-                  progress: courseProgressById[course.id],
-                  enrollment: enrollmentByCourseId.get(course.id) || null,
-                })
-              )
-              .join('')}
-          </div>
-        </section>
-      `
-          : ''
-      }
-
       <div class="card" style="padding:16px; margin-bottom:22px; display:flex; flex-direction:column; gap:12px;">
         <div class="filter-bar" style="margin-bottom:0;">
           <div style="flex:1.4; min-width:220px;">
-            <label class="sr-only" for="explore-search">Search skills</label>
-            <input class="input" id="explore-search" type="search" placeholder="Search skills, categories, or topics…" value="${escapeHtml(filterState.search)}" />
+            <label class="sr-only" for="explore-search">Search courses and skills</label>
+            <input class="input" id="explore-search" type="search" placeholder="Search courses, skills, categories, or topics…" value="${escapeHtml(filterState.search)}" />
           </div>
 
           <div style="min-width:220px;">
