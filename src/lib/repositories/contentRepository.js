@@ -72,19 +72,24 @@ export async function listSkills({ includeDrafts = false } = {}) {
     const courses = (coursesData || []).map(mapCourseSummary);
     return (skillsData || [])
       .map((s) => {
-        const skillCourses = courses.filter(
-          (c) => c.skillId === s.id && (includeDrafts || c.publicationStatus === 'published')
-        );
+        const allSkillCourses = courses
+          .filter((c) => c.skillId === s.id)
+          .sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+        const publishedCourses = allSkillCourses.filter((c) => c.publicationStatus === 'published');
+        const draftCourseCount = allSkillCourses.filter((c) => c.publicationStatus === 'draft').length;
+        const visibleCourses = includeDrafts ? allSkillCourses : publishedCourses;
         return {
           ...s,
           categoryId: s.category_id,
           competencyExpectations: s.competency_expectations || '',
           prerequisites: s.prerequisites || [],
           publicationStatus: s.publication_status || 'published',
-          roadmapStatus: skillCourses.length > 0 ? 'full' : s.roadmap_status || 'coming_soon',
+          roadmapStatus: publishedCourses.length > 0 ? 'full' : 'coming_soon',
           estHours: Number(s.est_hours || 4),
-          courses: skillCourses,
-          courseCount: skillCourses.length,
+          courses: visibleCourses,
+          courseCount: publishedCourses.length,
+          draftCourseCount,
+          totalCourseCount: allSkillCourses.length,
         };
       })
       .filter((s) => includeDrafts || s.publicationStatus === 'published');
@@ -94,17 +99,23 @@ export async function listSkills({ includeDrafts = false } = {}) {
   const courses = state.courses || [];
   return (state.skills || [])
     .map((s) => {
-      const skillCourses = courses
-        .filter((c) => c.skillId === s.id && (includeDrafts || c.publicationStatus === 'published'))
-        .sort((a, b) => (a.position || 1) - (b.position || 1));
+      const allSkillCourses = courses
+        .filter((c) => c.skillId === s.id)
+        .sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      const publishedCourses = allSkillCourses.filter((c) => c.publicationStatus === 'published');
+      const draftCourseCount = allSkillCourses.filter((c) => c.publicationStatus === 'draft').length;
+      const visibleCourses = includeDrafts ? allSkillCourses : publishedCourses;
       return {
         ...s,
-        courses: skillCourses,
-        courseCount: skillCourses.length,
-        roadmapStatus: skillCourses.length > 0 ? 'full' : s.roadmapStatus || 'coming_soon',
+        publicationStatus: s.publicationStatus || 'published',
+        courses: visibleCourses,
+        courseCount: publishedCourses.length,
+        draftCourseCount,
+        totalCourseCount: allSkillCourses.length,
+        roadmapStatus: publishedCourses.length > 0 ? 'full' : 'coming_soon',
       };
     })
-    .filter((s) => includeDrafts || s.publicationStatus !== 'draft');
+    .filter((s) => includeDrafts || s.publicationStatus === 'published');
 }
 
 export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
@@ -181,7 +192,7 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
     }));
 }
 
-export async function getCourseBySlug(slug) {
+export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('courses')
@@ -189,6 +200,7 @@ export async function getCourseBySlug(slug) {
       .eq('slug', slug)
       .single();
     if (error || !data) return null;
+    if (!includeDrafts && data.publication_status !== 'published') return null;
     const course = mapFullCourse(data);
     const [{ data: assessments }, { data: challenges }] = await Promise.all([
       supabase.from('quizzes').select('id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts').eq('course_id', course.id),
@@ -216,11 +228,25 @@ export async function getCourseBySlug(slug) {
   const state = getDemoState();
   const course = (state.courses || []).find((c) => c.slug === slug);
   if (!course) return null;
+  if (!includeDrafts && course.publicationStatus !== 'published') return null;
   const skill = (state.skills || []).find((s) => s.id === course.skillId) || null;
+  if (!includeDrafts && skill && skill.publicationStatus === 'draft') return null;
+
+  const sortedPhases = (course.phases || [])
+    .slice()
+    .sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
+    .map((p) => ({
+      ...p,
+      lessons: (p.lessons || [])
+        .slice()
+        .sort((a, b) => Number(a.position || 0) - Number(b.position || 0)),
+    }));
+
   const assessments = (state.quizzes || []).filter((q) => q.courseId === course.id);
   const challenges = (state.challenges || []).filter((c) => c.courseId === course.id);
   return {
     ...course,
+    phases: sortedPhases,
     skill,
     assessments,
     challenges,
@@ -265,7 +291,14 @@ export async function getChallengeById(challengeId) {
 export async function adminUpsertSkill(payload) {
   const cleanTitle = String(payload.title || '').trim();
   const cleanSlug = payload.slug ? slugify(payload.slug) : slugify(cleanTitle);
-  const key = buildIdempotencyKey('admin-skill', payload.id || cleanSlug, cleanTitle);
+  const key = buildIdempotencyKey('admin-skill', payload.id || cleanSlug, cleanTitle, payload.publicationStatus || '');
+
+  const parsedOutcomes = Array.isArray(payload.outcomes)
+    ? payload.outcomes.map((x) => String(x || '').trim()).filter(Boolean)
+    : String(payload.outcomes || '')
+        .split('\n')
+        .map((x) => x.trim())
+        .filter(Boolean);
 
   return runIdempotent(key, async () => {
     const categories = await listCategories();
@@ -288,9 +321,9 @@ export async function adminUpsertSkill(payload) {
             competency_expectations: String(payload.competencyExpectations || '').trim(),
             prerequisites: payload.prerequisites || [],
             publication_status: payload.publicationStatus || 'published',
-            roadmap_status: payload.roadmapStatus || 'full',
+            roadmap_status: payload.roadmapStatus || 'coming_soon',
             est_hours: Number(payload.estHours || 6),
-            outcomes: payload.outcomes || [],
+            outcomes: parsedOutcomes,
           },
           { onConflict: 'slug' }
         )
@@ -317,15 +350,17 @@ export async function adminUpsertSkill(payload) {
           `Demonstrate applied understanding and produce portfolio-grade deliverables for ${cleanTitle}.`,
         prerequisites: payload.prerequisites || [],
         publicationStatus: payload.publicationStatus || 'published',
-        roadmapStatus: payload.roadmapStatus || 'full',
+        roadmapStatus: payload.roadmapStatus || existing?.roadmapStatus || 'coming_soon',
         estHours: Number(payload.estHours || 6),
         outcomes:
-          payload.outcomes?.length
-            ? payload.outcomes
-            : [
-                `Explain core frameworks in ${cleanTitle}`,
-                `Deliver practical projects evaluated against a structured rubric`,
-              ],
+          parsedOutcomes.length > 0
+            ? parsedOutcomes
+            : existing?.outcomes?.length
+              ? existing.outcomes
+              : [
+                  `Explain core frameworks in ${cleanTitle}`,
+                  `Deliver practical projects evaluated against a structured rubric`,
+                ],
       };
 
       if (existing) {
@@ -334,7 +369,7 @@ export async function adminUpsertSkill(payload) {
       }
 
       draft.skills.push({
-        id: `skill-${cleanSlug}`,
+        id: `skill-${cleanSlug}-${Date.now().toString(36).slice(-4)}`,
         ...enriched,
       });
       return draft;

@@ -177,15 +177,18 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
                           <span style="font-size:12.5px; color:var(--color-text-muted);">
                             Recommended pace: ${escapeHtml(course.recommendedSchedule || 'Self-paced weekly milestones')}
                           </span>
-                          ${
-                            enr
-                              ? `<a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-primary btn-sm">
-                                  Open course workspace ${icon('arrowRight', 14)}
-                                </a>`
-                              : `<button type="button" class="btn btn-primary btn-sm" data-enroll-course="${escapeHtml(course.id)}" data-course-slug="${escapeHtml(course.slug)}">
-                                  Enroll in course
-                                </button>`
-                          }
+                          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-secondary btn-sm">Course details</a>
+                            ${
+                              enr
+                                ? `<a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-primary btn-sm">
+                                    Continue course ${icon('arrowRight', 14)}
+                                  </a>`
+                                : `<button type="button" class="btn btn-primary btn-sm" data-enroll-course="${escapeHtml(course.id)}" data-course-slug="${escapeHtml(course.slug)}">
+                                    Enroll in course
+                                  </button>`
+                            }
+                          </div>
                         </div>
                       </article>
                     `;
@@ -194,10 +197,10 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
               </div>
             `
                 : `
-              <div class="card">
-                <p style="color:var(--color-text-muted); font-size:14px;">
-                  No published courses are attached to this skill yet. You can declare this competency on your profile now while course pathways are authored.
-                </p>
+              <div class="state-box" style="padding:28px 20px;">
+                <h3 style="font-size:1.05rem;">No courses available yet</h3>
+                <p>No courses are available for this skill yet. Check back later as new learning pathways are added.</p>
+                <a href="/explore" data-link class="btn btn-secondary btn-sm">Browse skills with courses</a>
               </div>
             `
             }
@@ -219,7 +222,9 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
                     max: Math.max(1, overall.totalPublishedCourses),
                     detail: `${overall.completedCoursesCount}/${overall.totalPublishedCourses} courses`,
                   })
-                : ''
+                : `<div style="font-size:13px; color:var(--color-text-secondary); padding:10px 12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
+                    Courses for ${escapeHtml(skill.title)} are not published yet. This skill cannot be marked completed or verified until published courses exist and are finished.
+                  </div>`
             }
 
             <div style="font-size:13px; color:var(--color-text-secondary); line-height:1.5; padding:10px 12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">

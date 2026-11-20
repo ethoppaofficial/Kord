@@ -58,6 +58,7 @@ export async function renderExplorePage({ session }) {
       if (filterState.level !== 'All' && s.level !== filterState.level) return false;
       const count = (coursesBySkill.get(s.id) || []).length;
       if (filterState.courseFilter === 'with_courses' && count === 0) return false;
+      if (filterState.courseFilter === 'no_courses' && count > 0) return false;
       if (q && !`${s.title} ${s.summary} ${s.category}`.toLowerCase().includes(q)) return false;
       return true;
     });
@@ -67,13 +68,13 @@ export async function renderExplorePage({ session }) {
     if (filtered.length === 0) {
       return renderEmptyState({
         title: 'No matching skills',
-        message: 'Try clearing your search term or adjusting the category and level filters.',
+        message: 'Try clearing your search term or adjusting the category, level, and course availability filters.',
         actionHtml: `<button type="button" class="btn btn-secondary btn-sm" id="reset-explore-filters">Clear filters</button>`,
       });
     }
 
     const withCourses = filtered.filter((s) => (coursesBySkill.get(s.id) || []).length > 0);
-    const competencyOnly = filtered.filter((s) => (coursesBySkill.get(s.id) || []).length === 0);
+    const withoutCourses = filtered.filter((s) => (coursesBySkill.get(s.id) || []).length === 0);
 
     const buildCard = (skill, idx) => {
       const skillCourses = coursesBySkill.get(skill.id) || [];
@@ -97,21 +98,24 @@ export async function renderExplorePage({ session }) {
         withCourses.length > 0
           ? `
         <section style="margin-bottom:32px;">
-          <h2 class="section-heading">Skills with Structured Courses (${withCourses.length})</h2>
+          <h2 class="section-heading">Skills with Available Courses (${withCourses.length})</h2>
+          <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">
+            Skills with published, multi-phase courses ready for immediate enrollment.
+          </p>
           <div class="lab-grid-3">${withCourses.map((s, i) => buildCard(s, i)).join('')}</div>
         </section>
       `
           : ''
       }
       ${
-        competencyOnly.length > 0
+        withoutCourses.length > 0
           ? `
         <section>
-          <h2 class="section-heading">Full Competency Directory (${competencyOnly.length})</h2>
+          <h2 class="section-heading">Skills Without Courses Yet (${withoutCourses.length})</h2>
           <p style="font-size:13px; color:var(--color-text-muted); margin-bottom:14px;">
-            Declare any competency on your profile or wait as administrators publish additional multi-phase courses.
+            Published competencies awaiting course development. You can inspect outcomes and declare any competency now.
           </p>
-          <div class="lab-grid-3">${competencyOnly.map((s, i) => buildCard(s, i + withCourses.length)).join('')}</div>
+          <div class="lab-grid-3">${withoutCourses.map((s, i) => buildCard(s, i + withCourses.length)).join('')}</div>
         </section>
       `
           : ''
@@ -126,7 +130,7 @@ export async function renderExplorePage({ session }) {
       <div class="page-header">
         <div>
           <h1 class="page-title">Explore Skills &amp; Courses</h1>
-          <p class="page-subtitle">Browse ${skills.length} competencies across ${categories.length} categories. Each skill can host one or multiple structured courses.</p>
+          <p class="page-subtitle">Browse ${skills.length} competencies across ${categories.length} categories. Skills exist independently and may host zero, one, or multiple structured courses.</p>
         </div>
         <span class="mono-num" id="explore-count" style="font-size:13px; color:var(--color-text-muted);">
           ${initialFiltered.length} of ${skills.length} skills
@@ -160,7 +164,8 @@ export async function renderExplorePage({ session }) {
 
           <div class="segmented" role="group" aria-label="Filter by course availability">
             <button type="button" class="segmented-btn ${filterState.courseFilter === 'all' ? 'is-active' : ''}" data-course-filter="all">All skills</button>
-            <button type="button" class="segmented-btn ${filterState.courseFilter === 'with_courses' ? 'is-active' : ''}" data-course-filter="with_courses">Courses ready</button>
+            <button type="button" class="segmented-btn ${filterState.courseFilter === 'with_courses' ? 'is-active' : ''}" data-course-filter="with_courses">Courses available</button>
+            <button type="button" class="segmented-btn ${filterState.courseFilter === 'no_courses' ? 'is-active' : ''}" data-course-filter="no_courses">No courses yet</button>
           </div>
         </div>
       </div>

@@ -22,6 +22,8 @@ let selectedSkillId = null;
 let selectedCourseId = null;
 let selectedPhaseId = null;
 let catalogCategoryFilter = 'All';
+let catalogCourseStatusFilter = 'all'; // 'all' | 'published_courses' | 'draft_courses' | 'no_courses'
+let editingSkillId = null;
 
 // Draft state for visual JSON block lesson builder
 let draftBlocks = [
@@ -136,10 +138,14 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
   }
   const activePhase = phases.find((p) => p.id === selectedPhaseId) || null;
 
-  const filteredCatalogSkills =
-    catalogCategoryFilter === 'All'
-      ? skills
-      : skills.filter((s) => s.category === catalogCategoryFilter);
+  const filteredCatalogSkills = skills.filter((s) => {
+    if (catalogCategoryFilter !== 'All' && s.category !== catalogCategoryFilter) return false;
+    if (catalogCourseStatusFilter === 'published_courses' && s.courseCount === 0) return false;
+    if (catalogCourseStatusFilter === 'draft_courses' && (s.draftCourseCount || 0) === 0) return false;
+    if (catalogCourseStatusFilter === 'no_courses' && (s.totalCourseCount || 0) > 0) return false;
+    return true;
+  });
+  const editingSkill = editingSkillId ? skills.find((s) => s.id === editingSkillId) || null : null;
 
   const innerHtml = `
     <div class="page-header">
@@ -448,35 +454,54 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         <section class="card">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
             <h2 class="section-heading" style="margin:0;">Skills Directory (${filteredCatalogSkills.length})</h2>
-            <select class="select" id="admin-cat-filter" style="width:auto;">
-              <option value="All">All categories (${categories.length})</option>
-              ${categories.map((c) => `<option value="${escapeHtml(c.name)}" ${catalogCategoryFilter === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
-            </select>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <select class="select" id="admin-cat-filter" style="width:auto;">
+                <option value="All">All categories (${categories.length})</option>
+                ${categories.map((c) => `<option value="${escapeHtml(c.name)}" ${catalogCategoryFilter === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+              </select>
+              <select class="select" id="admin-course-status-filter" style="width:auto;">
+                <option value="all" ${catalogCourseStatusFilter === 'all' ? 'selected' : ''}>All course states</option>
+                <option value="published_courses" ${catalogCourseStatusFilter === 'published_courses' ? 'selected' : ''}>Has published courses</option>
+                <option value="draft_courses" ${catalogCourseStatusFilter === 'draft_courses' ? 'selected' : ''}>Courses in development</option>
+                <option value="no_courses" ${catalogCourseStatusFilter === 'no_courses' ? 'selected' : ''}>No courses yet</option>
+              </select>
+            </div>
           </div>
           <div class="divider-list">
             ${filteredCatalogSkills
-              .map(
-                (s) => `
-              <div class="divider-row" style="align-items:flex-start;">
-                <div>
-                  <div style="font-weight:700; color:var(--color-navy);">${escapeHtml(s.title)}</div>
-                  <div class="meta-line" style="margin-top:2px;">
-                    <span>${escapeHtml(s.category)}</span>
-                    <span class="meta-sep">·</span>
-                    <span>${escapeHtml(s.level)}</span>
-                    <span class="meta-sep">·</span>
-                    <span class="mono-num">${s.courseCount} courses</span>
+              .map((s) => {
+                const draftCnt = Number(s.draftCourseCount || 0);
+                const courseSummary =
+                  s.courseCount > 0 && draftCnt > 0
+                    ? `${s.courseCount} published · ${draftCnt} draft`
+                    : s.courseCount > 0
+                      ? `${s.courseCount} published ${s.courseCount === 1 ? 'course' : 'courses'}`
+                      : draftCnt > 0
+                        ? `${draftCnt} in development (draft)`
+                        : 'No courses yet';
+                return `
+                  <div class="divider-row" style="align-items:flex-start; flex-wrap:wrap;">
+                    <div style="min-width:200px; flex:1;">
+                      <div style="font-weight:700; color:var(--color-navy);">${escapeHtml(s.title)}</div>
+                      <div class="meta-line" style="margin-top:2px;">
+                        <span>${escapeHtml(s.category)}</span>
+                        <span class="meta-sep">·</span>
+                        <span>${escapeHtml(s.level)}</span>
+                        <span class="meta-sep">·</span>
+                        <span class="mono-num">${escapeHtml(courseSummary)}</span>
+                      </div>
+                    </div>
+                    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                      ${renderStatusBadge(s.publicationStatus || 'published')}
+                      <button type="button" class="btn btn-secondary btn-sm" data-edit-skill="${escapeHtml(s.id)}">Edit</button>
+                      <button type="button" class="btn btn-secondary btn-sm" data-add-course-skill="${escapeHtml(s.id)}">+ Course</button>
+                      <button type="button" class="btn btn-ghost btn-sm" data-toggle-skill-pub="${escapeHtml(s.id)}">
+                        ${s.publicationStatus === 'draft' ? 'Publish' : 'Set Draft'}
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <div style="display:flex; gap:8px; align-items:center;">
-                  ${renderStatusBadge(s.publicationStatus || 'published')}
-                  <button type="button" class="btn btn-secondary btn-sm" data-toggle-skill-pub="${escapeHtml(s.id)}">
-                    ${s.publicationStatus === 'draft' ? 'Publish' : 'Set Draft'}
-                  </button>
-                </div>
-              </div>
-            `
-              )
+                `;
+              })
               .join('')}
           </div>
         </section>
@@ -498,31 +523,56 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           </div>
 
           <div class="card">
-            <h2 style="font-size:1.05rem; margin-bottom:10px;">Add New Skill to Category</h2>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px;">
+              <h2 style="font-size:1.05rem;">${editingSkill ? `Edit Skill: ${escapeHtml(editingSkill.title)}` : 'Create Independent Skill'}</h2>
+              ${editingSkill ? `<button type="button" class="btn btn-ghost btn-sm" id="cancel-edit-skill">Cancel</button>` : ''}
+            </div>
+            <p style="font-size:12.5px; color:var(--color-text-muted); margin-bottom:12px;">
+              Skills exist independently and can be created or published with zero courses. Courses can be attached anytime.
+            </p>
             <form id="admin-skill-form" class="form-stack">
               <div class="field">
                 <label class="field-label" for="skill-title">Skill title</label>
-                <input class="input" id="skill-title" name="title" required placeholder="e.g. Email Lifecycle Strategy" />
+                <input class="input" id="skill-title" name="title" required value="${escapeHtml(editingSkill?.title || '')}" placeholder="e.g. Email Lifecycle Strategy" />
               </div>
               <div class="lab-grid-2">
                 <div class="field">
                   <label class="field-label" for="skill-cat">Category</label>
                   <select class="select" id="skill-cat" name="categoryId">
-                    ${categories.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('')}
+                    ${categories
+                      .map(
+                        (c) => `<option value="${escapeHtml(c.id)}" ${editingSkill?.categoryId === c.id || editingSkill?.category === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
+                      )
+                      .join('')}
                   </select>
                 </div>
                 <div class="field">
                   <label class="field-label" for="skill-level">Level</label>
                   <select class="select" id="skill-level" name="level">
-                    ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}">${d}</option>`).join('')}
+                    ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}" ${editingSkill?.level === d ? 'selected' : ''}>${d}</option>`).join('')}
                   </select>
                 </div>
               </div>
               <div class="field">
-                <label class="field-label" for="skill-summary">Competency summary</label>
-                <textarea class="textarea" id="skill-summary" name="summary" style="min-height:70px;" required placeholder="What learners master in this skill…"></textarea>
+                <label class="field-label" for="skill-pub">Publication status</label>
+                <select class="select" id="skill-pub" name="publicationStatus">
+                  <option value="published" ${(editingSkill?.publicationStatus || 'published') === 'published' ? 'selected' : ''}>Published (visible to learners)</option>
+                  <option value="draft" ${editingSkill?.publicationStatus === 'draft' ? 'selected' : ''}>Draft (admin only)</option>
+                </select>
               </div>
-              <button type="submit" class="btn btn-primary btn-sm">Create skill</button>
+              <div class="field">
+                <label class="field-label" for="skill-summary">Competency description</label>
+                <textarea class="textarea" id="skill-summary" name="summary" style="min-height:70px;" required placeholder="What learners master in this skill…">${escapeHtml(editingSkill?.summary || '')}</textarea>
+              </div>
+              <div class="field">
+                <label class="field-label" for="skill-expectations">Competency expectations</label>
+                <input class="input" id="skill-expectations" name="competencyExpectations" value="${escapeHtml(editingSkill?.competencyExpectations || '')}" placeholder="Applied portfolio expectations…" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="skill-outcomes">Learning outcomes (one per line)</label>
+                <textarea class="textarea" id="skill-outcomes" name="outcomes" style="min-height:76px;" placeholder="Explain core frameworks&#10;Deliver practical projects">${escapeHtml((editingSkill?.outcomes || []).join('\n'))}</textarea>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm">${editingSkill ? 'Save skill changes' : 'Create skill'}</button>
             </form>
           </div>
         </aside>
@@ -734,6 +784,34 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         rerender({ silent: true });
       });
 
+      root.querySelector('#admin-course-status-filter')?.addEventListener('change', (e) => {
+        catalogCourseStatusFilter = e.target.value;
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-edit-skill]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          editingSkillId = btn.dataset.editSkill;
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelector('#cancel-edit-skill')?.addEventListener('click', () => {
+        editingSkillId = null;
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-add-course-skill]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          selectedSkillId = btn.dataset.addCourseSkill;
+          const nextCourses = courses.filter((c) => c.skillId === selectedSkillId);
+          selectedCourseId = nextCourses[0]?.id || null;
+          selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
+          activeTab = 'courses';
+          rerender({ silent: true });
+        });
+      });
+
       root.querySelector('#admin-category-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const fd = new FormData(e.currentTarget);
@@ -754,16 +832,21 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         const fd = new FormData(e.currentTarget);
         try {
           await adminUpsertSkill({
+            id: editingSkillId || undefined,
+            slug: editingSkill?.slug || undefined,
             title: String(fd.get('title')),
             categoryId: String(fd.get('categoryId')),
             level: String(fd.get('level')),
             summary: String(fd.get('summary')),
-            publicationStatus: 'published',
+            competencyExpectations: String(fd.get('competencyExpectations') || ''),
+            outcomes: String(fd.get('outcomes') || ''),
+            publicationStatus: String(fd.get('publicationStatus') || 'published'),
           });
-          showToast('Skill created under selected category.', 'success');
+          showToast(editingSkillId ? 'Skill details updated.' : 'Independent skill created.', 'success');
+          editingSkillId = null;
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to create skill.', 'error');
+          showToast(err?.message || 'Unable to save skill.', 'error');
         }
       });
 

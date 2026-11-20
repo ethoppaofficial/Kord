@@ -33,15 +33,19 @@ export async function enrollInCourse(userId, courseId) {
     if (!isDemoMode && supabase) {
       const { data: course } = await supabase
         .from('courses')
-        .select('id, skill_id')
+        .select('id, skill_id, publication_status')
         .eq('id', courseId)
         .single();
+      if (!course || course.publication_status !== 'published') {
+        throw new Error('This course is not available for enrollment.');
+      }
       const { data, error } = await supabase
         .from('course_enrollments')
         .upsert(
           {
             user_id: userId,
             course_id: courseId,
+            skill_id: course.skill_id,
             status: 'active',
             updated_at: new Date().toISOString(),
           },
@@ -60,7 +64,10 @@ export async function enrollInCourse(userId, courseId) {
     updateDemoState((draft) => {
       draft.courseEnrollments = draft.courseEnrollments || [];
       const course = (draft.courses || []).find((c) => c.id === courseId);
-      skillId = course?.skillId || null;
+      if (!course || course.publicationStatus !== 'published') {
+        throw new Error('This course is not available for enrollment.');
+      }
+      skillId = course.skillId || null;
       const existing = draft.courseEnrollments.find(
         (e) => e.userId === userId && e.courseId === courseId
       );

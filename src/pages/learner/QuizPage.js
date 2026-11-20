@@ -1,8 +1,10 @@
 import { getQuizForLearner, getQuizAttempts, submitQuiz } from '../../lib/repositories/quizRepository.js';
+import { resolveCourseHierarchy, renderHierarchyGuard } from '../../lib/courseNavigation.js';
 import { isManualQuestionType } from '../../lib/assessmentEngine.js';
 import { buildIdempotencyKey } from '../../lib/idempotency.js';
 import { ASSESSMENT_TYPES } from '../../lib/constants.js';
 import { escapeHtml, formatDateTime } from '../../lib/formatters.js';
+import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDrawer } from '../../components/CourseOutlineDrawer.js';
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
@@ -141,16 +143,56 @@ function renderQuestionInput(q, idx, res, quizId) {
   `;
 }
 
-export async function renderQuizPage({ params, session, rerender }) {
-  const quiz = await getQuizForLearner(params.quizId);
-  if (!quiz) {
+export async function renderQuizPage({ params, session, navigate, rerender }) {
+  const targetQuizId = params.assessmentId || params.quizId;
+  const userId = session.user.id;
+
+  let courseCtx = null;
+  if (params.slug) {
+    courseCtx = await resolveCourseHierarchy({
+      courseSlug: params.slug,
+      userId,
+      requireEnrollment: true,
+    });
+    if (courseCtx.status !== 'ok') {
+      return renderHierarchyGuard({
+        ctx: courseCtx,
+        userId,
+        targetUrlAfterEnroll: `/courses/${params.slug}/assessments/${targetQuizId}`,
+        navigate,
+      });
+    }
+  }
+
+  const quiz = await getQuizForLearner(targetQuizId);
+  if (!quiz || (courseCtx && quiz.courseId !== courseCtx.course.id)) {
     return {
-      html: renderErrorState({ title: 'Assessment not found', message: 'We could not locate this assessment.' }),
+      html: renderErrorState({
+        title: 'Assessment not found',
+        message: courseCtx
+          ? 'This assessment does not belong to the requested course.'
+          : 'We could not locate this assessment.',
+      }),
       bind() {},
     };
   }
 
-  const userId = session.user.id;
+  if (!courseCtx && quiz.course?.slug) {
+    courseCtx = await resolveCourseHierarchy({
+      courseSlug: quiz.course.slug,
+      userId,
+      requireEnrollment: true,
+    });
+    if (courseCtx.status === 'enrollment_required') {
+      return renderHierarchyGuard({
+        ctx: courseCtx,
+        userId,
+        targetUrlAfterEnroll: `/courses/${quiz.course.slug}/assessments/${targetQuizId}`,
+        navigate,
+      });
+    }
+  }
+
   const attempts = await getQuizAttempts(userId, quiz.id);
   const latestResult = lastResultByQuiz[quiz.id] || null;
 
@@ -158,21 +200,50 @@ export async function renderQuizPage({ params, session, rerender }) {
     ? quiz.questions.slice().sort((a, b) => a.id.localeCompare(b.id))
     : quiz.questions;
 
-  const backPath = quiz.course?.slug
-    ? `/courses/${quiz.course.slug}`
-    : quiz.skill?.slug
-      ? `/skills/${quiz.skill.slug}`
-      : '/skills';
+  const activeCourse = courseCtx?.status === 'ok' ? courseCtx.course : quiz.course;
+  const backToPhasePath =
+    activeCourse?.slug && quiz.phaseId ? `/courses/${activeCourse.slug}/phases/${quiz.phaseId}` : null;
+  const backPath =
+    backToPhasePath ||
+    (activeCourse?.slug ? `/courses/${activeCourse.slug}` : quiz.skill?.slug ? `/skills/${quiz.skill.slug}` : '/skills');
   const typeMeta = ASSESSMENT_TYPES.find((t) => t.key === quiz.quizType);
   const attemptsLeft = quiz.maxAttempts ? Math.max(0, quiz.maxAttempts - attempts.length) : null;
   const isLocked = quiz.maxAttempts !== null && quiz.maxAttempts !== undefined && attemptsLeft <= 0;
   const initialAnswered = latestResult ? displayQuestions.length : 0;
 
+  const breadcrumbItems = activeCourse
+    ? [
+        { label: 'Explore', href: '/explore' },
+        ...(activeCourse.skill ? [{ label: activeCourse.skill.title, href: `/skills/${activeCourse.skill.slug}` }] : []),
+        { label: activeCourse.title, href: `/courses/${activeCourse.slug}` },
+        ...(backToPhasePath ? [{ label: 'Phase overview', href: backToPhasePath }] : []),
+        { label: quiz.title },
+      ]
+    : null;
+
   return {
     html: `
-      <div style="margin-bottom:14px;">
-        <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to ${quiz.course ? escapeHtml(quiz.course.title) : 'Skill hub'}</a>
-      </div>
+      ${
+        breadcrumbItems && courseCtx?.status === 'ok'
+          ? `
+            ${renderCourseBreadcrumbs({ items: breadcrumbItems, showOutlineToggle: true })}
+            ${renderCourseOutlineDrawer({
+              course: courseCtx.course,
+              orderedPhases: courseCtx.orderedPhases,
+              phaseProgressById: courseCtx.phaseProgressById,
+              progressByLesson: courseCtx.progressByLesson,
+              assessments: courseCtx.assessments,
+              challenges: courseCtx.challenges,
+              activePhaseId: quiz.phaseId,
+              courseProgress: courseCtx.courseProgress,
+            })}
+          `
+          : `
+            <div style="margin-bottom:14px;">
+              <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to ${backToPhasePath ? 'phase' : activeCourse ? escapeHtml(activeCourse.title) : 'Skill hub'}</a>
+            </div>
+          `
+      }
 
       <div class="lab-split">
         <div style="display:flex; flex-direction:column; gap:20px;">
@@ -289,6 +360,7 @@ export async function renderQuizPage({ params, session, rerender }) {
       </div>
     `,
     bind(root) {
+      bindCourseOutlineDrawer(root);
       const form = root.querySelector('#quiz-form');
       const errEl = root.querySelector('#quiz-error');
       const btn = root.querySelector('#quiz-submit-btn');

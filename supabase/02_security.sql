@@ -49,7 +49,7 @@ drop policy if exists "catalog_admin_categories" on public.categories;
 create policy "catalog_admin_categories" on public.categories for all using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_skills" on public.skills;
-create policy "catalog_read_skills" on public.skills for select using (true);
+create policy "catalog_read_skills" on public.skills for select using (publication_status = 'published' or public.is_admin());
 drop policy if exists "catalog_admin_skills" on public.skills;
 create policy "catalog_admin_skills" on public.skills for all using (public.is_admin()) with check (public.is_admin());
 

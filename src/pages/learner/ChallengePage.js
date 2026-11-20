@@ -1,34 +1,104 @@
 import { getChallengeById } from '../../lib/repositories/contentRepository.js';
+import { resolveCourseHierarchy, renderHierarchyGuard } from '../../lib/courseNavigation.js';
 import { getUserSubmissions, submitChallengeEvidence } from '../../lib/repositories/submissionRepository.js';
 import { validateSubmissionForm, isValidUrl } from '../../lib/validators.js';
 import { escapeHtml, formatDateTime } from '../../lib/formatters.js';
 import { icon } from '../../lib/icons.js';
+import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDrawer } from '../../components/CourseOutlineDrawer.js';
 import { renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
-export async function renderChallengePage({ params, session, rerender }) {
+export async function renderChallengePage({ params, session, navigate, rerender }) {
+  const userId = session.user.id;
+  let courseCtx = null;
+
+  if (params.slug) {
+    courseCtx = await resolveCourseHierarchy({
+      courseSlug: params.slug,
+      userId,
+      requireEnrollment: true,
+    });
+    if (courseCtx.status !== 'ok') {
+      return renderHierarchyGuard({
+        ctx: courseCtx,
+        userId,
+        targetUrlAfterEnroll: `/courses/${params.slug}/challenges/${params.challengeId}`,
+        navigate,
+      });
+    }
+  }
+
   const challenge = await getChallengeById(params.challengeId);
-  if (!challenge) {
+  if (!challenge || (courseCtx && challenge.courseId !== courseCtx.course.id)) {
     return {
-      html: renderErrorState({ title: 'Challenge not found', message: 'We could not load this practical challenge.' }),
+      html: renderErrorState({
+        title: 'Challenge not found',
+        message: courseCtx
+          ? 'This practical challenge does not belong to the requested course.'
+          : 'We could not load this practical challenge.',
+      }),
       bind() {},
     };
   }
 
-  const userId = session.user.id;
+  if (!courseCtx && challenge.course?.slug) {
+    courseCtx = await resolveCourseHierarchy({
+      courseSlug: challenge.course.slug,
+      userId,
+      requireEnrollment: true,
+    });
+    if (courseCtx.status === 'enrollment_required') {
+      return renderHierarchyGuard({
+        ctx: courseCtx,
+        userId,
+        targetUrlAfterEnroll: `/courses/${challenge.course.slug}/challenges/${params.challengeId}`,
+        navigate,
+      });
+    }
+  }
+
   const submissions = await getUserSubmissions(userId, challenge.id);
   const rubricMax = challenge.maxScore || (challenge.rubric || []).reduce((sum, r) => sum + Number(r.maxPoints || 5), 0);
-  const backPath = challenge.course?.slug
-    ? `/courses/${challenge.course.slug}`
-    : challenge.skill?.slug
-      ? `/skills/${challenge.skill.slug}`
-      : '/skills';
+  const activeCourse = courseCtx?.status === 'ok' ? courseCtx.course : challenge.course;
+  const backToPhasePath =
+    activeCourse?.slug && challenge.phaseId ? `/courses/${activeCourse.slug}/phases/${challenge.phaseId}` : null;
+  const backPath =
+    backToPhasePath ||
+    (activeCourse?.slug ? `/courses/${activeCourse.slug}` : challenge.skill?.slug ? `/skills/${challenge.skill.slug}` : '/skills');
+
+  const breadcrumbItems = activeCourse
+    ? [
+        { label: 'Explore', href: '/explore' },
+        ...(activeCourse.skill ? [{ label: activeCourse.skill.title, href: `/skills/${activeCourse.skill.slug}` }] : []),
+        { label: activeCourse.title, href: `/courses/${activeCourse.slug}` },
+        ...(backToPhasePath ? [{ label: 'Phase overview', href: backToPhasePath }] : []),
+        { label: challenge.title },
+      ]
+    : null;
 
   return {
     html: `
-      <div style="margin-bottom:14px;">
-        <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to ${challenge.course ? escapeHtml(challenge.course.title) : 'Skill hub'}</a>
-      </div>
+      ${
+        breadcrumbItems && courseCtx?.status === 'ok'
+          ? `
+            ${renderCourseBreadcrumbs({ items: breadcrumbItems, showOutlineToggle: true })}
+            ${renderCourseOutlineDrawer({
+              course: courseCtx.course,
+              orderedPhases: courseCtx.orderedPhases,
+              phaseProgressById: courseCtx.phaseProgressById,
+              progressByLesson: courseCtx.progressByLesson,
+              assessments: courseCtx.assessments,
+              challenges: courseCtx.challenges,
+              activePhaseId: challenge.phaseId,
+              courseProgress: courseCtx.courseProgress,
+            })}
+          `
+          : `
+            <div style="margin-bottom:14px;">
+              <a href="${escapeHtml(backPath)}" data-link style="font-size:14px; font-weight:500;">← Back to ${backToPhasePath ? 'phase' : activeCourse ? escapeHtml(activeCourse.title) : 'Skill hub'}</a>
+            </div>
+          `
+      }
 
       <div class="lab-split">
         <div style="display:flex; flex-direction:column; gap:20px;">
@@ -183,6 +253,7 @@ export async function renderChallengePage({ params, session, rerender }) {
       </div>
     `,
     bind(root) {
+      bindCourseOutlineDrawer(root);
       const form = root.querySelector('#challenge-form');
       const urlEl = root.querySelector('#evidence-url');
       const fileEl = root.querySelector('#evidence-file');
