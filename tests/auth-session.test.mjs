@@ -1,11 +1,17 @@
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { installDomHarness, flushMicrotasks } from './helpers/domHarness.mjs';
 import {
   resetDemoState,
   getDemoState,
   updateDemoState,
+  subscribeDemoState,
+  getDemoCurrentUserId,
+  setDemoCurrentUserId,
+  syncDemoStateFromStorage,
 } from '../src/lib/demo/demoStore.js';
 import {
   createAuthService,
@@ -14,7 +20,10 @@ import {
   requestPasswordReset,
   getCurrentSession,
 } from '../src/lib/repositories/authRepository.js';
-import { registerSessionCleanup } from '../src/lib/sessionLifecycle.js';
+import { enrollInCourse } from '../src/lib/repositories/progressRepository.js';
+import { submitChallengeEvidence } from '../src/lib/repositories/submissionRepository.js';
+import { getCourseBySlug } from '../src/lib/repositories/contentRepository.js';
+import { registerSessionCleanup, runSessionCleanup } from '../src/lib/sessionLifecycle.js';
 import { buildIdempotencyKey, runIdempotent } from '../src/lib/idempotency.js';
 import { mountApp } from '../src/app/app.js';
 
@@ -25,6 +34,45 @@ const LEARNER_PASS = 'password123';
 
 let harness = null;
 const mountedApps = [];
+
+function createIsolatedSessionStorage() {
+  const map = new Map();
+  return {
+    get length() {
+      return map.size;
+    },
+    clear() {
+      map.clear();
+    },
+    getItem(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    setItem(key, value) {
+      map.set(String(key), String(value));
+    },
+    removeItem(key) {
+      map.delete(key);
+    },
+  };
+}
+
+function createTabAuthService(tabStorage) {
+  return createAuthService({
+    isDemo: true,
+    demoStore: {
+      getDemoState,
+      updateDemoState,
+      subscribeDemoState,
+      getDemoCurrentUserId() {
+        return tabStorage.getItem('kord_current_user_id') || null;
+      },
+      setDemoCurrentUserId(userId) {
+        if (userId) tabStorage.setItem('kord_current_user_id', String(userId));
+        else tabStorage.removeItem('kord_current_user_id');
+      },
+    },
+  });
+}
 
 function resetLocation(pathname = '/') {
   window.location.pathname = pathname;
@@ -76,6 +124,13 @@ test('Scenario 1: Administrator logs in normally and accesses Admin Console only
   assert.ok(rootEl.innerHTML.includes('Administrator console'));
   assert.ok(rootEl.innerHTML.includes('Pending reviews'));
   assert.ok(!rootEl.innerHTML.includes('href="/explore"'), 'Admin nav must not include learner Explore link');
+  assert.equal(getDemoCurrentUserId(), 'user-admin-ethoppa');
+  const persistedShared = JSON.parse(globalThis.localStorage.getItem('kord_app_state_v5'));
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(persistedShared, 'currentUserId'),
+    false,
+    'localStorage shared state must not store currentUserId'
+  );
 });
 
 test('Scenario 2: Learner logs in normally and accesses Learner Dashboard', async () => {
@@ -93,6 +148,7 @@ test('Scenario 2: Learner logs in normally and accesses Learner Dashboard', asyn
   assert.ok(rootEl.innerHTML.includes('1. Learning'));
   assert.ok(rootEl.innerHTML.includes('href="/explore"'));
   assert.ok(!rootEl.innerHTML.includes('href="/admin"'), 'Learner nav must not include Admin link');
+  assert.equal(getDemoCurrentUserId(), 'user-learner-maya');
 });
 
 test('Scenario 3: Administrator opening learner-only routes is strictly blocked', async () => {
@@ -140,201 +196,124 @@ test('Scenario 4: Learner opening administrator-only routes is strictly blocked'
   }
 });
 
-test('Scenario 5 & 6 (Demo Storage Sync): Second account logging in from another tab notifies Tab 1, clears caches, and updates UI cleanly', async () => {
-  await signIn({ email: ADMIN_EMAIL, password: ADMIN_PASS });
+test('Per-Tab Isolation: Admin in Tab 1 and Learner in Tab 2 stay logged in simultaneously, keep accounts on refresh, and Tab 2 sign-out leaves Tab 1 logged in', async () => {
+  const tab1Storage = createIsolatedSessionStorage();
+  const tab2Storage = createIsolatedSessionStorage();
+  const tab1Auth = createTabAuthService(tab1Storage);
+  const tab2Auth = createTabAuthService(tab2Storage);
+
+  // Tab 1 logs in as Admin
+  const adminSession = await tab1Auth.signIn({ email: ADMIN_EMAIL, password: ADMIN_PASS });
+  assert.equal(adminSession.user.role, 'admin');
+
+  // Tab 2 logs in as Learner concurrently (same localStorage, distinct sessionStorage)
+  const learnerSession = await tab2Auth.signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
+  assert.equal(learnerSession.user.role, 'learner');
+
+  // Both tabs remain authenticated as their respective accounts
+  assert.equal((await tab1Auth.getCurrentSession())?.user?.role, 'admin');
+  assert.equal((await tab2Auth.getCurrentSession())?.user?.role, 'learner');
+  assert.equal(tab1Storage.getItem('kord_current_user_id'), adminSession.user.id);
+  assert.equal(tab2Storage.getItem('kord_current_user_id'), learnerSession.user.id);
+
+  // Render Tab 1 as Admin and verify Admin Console renders
   resetLocation('/admin');
-  const { rootEl, ctrl } = mountTestApp();
-  await ctrl.ready;
+  const tab1Mount = mountTestApp({ auth: tab1Auth });
+  await tab1Mount.ctrl.ready;
+  assert.ok(tab1Mount.rootEl.innerHTML.includes('Administrator console'));
 
-  assert.ok(rootEl.innerHTML.includes('Administrator console'));
-
-  let staleUiStateCleared = false;
-  const unregister = registerSessionCleanup(() => {
-    staleUiStateCleared = true;
-  });
-  const idemKey = buildIdempotencyKey('test-tab-switch', 'admin-action');
-  let callCount = 0;
-  await runIdempotent(
-    idemKey,
-    async () => {
-      callCount += 1;
-      return 'admin-cached-result';
-    },
-    { cacheResult: true }
-  );
-
-  // Simulate Tab 2 logging in as Learner by updating shared localStorage and firing browser 'storage' event
-  const raw = JSON.parse(globalThis.localStorage.getItem('kord_app_state_v5'));
-  const learnerUser = raw.users.find((u) => u.role === 'learner');
-  assert.ok(learnerUser);
-  raw.currentUserId = learnerUser.id;
-  globalThis.localStorage.setItem('kord_app_state_v5', JSON.stringify(raw));
-
-  window.dispatchEvent({
-    type: 'storage',
-    key: 'kord_app_state_v5',
-    newValue: JSON.stringify(raw),
-  });
-  await flushMicrotasks();
-
-  assert.equal(staleUiStateCleared, true, 'Module-level UI caches must clear on cross-tab account change');
-  assert.equal(window.location.pathname, '/dashboard');
-  assert.ok(rootEl.innerHTML.includes('1. Learning'));
-  assert.ok(!rootEl.innerHTML.includes('Administrator console'), 'Stale admin UI must be removed');
-  assert.ok(
-    harness.document.querySelector('.toast')?.textContent.includes('Active account changed in another tab'),
-    'User should see session-change toast'
-  );
-
-  await runIdempotent(
-    idemKey,
-    async () => {
-      callCount += 1;
-      return 'fresh-result';
-    },
-    { cacheResult: true }
-  );
-  assert.equal(callCount, 2, 'Idempotency cache must reset across account switch');
-  unregister();
-});
-
-test('Scenario 5 & 6 (Supabase onAuthStateChange Sync): Cross-tab Supabase SIGNED_IN and SIGNED_OUT events update Tab 1 without deadlock or stale role', async () => {
-  let authCallback = null;
-  let activeAuthUser = {
-    id: 'supa-admin-1',
-    email: ADMIN_EMAIL,
-    user_metadata: { first_name: 'Admin', full_name: 'Kord Admin', role: 'learner' }, // tampered metadata ignored
-  };
-  const profilesById = {
-    'supa-admin-1': {
-      id: 'supa-admin-1',
-      email: ADMIN_EMAIL,
-      first_name: 'Admin',
-      full_name: 'Kord Admin',
-      role: 'admin',
-    },
-    'supa-learner-2': {
-      id: 'supa-learner-2',
-      email: 'ada@kord.app',
-      first_name: 'Ada',
-      full_name: 'Ada Lovelace',
-      role: 'learner',
-    },
-  };
-
-  const mockSupabase = {
-    auth: {
-      async getSession() {
-        return { data: { session: activeAuthUser ? { user: activeAuthUser } : null }, error: null };
-      },
-      onAuthStateChange(cb) {
-        authCallback = cb;
-        return { data: { subscription: { unsubscribe() { authCallback = null; } } } };
-      },
-      async signOut() {
-        activeAuthUser = null;
-        authCallback?.('SIGNED_OUT', null);
-      },
-    },
-    from(table) {
-      assert.equal(table, 'profiles');
-      return {
-        select() {
-          return {
-            eq(_col, id) {
-              return {
-                async single() {
-                  const row = profilesById[id];
-                  return row
-                    ? { data: row, error: null }
-                    : { data: null, error: { code: 'PGRST116', message: 'Not found' } };
-                },
-              };
-            },
-          };
-        },
-      };
-    },
-  };
-
-  const supaAuth = createAuthService({ supabaseClient: mockSupabase, isDemo: false });
-  resetLocation('/admin/content');
-  const { rootEl, ctrl } = mountTestApp({ auth: supaAuth });
-  await ctrl.ready;
-
-  assert.equal(window.location.pathname, '/admin/content');
-  assert.ok(rootEl.innerHTML.includes('Administrator console'));
-
-  // Tab 2 signs in as Learner via Supabase -> fires onAuthStateChange('SIGNED_IN', learnerSession)
-  activeAuthUser = {
-    id: 'supa-learner-2',
-    email: 'ada@kord.app',
-    user_metadata: { first_name: 'Ada', full_name: 'Ada Lovelace', role: 'admin' }, // tampered metadata ignored
-  };
-  authCallback('SIGNED_IN', { user: activeAuthUser });
-  await flushMicrotasks();
-
-  assert.equal(window.location.pathname, '/dashboard');
-  assert.ok(rootEl.innerHTML.includes('Good '), 'Learner dashboard greeting rendered');
-  assert.ok(rootEl.innerHTML.includes('Ada'), 'New learner name rendered');
-  assert.ok(!rootEl.innerHTML.includes('Administrator console'), 'Admin console must not remain visible');
-
-  // Tab 2 signs out -> fires onAuthStateChange('SIGNED_OUT', null)
-  activeAuthUser = null;
-  authCallback('SIGNED_OUT', null);
-  await flushMicrotasks();
-
-  assert.equal(window.location.pathname, '/login');
-  assert.ok(rootEl.innerHTML.includes('Sign in to Kord'));
-  assert.ok(!rootEl.innerHTML.includes('Ada'), 'Previous learner name cleared on sign-out');
-});
-
-test('Scenario 6b (Focus Sync): Tab regaining focus detects background storage session change and blocks stale actions', async () => {
-  await signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
+  // Render Tab 2 as Learner and verify Learner Dashboard renders
   resetLocation('/dashboard');
-  const { rootEl, ctrl } = mountTestApp();
-  await ctrl.ready;
+  const tab2Mount = mountTestApp({ auth: tab2Auth });
+  await tab2Mount.ctrl.ready;
+  assert.ok(tab2Mount.rootEl.innerHTML.includes('1. Learning'));
 
-  assert.ok(rootEl.innerHTML.includes('Maya'));
+  // Refreshing Tab 1 retains Admin; refreshing Tab 2 retains Learner
+  tab1Mount.ctrl.destroy();
+  tab2Mount.ctrl.destroy();
+  resetLocation('/admin');
+  const tab1Refreshed = mountTestApp({ auth: tab1Auth });
+  await tab1Refreshed.ctrl.ready;
+  assert.ok(tab1Refreshed.rootEl.innerHTML.includes('Administrator console'));
 
-  // Simulate another tab clearing session without firing storage event yet (e.g. throttled background tab)
-  const raw = JSON.parse(globalThis.localStorage.getItem('kord_app_state_v5'));
-  raw.currentUserId = null;
-  globalThis.localStorage.setItem('kord_app_state_v5', JSON.stringify(raw));
+  resetLocation('/dashboard');
+  const tab2Refreshed = mountTestApp({ auth: tab2Auth });
+  await tab2Refreshed.ctrl.ready;
+  assert.ok(tab2Refreshed.rootEl.innerHTML.includes('1. Learning'));
 
-  window.dispatchEvent({ type: 'focus' });
-  await flushMicrotasks();
-
-  assert.equal(window.location.pathname, '/login');
-  assert.ok(rootEl.innerHTML.includes('Sign in to Kord'));
-  assert.ok(!rootEl.innerHTML.includes('1. Learning'));
+  // Signing out in Tab 2 clears only Tab 2's session; Tab 1 remains Admin
+  await tab2Auth.signOut();
+  assert.equal(await tab2Auth.getCurrentSession(), null);
+  assert.equal(tab2Storage.getItem('kord_current_user_id'), null);
+  assert.equal((await tab1Auth.getCurrentSession())?.user?.role, 'admin');
+  assert.equal(tab1Storage.getItem('kord_current_user_id'), adminSession.user.id);
 });
 
-test('Scenario 7: Refreshing either tab reads current persisted session and never displays stale account info', async () => {
-  await signIn({ email: ADMIN_EMAIL, password: ADMIN_PASS });
-  const initialSession = await getCurrentSession();
-  assert.equal(initialSession.user.role, 'admin');
+test('Shared Demo Data Sync: Learner submission saved in Tab 2 appears in Admin Tab 1 after refresh without breaking Admin session', async () => {
+  const tab1Storage = createIsolatedSessionStorage();
+  const tab2Storage = createIsolatedSessionStorage();
+  const tab1Auth = createTabAuthService(tab1Storage);
+  const tab2Auth = createTabAuthService(tab2Storage);
 
-  // Switch active user to Learner in shared storage (simulating Tab 2)
-  const learner = getDemoState().users.find((u) => u.role === 'learner');
-  updateDemoState((draft) => {
-    draft.currentUserId = learner.id;
-    return draft;
+  const adminSession = await tab1Auth.signIn({ email: ADMIN_EMAIL, password: ADMIN_PASS });
+  const learnerSession = await tab2Auth.signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
+
+  // Learner enrolls and submits challenge evidence (sync active user for progress/submission guards)
+  setDemoCurrentUserId(learnerSession.user.id);
+  const course = await getCourseBySlug('frontend-development-foundations');
+  await enrollInCourse(learnerSession.user.id, course.id);
+  const challenge = getDemoState().challenges.find((c) => c.courseId === course.id);
+  assert.ok(challenge, 'Frontend course challenge exists');
+  const challengeId = challenge.id;
+  const explanationText = 'Submitted refactored HTML structure with accessible landmarks and responsive grid.';
+  await submitChallengeEvidence({
+    userId: learnerSession.user.id,
+    challengeId,
+    courseId: course.id,
+    explanation: explanationText,
+    evidenceUrl: 'https://example.com/portfolio',
   });
 
-  // Simulate refreshing Tab 1 while its URL was previously /admin
-  resetLocation('/admin');
-  const { rootEl, ctrl } = mountTestApp();
+  // Switch active global test session back to Admin's isolated storage & simulate shared storage refresh in Tab 1
+  setDemoCurrentUserId(adminSession.user.id);
+  syncDemoStateFromStorage({ emit: false, forceEmit: true });
+
+  resetLocation('/admin/submissions');
+  const { rootEl, ctrl } = mountTestApp({ auth: tab1Auth });
   await ctrl.ready;
 
+  assert.equal((await tab1Auth.getCurrentSession())?.user?.role, 'admin');
+  assert.ok(rootEl.innerHTML.includes('Administrator console'));
   assert.ok(
-    rootEl.innerHTML.includes('Administrator access required'),
-    'Refreshed /admin tab under learner session must immediately deny admin access'
+    rootEl.innerHTML.includes(explanationText),
+    'Learner submission from shared localStorage should appear in Admin review queue after refresh'
   );
-  assert.ok(!rootEl.innerHTML.includes('Administrator console'));
 });
 
-test('Scenario 8: Logging out clears protected DOM and blocks subsequent navigation or popstate back-navigation', async () => {
+test('Supabase Auth Configuration uses sessionStorage with storageKey kord-auth and clean lifecycle', async () => {
+  const supaSrc = fs.readFileSync(path.resolve('src/lib/supabase.js'), 'utf8');
+  assert.match(supaSrc, /storage:\s*typeof window !== 'undefined' \? window\.sessionStorage : undefined/);
+  assert.match(supaSrc, /storageKey:\s*['"]kord-auth['"]/);
+  assert.match(supaSrc, /persistSession:\s*true/);
+  assert.match(supaSrc, /autoRefreshToken:\s*true/);
+
+  // Verify idempotency & module cleanup helper still works on explicit signOut
+  let cleaned = false;
+  const unreg = registerSessionCleanup(() => {
+    cleaned = true;
+  });
+  const key = buildIdempotencyKey('k', 'a');
+  let count = 0;
+  await runIdempotent(key, async () => ++count, { cacheResult: true });
+  await signOut();
+  assert.equal(cleaned, true);
+  await runIdempotent(key, async () => ++count, { cacheResult: true });
+  assert.equal(count, 2);
+  unreg();
+  runSessionCleanup();
+});
+
+test('Logging out clears protected DOM and blocks subsequent navigation or popstate back-navigation', async () => {
   await signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
   resetLocation('/dashboard');
   const { rootEl, ctrl } = mountTestApp();
@@ -348,10 +327,10 @@ test('Scenario 8: Logging out clears protected DOM and blocks subsequent navigat
   await flushMicrotasks();
 
   assert.equal(window.location.pathname, '/login');
+  assert.equal(getDemoCurrentUserId(), null);
   assert.ok(rootEl.innerHTML.includes('Sign in to Kord'));
   assert.ok(!rootEl.innerHTML.includes('1. Learning'));
 
-  // Simulate browser Back button (popstate) back to /dashboard after logout
   window.location.pathname = '/dashboard';
   await window.dispatchEvent({ type: 'popstate' });
   await flushMicrotasks();
@@ -361,7 +340,7 @@ test('Scenario 8: Logging out clears protected DOM and blocks subsequent navigat
   assert.ok(!rootEl.innerHTML.includes('1. Learning'), 'Protected content must remain inaccessible after logout');
 });
 
-test('Scenario 9: Password reset request and PASSWORD_RECOVERY update flow continue working cleanly', async () => {
+test('Password reset request and PASSWORD_RECOVERY update flow continue working cleanly', async () => {
   const res = await requestPasswordReset(LEARNER_EMAIL);
   assert.equal(res.sent, true);
 
@@ -435,4 +414,39 @@ test('Scenario 9: Password reset request and PASSWORD_RECOVERY update flow conti
   ctrl.destroy();
   await signOut();
   assert.equal(await getCurrentSession(), null);
+});
+
+test('Dashboard Cleanup: Unenrolled learner sees no Available Flagship Courses card, while enrolled learner sees active courses', async () => {
+  const session = await signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
+
+  // 1. Unenrolled learner dashboard
+  resetLocation('/dashboard');
+  const { rootEl, ctrl } = mountTestApp();
+  await ctrl.ready;
+
+  assert.ok(rootEl.innerHTML.includes('1. Learning'));
+  assert.ok(rootEl.innerHTML.includes('Weekly learning minutes'));
+  assert.ok(
+    !rootEl.innerHTML.includes('Available Flagship Courses'),
+    'Dashboard must not render Available Flagship Courses card when learner has no enrolled courses'
+  );
+  assert.ok(
+    !rootEl.innerHTML.includes('course-catalog-grid'),
+    'Dashboard must not render course catalog grid'
+  );
+  ctrl.destroy();
+
+  // 2. Enroll learner in a course and re-render dashboard
+  const course = await getCourseBySlug('frontend-development-foundations');
+  await enrollInCourse(session.user.id, course.id);
+
+  resetLocation('/dashboard');
+  const enrolledMount = mountTestApp();
+  await enrolledMount.ctrl.ready;
+
+  assert.ok(
+    enrolledMount.rootEl.innerHTML.includes('Your active &amp; completed courses'),
+    'Dashboard must still show Your active & completed courses for enrolled learners'
+  );
+  assert.ok(enrolledMount.rootEl.innerHTML.includes(course.title));
 });

@@ -2,6 +2,7 @@ import { createInitialSeed, CURRENT_SEED_VERSION } from './seedData.js';
 import { runSessionCleanup } from '../sessionLifecycle.js';
 
 const STORAGE_KEY = 'kord_app_state_v5';
+const CURRENT_USER_SESSION_KEY = 'kord_current_user_id';
 
 const REQUIRED_FLAGSHIP_COURSE_IDS = [
   'course-frontend-foundations',
@@ -12,6 +13,47 @@ const REQUIRED_FLAGSHIP_COURSE_IDS = [
 
 const listeners = new Set();
 let lastSerializedState = null;
+
+export function getDemoCurrentUserId() {
+  try {
+    const storage =
+      typeof window !== 'undefined' && window.sessionStorage
+        ? window.sessionStorage
+        : typeof sessionStorage !== 'undefined'
+          ? sessionStorage
+          : null;
+    if (!storage) return null;
+    const val = storage.getItem(CURRENT_USER_SESSION_KEY);
+    return val || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setDemoCurrentUserId(userId) {
+  try {
+    const storage =
+      typeof window !== 'undefined' && window.sessionStorage
+        ? window.sessionStorage
+        : typeof sessionStorage !== 'undefined'
+          ? sessionStorage
+          : null;
+    if (!storage) return;
+    if (userId) {
+      storage.setItem(CURRENT_USER_SESSION_KEY, String(userId));
+    } else {
+      storage.removeItem(CURRENT_USER_SESSION_KEY);
+    }
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+}
+
+function stripSessionFields(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const { currentUserId: _omitted, ...clean } = obj;
+  return clean;
+}
 
 function mergeById(seedItems = [], storedItems = []) {
   const map = new Map();
@@ -88,38 +130,38 @@ function needsCurriculumMigration(parsed) {
 
 function migrateDemoState(parsed) {
   const seed = createInitialSeed();
+  const cleanParsed = stripSessionFields(parsed);
   const merged = {
     ...seed,
-    ...parsed,
+    ...cleanParsed,
     seedVersion: CURRENT_SEED_VERSION,
-    users: mergeUsers(seed.users, parsed.users || []),
-    currentUserId: parsed.currentUserId ?? null,
-    categories: mergeById(seed.categories, parsed.categories || []),
-    skills: mergeSkills(seed.skills, parsed.skills || []),
-    courses: mergeById(seed.courses, parsed.courses || []),
-    courseVersions: mergeById(seed.courseVersions, parsed.courseVersions || []),
-    quizzes: mergeById(seed.quizzes, parsed.quizzes || []),
+    users: mergeUsers(seed.users, cleanParsed.users || []),
+    categories: mergeById(seed.categories, cleanParsed.categories || []),
+    skills: mergeSkills(seed.skills, cleanParsed.skills || []),
+    courses: mergeById(seed.courses, cleanParsed.courses || []),
+    courseVersions: mergeById(seed.courseVersions, cleanParsed.courseVersions || []),
+    quizzes: mergeById(seed.quizzes, cleanParsed.quizzes || []),
     privateQuizAnswers: {
-      ...(parsed.privateQuizAnswers || {}),
+      ...(cleanParsed.privateQuizAnswers || {}),
       ...(seed.privateQuizAnswers || {}),
     },
-    challenges: mergeById(seed.challenges, parsed.challenges || []),
-    opportunities: mergeById(seed.opportunities, parsed.opportunities || []),
-    userSkills: Array.isArray(parsed.userSkills) ? parsed.userSkills : [],
-    courseEnrollments: Array.isArray(parsed.courseEnrollments) ? parsed.courseEnrollments : [],
-    lessonProgress: Array.isArray(parsed.lessonProgress) ? parsed.lessonProgress : [],
-    activityProgress: Array.isArray(parsed.activityProgress) ? parsed.activityProgress : [],
-    quizAttempts: Array.isArray(parsed.quizAttempts) ? parsed.quizAttempts : [],
-    submissions: Array.isArray(parsed.submissions) ? parsed.submissions : [],
-    courseCompletions: Array.isArray(parsed.courseCompletions) ? parsed.courseCompletions : [],
+    challenges: mergeById(seed.challenges, cleanParsed.challenges || []),
+    opportunities: mergeById(seed.opportunities, cleanParsed.opportunities || []),
+    userSkills: Array.isArray(cleanParsed.userSkills) ? cleanParsed.userSkills : [],
+    courseEnrollments: Array.isArray(cleanParsed.courseEnrollments) ? cleanParsed.courseEnrollments : [],
+    lessonProgress: Array.isArray(cleanParsed.lessonProgress) ? cleanParsed.lessonProgress : [],
+    activityProgress: Array.isArray(cleanParsed.activityProgress) ? cleanParsed.activityProgress : [],
+    quizAttempts: Array.isArray(cleanParsed.quizAttempts) ? cleanParsed.quizAttempts : [],
+    submissions: Array.isArray(cleanParsed.submissions) ? cleanParsed.submissions : [],
+    courseCompletions: Array.isArray(cleanParsed.courseCompletions) ? cleanParsed.courseCompletions : [],
   };
-  return merged;
+  return stripSessionFields(merged);
 }
 
 function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
   try {
     if (!raw) {
-      const seed = createInitialSeed();
+      const seed = stripSessionFields(createInitialSeed());
       const serialized = JSON.stringify(seed);
       if (persistIfSeeded) {
         localStorage.setItem(STORAGE_KEY, serialized);
@@ -135,7 +177,7 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
       !Array.isArray(parsed.categories) ||
       parsed.skills.length < 20
     ) {
-      const seed = createInitialSeed();
+      const seed = stripSessionFields(createInitialSeed());
       const serialized = JSON.stringify(seed);
       if (persistIfSeeded) {
         localStorage.setItem(STORAGE_KEY, serialized);
@@ -144,7 +186,7 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
       return seed;
     }
 
-    if (needsCurriculumMigration(parsed)) {
+    if (needsCurriculumMigration(parsed) || Object.prototype.hasOwnProperty.call(parsed, 'currentUserId')) {
       const migrated = migrateDemoState(parsed);
       const serialized = JSON.stringify(migrated);
       if (persistIfSeeded) {
@@ -158,18 +200,20 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
     parsed.courseVersions = parsed.courseVersions || [];
     parsed.courseCompletions = parsed.courseCompletions || [];
     lastSerializedState = raw;
-    return parsed;
+    return stripSessionFields(parsed);
   } catch {
-    return createInitialSeed();
+    return stripSessionFields(createInitialSeed());
   }
 }
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
+    // Ensure sessionStorage is consulted on initial load
+    getDemoCurrentUserId();
     return parseOrSeedState(raw, { persistIfSeeded: true });
   } catch {
-    return createInitialSeed();
+    return stripSessionFields(createInitialSeed());
   }
 }
 
@@ -187,33 +231,23 @@ export function syncDemoStateFromStorage({ emit = true, forceEmit = false } = {}
     return state;
   }
 
-  const previousUserId = state?.currentUserId || null;
-  const previousUser = previousUserId
-    ? (state?.users || []).find((u) => u.id === previousUserId) || null
-    : null;
-  const previousRole = previousUser?.role || null;
-
   const next = parseOrSeedState(raw, { persistIfSeeded: raw === null });
   state = next;
 
-  const nextUserId = next?.currentUserId || null;
-  const nextUser = nextUserId
-    ? (next?.users || []).find((u) => u.id === nextUserId) || null
+  const activeUserId = getDemoCurrentUserId();
+  const activeUser = activeUserId
+    ? (next?.users || []).find((u) => u.id === activeUserId) || null
     : null;
-  const nextRole = nextUser?.role || null;
-
-  if (previousUserId !== nextUserId || previousRole !== nextRole) {
-    runSessionCleanup();
-  }
+  const activeRole = activeUser?.role || null;
 
   if (emit) {
     listeners.forEach((fn) =>
       fn(state, {
         fromStorageEvent: true,
-        previousUserId,
-        previousRole,
-        nextUserId,
-        nextRole,
+        previousUserId: activeUserId,
+        previousRole: activeRole,
+        nextUserId: activeUserId,
+        nextRole: activeRole,
       })
     );
   }
@@ -252,12 +286,9 @@ export function updateDemoState(updater) {
     // ignore
   }
 
-  const previousUserId = state?.currentUserId || null;
-  const previousRole = previousUserId
-    ? (state?.users || []).find((u) => u.id === previousUserId)?.role || null
-    : null;
-
-  const next = typeof updater === 'function' ? updater(structuredClone(state)) : updater;
+  const next = stripSessionFields(
+    typeof updater === 'function' ? updater(structuredClone(state)) : updater
+  );
   state = next;
   try {
     const serialized = JSON.stringify(state);
@@ -267,22 +298,18 @@ export function updateDemoState(updater) {
     // Ignore storage quota errors in restricted sandboxes
   }
 
-  const nextUserId = state?.currentUserId || null;
-  const nextRole = nextUserId
-    ? (state?.users || []).find((u) => u.id === nextUserId)?.role || null
+  const activeUserId = getDemoCurrentUserId();
+  const activeRole = activeUserId
+    ? (state?.users || []).find((u) => u.id === activeUserId)?.role || null
     : null;
-
-  if (previousUserId !== nextUserId || previousRole !== nextRole) {
-    runSessionCleanup();
-  }
 
   listeners.forEach((fn) =>
     fn(state, {
       fromStorageEvent: false,
-      previousUserId,
-      previousRole,
-      nextUserId,
-      nextRole,
+      previousUserId: activeUserId,
+      previousRole: activeRole,
+      nextUserId: activeUserId,
+      nextRole: activeRole,
     })
   );
   return state;
@@ -295,6 +322,7 @@ export function subscribeDemoState(fn) {
 
 export function resetDemoState() {
   runSessionCleanup();
-  const fresh = createInitialSeed();
+  setDemoCurrentUserId(null);
+  const fresh = stripSessionFields(createInitialSeed());
   return updateDemoState(fresh);
 }

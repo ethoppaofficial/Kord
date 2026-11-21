@@ -276,7 +276,6 @@ export function createInitialSeed() {
   return {
     seedVersion: CURRENT_SEED_VERSION,
     users,
-    currentUserId: null, // Strict guest auth gate
     categories,
     skills,
     courses,

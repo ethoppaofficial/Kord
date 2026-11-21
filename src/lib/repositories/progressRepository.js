@@ -1,5 +1,5 @@
 import { supabase, isDemoMode } from '../supabase.js';
-import { getDemoState, updateDemoState } from '../demo/demoStore.js';
+import { getDemoState, updateDemoState, getDemoCurrentUserId } from '../demo/demoStore.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import {
@@ -47,7 +47,8 @@ export async function enrollInCourse(userId, courseId) {
 
     let skillIds = [];
     updateDemoState((draft) => {
-      if (draft.currentUserId && draft.currentUserId !== userId) {
+      const activeUserId = getDemoCurrentUserId();
+      if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot enroll another learner.');
       }
       const actor = (draft.users || []).find((u) => u.id === userId);
@@ -107,7 +108,8 @@ export async function setCourseEnrollmentStatus(userId, courseId, status) {
     }
 
     return updateDemoState((draft) => {
-      if (draft.currentUserId && draft.currentUserId !== userId) {
+      const activeUserId = getDemoCurrentUserId();
+      if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot alter another learner’s enrollment.');
       }
       const existing = (draft.courseEnrollments || []).find(
@@ -192,7 +194,8 @@ export async function saveLessonNotes(userId, lessonId, courseId, notes) {
     }
 
     updateDemoState((draft) => {
-      if (draft.currentUserId && draft.currentUserId !== userId) {
+      const activeUserId = getDemoCurrentUserId();
+      if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot edit another learner’s notes.');
       }
       const course = (draft.courses || []).find((c) => c.id === courseId);
@@ -247,7 +250,8 @@ export async function toggleLessonComplete(userId, courseId, lessonId, estMinute
     }
 
     updateDemoState((draft) => {
-      if (draft.currentUserId && draft.currentUserId !== userId) {
+      const activeUserId = getDemoCurrentUserId();
+      if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot modify another learner’s progress.');
       }
       const course = (draft.courses || []).find((c) => c.id === courseId);
@@ -326,7 +330,8 @@ export async function togglePhaseActivityComplete(
     }
 
     updateDemoState((draft) => {
-      if (draft.currentUserId && draft.currentUserId !== userId) {
+      const activeUserId = getDemoCurrentUserId();
+      if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot modify another learner’s activity progress.');
       }
       const course = (draft.courses || []).find((c) => c.id === courseId);

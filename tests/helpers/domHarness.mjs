@@ -145,6 +145,24 @@ export class TestElement {
     this.setAttribute('class', val);
   }
 
+  get dataset() {
+    const el = this;
+    return new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          const kebab = String(prop).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+          return el.getAttribute(`data-${kebab}`) ?? undefined;
+        },
+        set(_t, prop, val) {
+          const kebab = String(prop).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+          el.setAttribute(`data-${kebab}`, String(val));
+          return true;
+        },
+      }
+    );
+  }
+
   setAttribute(name, value) {
     const val = String(value ?? '');
     this.attributes.set(name, val);

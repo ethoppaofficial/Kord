@@ -9,6 +9,8 @@ export const isDemoMode = !hasSupabaseEnv;
 export const supabase = hasSupabaseEnv
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
+        storage: typeof window !== 'undefined' ? window.sessionStorage : undefined,
+        storageKey: 'kord-auth',
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,

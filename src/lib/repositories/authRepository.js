@@ -1,6 +1,12 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { ADMIN_EMAIL } from '../constants.js';
-import { getDemoState, updateDemoState, subscribeDemoState } from '../demo/demoStore.js';
+import {
+  getDemoState,
+  updateDemoState,
+  subscribeDemoState,
+  getDemoCurrentUserId,
+  setDemoCurrentUserId,
+} from '../demo/demoStore.js';
 import { extractFirstName } from '../greeting.js';
 import { runSessionCleanup } from '../sessionLifecycle.js';
 
@@ -18,7 +24,13 @@ function detectRecoveryInUrl() {
 export function createAuthService({
   supabaseClient = supabase,
   isDemo = isDemoMode,
-  demoStore = { getDemoState, updateDemoState, subscribeDemoState },
+  demoStore = {
+    getDemoState,
+    updateDemoState,
+    subscribeDemoState,
+    getDemoCurrentUserId,
+    setDemoCurrentUserId,
+  },
 } = {}) {
   let recoveryMode = detectRecoveryInUrl();
   let localAuthPendingCount = 0;
@@ -28,8 +40,9 @@ export function createAuthService({
   }
 
   function formatDemoSession(state) {
-    if (!state?.currentUserId) return null;
-    const user = (state.users || []).find((u) => u.id === state.currentUserId);
+    const currentUserId = demoStore.getDemoCurrentUserId();
+    if (!currentUserId) return null;
+    const user = (state?.users || []).find((u) => u.id === currentUserId);
     if (!user) return null;
     const firstName =
       user.firstName || extractFirstName(user.fullName, user.email.split('@')[0]);
@@ -128,10 +141,7 @@ export function createAuthService({
       throw new Error('Invalid email or password.');
     }
 
-    demoStore.updateDemoState((draft) => {
-      draft.currentUserId = user.id;
-      return draft;
-    });
+    demoStore.setDemoCurrentUserId(user.id);
     return getCurrentSession();
   }
 
@@ -189,9 +199,9 @@ export function createAuthService({
 
     demoStore.updateDemoState((draft) => {
       draft.users.push(newUser);
-      draft.currentUserId = newUser.id;
       return draft;
     });
+    demoStore.setDemoCurrentUserId(newUser.id);
 
     return getCurrentSession();
   }
@@ -232,12 +242,12 @@ export function createAuthService({
       return getCurrentSession();
     }
 
-    const state = demoStore.getDemoState();
-    if (!state?.currentUserId) {
+    const currentUserId = demoStore.getDemoCurrentUserId();
+    if (!currentUserId) {
       throw new Error('Active recovery or authenticated session required.');
     }
     demoStore.updateDemoState((draft) => {
-      const user = (draft.users || []).find((u) => u.id === draft.currentUserId);
+      const user = (draft.users || []).find((u) => u.id === currentUserId);
       if (!user) throw new Error('User profile not found.');
       user.password = cleanPassword;
       return draft;
@@ -279,14 +289,14 @@ export function createAuthService({
       };
     }
 
-    const state = demoStore.getDemoState();
-    if (!state.currentUserId) {
+    const currentUserId = demoStore.getDemoCurrentUserId();
+    if (!currentUserId) {
       throw new Error('Authentication required.');
     }
 
     let updatedUser = null;
     demoStore.updateDemoState((draft) => {
-      const user = (draft.users || []).find((u) => u.id === draft.currentUserId);
+      const user = (draft.users || []).find((u) => u.id === currentUserId);
       if (!user) throw new Error('User profile not found.');
       if (cleanFirst) user.firstName = cleanFirst;
       if (cleanFull) user.fullName = cleanFull;
@@ -317,10 +327,7 @@ export function createAuthService({
       return;
     }
 
-    demoStore.updateDemoState((draft) => {
-      draft.currentUserId = null;
-      return draft;
-    });
+    demoStore.setDemoCurrentUserId(null);
   }
 
   function isPasswordRecoveryMode() {
