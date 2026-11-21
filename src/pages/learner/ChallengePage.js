@@ -1,7 +1,7 @@
 import { getChallengeById } from '../../lib/repositories/contentRepository.js';
 import { resolveCourseHierarchy, renderHierarchyGuard } from '../../lib/courseNavigation.js';
 import { getUserSubmissions, submitChallengeEvidence } from '../../lib/repositories/submissionRepository.js';
-import { validateSubmissionForm, isValidUrl } from '../../lib/validators.js';
+import { validateSubmissionForm, validateEvidenceFileContent, isValidUrl } from '../../lib/validators.js';
 import { escapeHtml, formatDateTime } from '../../lib/formatters.js';
 import { icon } from '../../lib/icons.js';
 import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDrawer } from '../../components/CourseOutlineDrawer.js';
@@ -360,6 +360,10 @@ export async function renderChallengePage({ params, session, navigate, rerender 
         };
 
         const errors = validateSubmissionForm(payload);
+        if (!errors.file && payload.file) {
+          const contentErr = await validateEvidenceFileContent(payload.file, challenge);
+          if (contentErr) errors.file = contentErr;
+        }
         root.querySelector('[data-error-for="evidence"]').textContent = errors.evidence || '';
         root.querySelector('[data-error-for="evidenceUrl"]').textContent = errors.evidenceUrl || '';
         root.querySelector('[data-error-for="repoUrl"]').textContent = errors.repoUrl || '';

@@ -1,5 +1,5 @@
 import { createInitialSeed, CURRENT_SEED_VERSION } from './seedData.js';
-import { clearIdempotencyCache } from '../idempotency.js';
+import { runSessionCleanup } from '../sessionLifecycle.js';
 
 const STORAGE_KEY = 'kord_app_state_v5';
 
@@ -11,6 +11,7 @@ const REQUIRED_FLAGSHIP_COURSE_IDS = [
 ];
 
 const listeners = new Set();
+let lastSerializedState = null;
 
 function mergeById(seedItems = [], storedItems = []) {
   const map = new Map();
@@ -41,7 +42,9 @@ function mergeSkills(seedSkills = [], storedSkills = []) {
     result.push({
       ...seedSkill,
       ...existing,
-      supportedByCourseSlug: seedSkill.supportedByCourseSlug || existing.supportedByCourseSlug || null,
+      categoryId: seedSkill.categoryId,
+      category: seedSkill.category,
+      supportedByCourseSlug: seedSkill.supportedByCourseSlug ?? null,
       publicationStatus: existing.publicationStatus || seedSkill.publicationStatus || 'published',
       outcomes:
         Array.isArray(existing.outcomes) && existing.outcomes.length > 0
@@ -113,12 +116,15 @@ function migrateDemoState(parsed) {
   return merged;
 }
 
-function loadState() {
+function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       const seed = createInitialSeed();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
+      const serialized = JSON.stringify(seed);
+      if (persistIfSeeded) {
+        localStorage.setItem(STORAGE_KEY, serialized);
+        lastSerializedState = serialized;
+      }
       return seed;
     }
     const parsed = JSON.parse(raw);
@@ -130,20 +136,38 @@ function loadState() {
       parsed.skills.length < 20
     ) {
       const seed = createInitialSeed();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
+      const serialized = JSON.stringify(seed);
+      if (persistIfSeeded) {
+        localStorage.setItem(STORAGE_KEY, serialized);
+        lastSerializedState = serialized;
+      }
       return seed;
     }
 
     if (needsCurriculumMigration(parsed)) {
       const migrated = migrateDemoState(parsed);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      const serialized = JSON.stringify(migrated);
+      if (persistIfSeeded) {
+        localStorage.setItem(STORAGE_KEY, serialized);
+        lastSerializedState = serialized;
+      }
       return migrated;
     }
 
     parsed.activityProgress = parsed.activityProgress || [];
     parsed.courseVersions = parsed.courseVersions || [];
     parsed.courseCompletions = parsed.courseCompletions || [];
+    lastSerializedState = raw;
     return parsed;
+  } catch {
+    return createInitialSeed();
+  }
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return parseOrSeedState(raw, { persistIfSeeded: true });
   } catch {
     return createInitialSeed();
   }
@@ -151,19 +175,116 @@ function loadState() {
 
 let state = loadState();
 
+export function syncDemoStateFromStorage({ emit = true, forceEmit = false } = {}) {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return state;
+  }
+
+  if (raw === lastSerializedState && !forceEmit) {
+    return state;
+  }
+
+  const previousUserId = state?.currentUserId || null;
+  const previousUser = previousUserId
+    ? (state?.users || []).find((u) => u.id === previousUserId) || null
+    : null;
+  const previousRole = previousUser?.role || null;
+
+  const next = parseOrSeedState(raw, { persistIfSeeded: raw === null });
+  state = next;
+
+  const nextUserId = next?.currentUserId || null;
+  const nextUser = nextUserId
+    ? (next?.users || []).find((u) => u.id === nextUserId) || null
+    : null;
+  const nextRole = nextUser?.role || null;
+
+  if (previousUserId !== nextUserId || previousRole !== nextRole) {
+    runSessionCleanup();
+  }
+
+  if (emit) {
+    listeners.forEach((fn) =>
+      fn(state, {
+        fromStorageEvent: true,
+        previousUserId,
+        previousRole,
+        nextUserId,
+        nextRole,
+      })
+    );
+  }
+
+  return state;
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', (event) => {
+    if (!event || event.key === null || event.key === STORAGE_KEY) {
+      syncDemoStateFromStorage({ emit: true, forceEmit: true });
+    }
+  });
+}
+
 export function getDemoState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw !== lastSerializedState) {
+      syncDemoStateFromStorage({ emit: false });
+    }
+  } catch {
+    // Ignore storage read errors in restricted contexts
+  }
   return state;
 }
 
 export function updateDemoState(updater) {
+  // Reconcile with any external tab writes before mutating
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw !== lastSerializedState) {
+      syncDemoStateFromStorage({ emit: false });
+    }
+  } catch {
+    // ignore
+  }
+
+  const previousUserId = state?.currentUserId || null;
+  const previousRole = previousUserId
+    ? (state?.users || []).find((u) => u.id === previousUserId)?.role || null
+    : null;
+
   const next = typeof updater === 'function' ? updater(structuredClone(state)) : updater;
   state = next;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const serialized = JSON.stringify(state);
+    localStorage.setItem(STORAGE_KEY, serialized);
+    lastSerializedState = serialized;
   } catch {
     // Ignore storage quota errors in restricted sandboxes
   }
-  listeners.forEach((fn) => fn(state));
+
+  const nextUserId = state?.currentUserId || null;
+  const nextRole = nextUserId
+    ? (state?.users || []).find((u) => u.id === nextUserId)?.role || null
+    : null;
+
+  if (previousUserId !== nextUserId || previousRole !== nextRole) {
+    runSessionCleanup();
+  }
+
+  listeners.forEach((fn) =>
+    fn(state, {
+      fromStorageEvent: false,
+      previousUserId,
+      previousRole,
+      nextUserId,
+      nextRole,
+    })
+  );
   return state;
 }
 
@@ -173,7 +294,7 @@ export function subscribeDemoState(fn) {
 }
 
 export function resetDemoState() {
-  clearIdempotencyCache();
+  runSessionCleanup();
   const fresh = createInitialSeed();
   return updateDemoState(fresh);
 }

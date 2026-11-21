@@ -19,6 +19,7 @@ import { BLOCK_TYPE_CATALOG, createEmptyBlock, renderLessonBlocks } from '../../
 import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
 import { renderVideoPlayerHtml, normalizeVideoEntry } from '../../lib/videoProvider.js';
 import { escapeHtml } from '../../lib/formatters.js';
+import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { renderStatusBadge } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
@@ -74,6 +75,20 @@ function resetLessonBuilder() {
   draftVideos = [];
   draftResources = [];
 }
+
+registerSessionCleanup(() => {
+  activeTab = 'courses';
+  selectedSkillId = null;
+  selectedCourseId = null;
+  selectedPhaseId = null;
+  courseFormMode = 'edit';
+  previewCourseOpen = false;
+  previewLessonId = null;
+  catalogCategoryFilter = 'All';
+  catalogCourseStatusFilter = 'all';
+  editingSkillId = null;
+  resetLessonBuilder();
+});
 
 function loadLessonIntoBuilder(lesson) {
   if (!lesson) {
@@ -1060,9 +1075,13 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           const target = idx + dir;
           if (idx < 0 || target < 0 || target >= ids.length) return;
           [ids[idx], ids[target]] = [ids[target], ids[idx]];
-          await adminReorderPhases(activeCourse.id, ids);
-          showToast('Module order updated.', 'success');
-          rerender({ silent: true });
+          try {
+            await adminReorderPhases(activeCourse.id, ids);
+            showToast('Module order updated.', 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err?.message || 'Unable to reorder modules.', 'error');
+          }
         });
       });
 
@@ -1072,13 +1091,17 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           const ph = phases.find((p) => p.id === btn.dataset.togglePhasePub);
           if (!ph) return;
           const nextPub = (ph.publicationStatus || 'published') === 'published' ? 'draft' : 'published';
-          await adminUpsertPhase({
-            ...ph,
-            courseId: activeCourse.id,
-            publicationStatus: nextPub,
-          });
-          showToast(`Module "${ph.title}" set to ${nextPub}.`, 'success');
-          rerender({ silent: true });
+          try {
+            await adminUpsertPhase({
+              ...ph,
+              courseId: activeCourse.id,
+              publicationStatus: nextPub,
+            });
+            showToast(`Module "${ph.title}" set to ${nextPub}.`, 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err?.message || 'Unable to update module status.', 'error');
+          }
         });
       });
 
@@ -1179,9 +1202,13 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       root.querySelectorAll('[data-del-lesson]').forEach((btn) => {
         btn.addEventListener('click', async () => {
           if (!activeCourse) return;
-          await adminDeleteLesson(activeCourse.id, btn.dataset.phaseId, btn.dataset.delLesson);
-          showToast('Lesson deleted.', 'info');
-          rerender({ silent: true });
+          try {
+            await adminDeleteLesson(activeCourse.id, btn.dataset.phaseId, btn.dataset.delLesson);
+            showToast('Lesson deleted.', 'info');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err?.message || 'Unable to delete lesson.', 'error');
+          }
         });
       });
 
@@ -1429,12 +1456,16 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         btn.addEventListener('click', async () => {
           const skill = skills.find((s) => s.id === btn.dataset.toggleSkillPub);
           if (!skill) return;
-          await adminUpsertSkill({
-            ...skill,
-            publicationStatus: skill.publicationStatus === 'draft' ? 'published' : 'draft',
-          });
-          showToast(`Updated ${skill.title} status.`, 'success');
-          rerender({ silent: true });
+          try {
+            await adminUpsertSkill({
+              ...skill,
+              publicationStatus: skill.publicationStatus === 'draft' ? 'published' : 'draft',
+            });
+            showToast(`Updated ${skill.title} status.`, 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err?.message || 'Unable to update skill status.', 'error');
+          }
         });
       });
     },

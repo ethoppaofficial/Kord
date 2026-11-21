@@ -4,12 +4,18 @@ import { isManualQuestionType } from '../../lib/assessmentEngine.js';
 import { buildIdempotencyKey } from '../../lib/idempotency.js';
 import { ASSESSMENT_TYPES } from '../../lib/constants.js';
 import { escapeHtml, formatDateTime } from '../../lib/formatters.js';
+import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDrawer } from '../../components/CourseOutlineDrawer.js';
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
 let lastResultByQuiz = {};
 let activeOrderByQuizQuestion = {};
+
+registerSessionCleanup(() => {
+  lastResultByQuiz = {};
+  activeOrderByQuizQuestion = {};
+});
 
 function renderQuestionInput(q, idx, res, quizId) {
   const type = q.questionType || 'multiple_choice';
@@ -102,7 +108,7 @@ function renderQuestionInput(q, idx, res, quizId) {
         ${options
           .map((opt, optIdx) => {
             let optClass = '';
-            if (res && !res.pendingReview) {
+            if (res && !res.pendingReview && res.correctIndex !== null && res.correctIndex !== undefined) {
               if (optIdx === res.correctIndex) optClass = 'is-correct';
               else if (optIdx === res.selectedIndex && !res.isCorrect) optClass = 'is-wrong';
             }
@@ -134,9 +140,13 @@ function renderQuestionInput(q, idx, res, quizId) {
             ? `<div class="pop-in" style="padding:10px 12px; border-radius:6px; font-size:13px; background:var(--color-amber-bg); color:var(--color-navy);">
                 <strong>Submitted for review:</strong> ${escapeHtml(res.explanation || 'Your written response is queued for administrator grading.')}
               </div>`
-            : `<div class="pop-in" style="padding:10px 12px; border-radius:6px; font-size:13px; background:${res.isCorrect ? 'var(--color-green-bg)' : 'var(--color-amber-bg)'}; color:var(--color-text);">
-                <strong>${res.isCorrect ? 'Correct:' : 'Explanation:'}</strong> ${escapeHtml(res.explanation)}
-              </div>`
+            : res.explanation === null || res.explanation === undefined
+              ? `<div class="pop-in" style="padding:10px 12px; border-radius:6px; font-size:13px; background:var(--color-bg); border:1px solid var(--color-border); color:var(--color-text-secondary);">
+                  <strong>Answer key withheld:</strong> Pass this assessment or complete your remaining attempts to unlock detailed solutions and explanations.
+                </div>`
+              : `<div class="pop-in" style="padding:10px 12px; border-radius:6px; font-size:13px; background:${res.isCorrect ? 'var(--color-green-bg)' : 'var(--color-amber-bg)'}; color:var(--color-text);">
+                  <strong>${res.isCorrect ? 'Correct:' : 'Explanation:'}</strong> ${escapeHtml(res.explanation)}
+                </div>`
           : ''
       }
     </section>

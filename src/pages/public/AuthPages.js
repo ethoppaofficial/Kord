@@ -1,8 +1,15 @@
-import { signIn, signUp, requestPasswordReset } from '../../lib/repositories/authRepository.js';
+import {
+  signIn,
+  signUp,
+  requestPasswordReset,
+  updatePassword,
+  isPasswordRecoveryMode,
+} from '../../lib/repositories/authRepository.js';
 import { isValidEmail, validateLoginForm, validateSignupForm } from '../../lib/validators.js';
 import { showToast } from '../../components/Toast.js';
 
-export function renderLoginPage({ navigate }) {
+export function renderLoginPage({ navigate, auth = null }) {
+  const doSignIn = auth?.signIn || signIn;
   return {
     html: `
       <div class="auth-wrap">
@@ -57,7 +64,7 @@ export function renderLoginPage({ navigate }) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Signing in…';
         try {
-          const session = await signIn(payload);
+          const session = await doSignIn(payload);
           showToast('Signed in successfully.', 'success');
           navigate(session?.user?.role === 'admin' ? '/admin' : '/dashboard');
         } catch (err) {
@@ -212,6 +219,96 @@ export function renderForgotPasswordPage() {
         } finally {
           submitBtn.disabled = false;
           submitBtn.textContent = 'Send reset link';
+        }
+      });
+    },
+  };
+}
+
+export function renderResetPasswordPage({ navigate, session, auth = null }) {
+  const checkRecovery = auth?.isPasswordRecoveryMode || isPasswordRecoveryMode;
+  const doUpdatePassword = auth?.updatePassword || updatePassword;
+  const canUpdate = Boolean(session || checkRecovery());
+
+  if (!canUpdate) {
+    return {
+      html: `
+        <div class="auth-wrap">
+          <div class="card">
+            <h1 class="page-title">Reset password link required</h1>
+            <p class="page-subtitle" style="margin-bottom:20px;">Open this page from a valid password recovery link or request a new reset email.</p>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <a href="/forgot-password" data-link class="btn btn-primary">Request reset link</a>
+              <a href="/login" data-link class="btn btn-secondary">Back to sign in</a>
+            </div>
+          </div>
+        </div>
+      `,
+      bind() {},
+    };
+  }
+
+  return {
+    html: `
+      <div class="auth-wrap">
+        <div class="card">
+          <h1 class="page-title">Set a new password</h1>
+          <p class="page-subtitle" style="margin-bottom:20px;">Choose a new password for your Kord account.</p>
+
+          <form id="update-password-form" class="form-stack" novalidate>
+            <div class="field">
+              <label class="field-label" for="new-password">New password</label>
+              <input class="input" id="new-password" name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" required />
+              <div class="field-error" data-error-for="password"></div>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="confirm-new-password">Confirm new password</label>
+              <input class="input" id="confirm-new-password" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat new password" required />
+              <div class="field-error" data-error-for="confirmPassword"></div>
+            </div>
+
+            <div class="field-error" id="update-password-error" role="alert"></div>
+
+            <button type="submit" class="btn btn-primary" id="update-password-submit">Update password</button>
+          </form>
+        </div>
+      </div>
+    `,
+    bind(root) {
+      const form = root.querySelector('#update-password-form');
+      const submitBtn = root.querySelector('#update-password-submit');
+      const formErr = root.querySelector('#update-password-error');
+
+      form?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        formErr.textContent = '';
+        const fd = new FormData(form);
+        const password = String(fd.get('password') || '');
+        const confirmPassword = String(fd.get('confirmPassword') || '');
+
+        const passErr = password.length < 6 ? 'Password must be at least 6 characters.' : '';
+        const confirmErr = password !== confirmPassword ? 'Passwords do not match.' : '';
+        root.querySelector('[data-error-for="password"]').textContent = passErr;
+        root.querySelector('[data-error-for="confirmPassword"]').textContent = confirmErr;
+        if (passErr || confirmErr) return;
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Updating…';
+        try {
+          const updatedSession = await doUpdatePassword(password);
+          showToast('Password updated.', 'success');
+          navigate(
+            updatedSession?.user?.role === 'admin'
+              ? '/admin'
+              : updatedSession
+                ? '/dashboard'
+                : '/login'
+          );
+        } catch (err) {
+          formErr.textContent = err.message || 'Unable to update password.';
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Update password';
         }
       });
     },

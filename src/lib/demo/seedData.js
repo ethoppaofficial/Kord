@@ -2,7 +2,7 @@ import { ADMIN_EMAIL, DEFAULT_CATEGORIES } from '../constants.js';
 import { createCatalogSkills } from './catalogSkillsSeed.js';
 import { createFlagshipCurriculumSeed } from './flagshipCoursesSeed.js';
 
-export const CURRENT_SEED_VERSION = 6;
+export const CURRENT_SEED_VERSION = 7;
 
 export function createInitialSeed() {
   const now = Date.now();

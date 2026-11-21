@@ -11,6 +11,7 @@ export const supabase = hasSupabaseEnv
       auth: {
         persistSession: true,
         autoRefreshToken: true,
+        detectSessionInUrl: true,
       },
     })
   : null;

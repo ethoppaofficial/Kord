@@ -310,8 +310,13 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
         statusEl.textContent = `${words} words · Saving…`;
         window.clearTimeout(saveTimer);
         saveTimer = window.setTimeout(async () => {
-          await saveLessonNotes(userId, lesson.id, course.id, notesEl.value);
-          statusEl.textContent = `${words} words · Saved`;
+          try {
+            await saveLessonNotes(userId, lesson.id, course.id, notesEl.value);
+            statusEl.textContent = `${words} words · Saved`;
+          } catch (err) {
+            statusEl.textContent = `${words} words · Save failed`;
+            showToast(err?.message || 'Unable to save notes.', 'error');
+          }
         }, 300);
       });
 

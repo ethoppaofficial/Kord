@@ -1,6 +1,7 @@
 import { listRankedOpportunities } from '../../lib/repositories/opportunityRepository.js';
 import { OPPORTUNITY_TYPES, WORK_MODES } from '../../lib/constants.js';
 import { escapeHtml } from '../../lib/formatters.js';
+import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderOpportunityCard, renderEmptyState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
@@ -41,6 +42,15 @@ let oppFilters = {
   workMode: 'All',
   savedOnly: false,
 };
+
+registerSessionCleanup(() => {
+  oppFilters = {
+    search: '',
+    type: 'All',
+    workMode: 'All',
+    savedOnly: false,
+  };
+});
 
 export async function renderOpportunitiesPage({ session }) {
   const userId = session?.user?.id || null;

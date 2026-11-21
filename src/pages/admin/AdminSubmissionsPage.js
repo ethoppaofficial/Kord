@@ -9,6 +9,7 @@ import {
 } from '../../lib/repositories/quizRepository.js';
 import { isManualQuestionType } from '../../lib/assessmentEngine.js';
 import { escapeHtml, formatDateTime } from '../../lib/formatters.js';
+import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { icon } from '../../lib/icons.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { renderStatusBadge, renderEmptyState, renderProgressRail } from '../../components/Common.js';
@@ -18,6 +19,13 @@ let reviewQueueTab = 'challenges'; // 'challenges' | 'written'
 let subFilter = 'pending';
 let selectedSubId = null;
 let selectedAttemptId = null;
+
+registerSessionCleanup(() => {
+  reviewQueueTab = 'challenges';
+  subFilter = 'pending';
+  selectedSubId = null;
+  selectedAttemptId = null;
+});
 
 const FEEDBACK_SNIPPETS = [
   'Clear structure and verifiable metrics.',
@@ -322,8 +330,12 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
 
       root.querySelector('#open-signed-file')?.addEventListener('click', async (e) => {
         const path = e.currentTarget.dataset.filePath;
-        const url = await getSignedEvidenceUrl(path);
-        showToast(`Authorized private storage path ready: ${url}`, 'info');
+        try {
+          const url = await getSignedEvidenceUrl(path);
+          showToast(`Authorized private storage path ready: ${url}`, 'info');
+        } catch (err) {
+          showToast(err?.message || 'Unable to generate signed evidence URL.', 'error');
+        }
       });
 
       const scoreInputs = [...root.querySelectorAll('.rubric-score-input')];
@@ -390,22 +402,26 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
           showToast('Please enter reviewer feedback before saving.', 'error');
           return;
         }
-        await adminReviewSubmission({
-          submissionId: activeSub.id,
-          reviewerId: session.user.id,
-          status: pendingDecision,
-          rubricScores: scores,
-          rubricTotal: sum,
-          rubricMax,
-          feedback,
-        });
-        showToast(
-          pendingDecision === 'approved'
-            ? 'Submission approved and course/skill progress updated!'
-            : 'Revision requested with feedback.',
-          'success'
-        );
-        rerender({ silent: true });
+        try {
+          await adminReviewSubmission({
+            submissionId: activeSub.id,
+            reviewerId: session.user.id,
+            status: pendingDecision,
+            rubricScores: scores,
+            rubricTotal: sum,
+            rubricMax,
+            feedback,
+          });
+          showToast(
+            pendingDecision === 'approved'
+              ? 'Submission approved and course/skill progress updated!'
+              : 'Revision requested with feedback.',
+            'success'
+          );
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err?.message || 'Unable to save submission review.', 'error');
+        }
       });
 
       root.querySelector('#written-grade-form')?.addEventListener('submit', async (e) => {
@@ -416,14 +432,18 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
           manualScores[inp.dataset.qId] = Number(inp.value || 0);
         });
         const feedback = root.querySelector('#written-feedback')?.value.trim() || '';
-        await adminGradeAttempt({
-          attemptId: activeAttempt.id,
-          reviewerId: session.user.id,
-          manualScores,
-          feedback,
-        });
-        showToast('Written assessment graded and course progress updated!', 'success');
-        rerender({ silent: true });
+        try {
+          await adminGradeAttempt({
+            attemptId: activeAttempt.id,
+            reviewerId: session.user.id,
+            manualScores,
+            feedback,
+          });
+          showToast('Written assessment graded and course progress updated!', 'success');
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err?.message || 'Unable to publish written grade.', 'error');
+        }
       });
     },
   };

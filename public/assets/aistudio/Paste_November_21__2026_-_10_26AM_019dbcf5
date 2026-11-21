@@ -1,0 +1,485 @@
+KORD: SUPABASE SECURITY AND BACKEND INTEGRITY AUDIT & REPAIR
+You are working on the existing Kord web application repository.
+Your task is to conduct a thorough audit and repair of the Supabase database security, learning progression logic, assessment system, and frontend database integration.
+This is an existing project. You are not starting from scratch.
+Project context
+Kord is a skill-development platform built with:
+Vanilla JavaScript, HTML and CSS.
+Supabase for authentication, PostgreSQL database, Row Level Security (RLS), database functions and storage.
+An existing repository architecture and frontend implementation.
+Kord's learning model is:
+Learn → Understand → Demonstrate
+Learners should:
+Learn through structured courses, lessons and resources.
+Demonstrate understanding through quizzes and assessments.
+Demonstrate practical ability through challenges and evidence submissions.
+Practical demonstration must not be replaced by simply passing a multiple-choice quiz.
+Critical project status
+The Supabase project has been created, but the SQL files in this repository have NOT been deployed to Supabase.
+Therefore:
+Treat all existing SQL as proposed implementation, not verified production functionality.
+Do not claim that any database functionality is currently working.
+Do not assume the database schema has been deployed.
+Do not delete existing implementation simply because it has not been deployed.
+Do not invent database tables, policies, functions or frontend behavior without examining the actual repository.
+First task: inspect before modifying
+Inspect the complete relevant implementation, especially:
+"supabase/01_schema.sql"
+"supabase/02_security.sql"
+"supabase/03_functions.sql"
+"supabase/04_storage.sql"
+"supabase/05_seed.sql"
+"supabase/06_dashboard.sql"
+"src/lib/supabase.js"
+"src/lib/validators.js"
+"src/lib/repositories/authRepository.js"
+"src/lib/repositories/contentRepository.js"
+"src/lib/repositories/progressRepository.js"
+"src/lib/repositories/quizRepository.js"
+"src/lib/repositories/submissionRepository.js"
+Relevant learner and administrator pages.
+Inspect the actual table relationships, foreign keys, constraints, existing RPC calls, repository methods, authorization logic and frontend assumptions.
+Do not make changes until you understand how the components interact.
+Security issues to investigate and fix
+A. Profile role escalation
+Inspect the profile update policies and all profile-related functions.
+A learner must never be able to change their own role to administrator by directly updating their profile.
+Requirements:
+New registrations must receive the learner role by default.
+Learners must not be able to update their role.
+Learners must not be able to modify privileged profile fields.
+Administrator provisioning must use a secure, controlled process.
+Profile update functionality must continue working for legitimate editable fields.
+Do not solve this by simply disabling all profile updates.
+B. Learning progression manipulation
+Inspect all policies and database functions affecting:
+Course enrollments.
+Course completions.
+Lesson progress.
+Activity progress.
+Quiz attempts.
+User skills.
+Challenge submissions.
+Learners must not be able to directly manipulate database records to award themselves course completion, lesson completion, demonstrated skill levels or assessment approval.
+Requirements:
+Database-side validation must be authoritative.
+Only permitted actions should change progression.
+The database must validate the authenticated user, enrollment, lesson/course relationship and completion requirements.
+Internal progression functions must not be exposed as unrestricted RPCs.
+Prevent users from submitting progress records for another user.
+Prevent learners from changing privileged fields such as approval status or reviewer identity.
+C. SECURITY DEFINER functions
+Inspect every function declared "SECURITY DEFINER".
+For each function:
+Determine why elevated privileges are needed.
+Ensure its "search_path" is explicitly controlled.
+Check that it validates the caller's identity and authorization.
+Revoke unnecessary execution permissions from "PUBLIC", "anon" and "authenticated".
+Grant execution only to the appropriate roles.
+Separate internal functions from functions intentionally exposed as RPC endpoints.
+Pay particular attention to:
+"upgrade_user_skill_level"
+"evaluate_course_and_skill_progression"
+"submit_quiz_attempt"
+"review_submission"
+All administrator functions.
+All authentication-related triggers and functions.
+Do not blindly revoke permissions from every function. Preserve legitimate application functionality through explicitly authorized entry points.
+D. Quiz and skill progression integrity
+Inspect how quiz results affect skill levels.
+A learner passing a knowledge quiz must not automatically receive a practical demonstration achievement unless the assessment genuinely measures practical performance.
+Requirements:
+Knowledge assessments should update the appropriate knowledge or practice progression.
+Practical demonstration should require an approved practical challenge or another explicitly designed practical assessment.
+Validate all submitted answers on the server.
+Never trust client-submitted scores.
+Ensure quiz questions and answer keys are not exposed to unauthorized learners.
+Prevent learners from accessing correct answers or explanations before the intended release conditions.
+Validate quiz type, question type, answer configuration and scoring rules.
+Preserve the existing quiz system and its intended assessment behavior.
+E. Submission integrity
+Inspect the submission policies, schema and review functions.
+Requirements:
+Learners can submit their own work.
+Learners cannot mark their own submissions as approved.
+Learners cannot assign themselves rubric scores.
+Learners cannot set reviewer IDs or review timestamps.
+Review actions must be administrator-authorized.
+Reviewers must not review their own submissions.
+Rubric scores must be validated against the challenge rubric.
+Submission evidence must belong to the authenticated learner.
+F. Course completion rules
+Inspect the course progression logic.
+Verify that:
+Required lessons are correctly identified.
+Required activities are correctly identified.
+Required quizzes are correctly identified.
+Required challenges are correctly identified.
+Optional content does not accidentally block completion.
+Optional content does not accidentally satisfy required completion conditions.
+Completion is calculated consistently and safely.
+Duplicate or repeated events do not produce incorrect progression.
+G. Storage security
+Inspect "supabase/04_storage.sql" and the submission repository.
+Requirements:
+Evidence storage must remain private.
+Learners can upload only to their own permitted storage folder.
+Learners cannot read or delete another learner's evidence.
+Administrators can access evidence where required for assessment.
+File size and allowed file types must be enforced.
+Database submission records must reference valid evidence belonging to the submitting learner.
+Do not rely on file extensions alone as proof of file content type.
+H. Administrator operations
+Inspect every administrator RPC and database operation.
+Requirements:
+Administrator actions must verify administrator privileges on the server.
+A client-side admin check is not sufficient.
+Validate input IDs and relationships.
+Prevent malformed or unauthorized question updates.
+Validate phase reordering, including duplicate IDs and missing phases.
+Validate course version creation and preserve meaningful version history.
+Frontend and backend integration
+Do not focus only on SQL.
+Inspect the frontend repositories and ensure their database operations agree with the corrected security model.
+In particular:
+Replace unsafe direct client-side progression updates with secure RPC calls where appropriate.
+Preserve legitimate learner functionality.
+Preserve administrator functionality.
+Handle Supabase errors properly.
+Prevent the UI from displaying success when the database operation fails.
+Ensure returned database data is validated before being used.
+Avoid unnecessary queries and repeated fetching of large datasets.
+Do not expose service-role keys or privileged secrets in frontend code.
+Do not rewrite the application in React, Next.js or another framework. Keep the existing architecture.
+Database migrations
+The project has not deployed its SQL yet.
+Review the existing SQL organization and establish a clean, ordered, version-controlled migration structure compatible with the Supabase CLI.
+Prefer a structure such as:
+"supabase/migrations/"
+Use sequential migration filenames and organize them logically:
+Extensions and schema.
+Constraints and indexes.
+Authentication and profile functions.
+RLS policies and permissions.
+Learning progression functions.
+Assessment and submission functions.
+Storage policies.
+Dashboard functions.
+Seed data.
+Adapt this structure to the actual repository rather than duplicating or blindly copying existing SQL.
+Requirements:
+Preserve existing seed data.
+Preserve the existing schema and intended relationships unless a correction is necessary.
+Ensure migration order respects dependencies.
+Avoid destructive operations.
+Do not drop tables or truncate data without explicit justification and approval.
+Make migrations safe to run in the intended fresh-project deployment sequence.
+Avoid duplicate definitions and conflicting policies.
+Ensure the migration history is coherent.
+Do not deploy anything to Supabase. No live deployment has been authorized.
+Testing
+Add meaningful automated tests where possible.
+Include tests for:
+A learner cannot change their role to administrator.
+A learner cannot read another learner's private records.
+A learner cannot award themselves skill progression.
+A learner cannot approve their own submission.
+A learner cannot manipulate quiz scores.
+A learner cannot access protected answer keys.
+An administrator can perform authorized review operations.
+Invalid course progression cannot be awarded.
+Required and optional content are handled correctly.
+Storage ownership restrictions work correctly.
+Use Supabase-compatible database testing where possible.
+If a test cannot be executed because the Supabase project has not been linked or the local Supabase environment is unavailable, state that clearly. Do not claim that an unexecuted test passed.
+Strict implementation rules
+Do not rewrite the entire application.
+Do not introduce unnecessary dependencies.
+Do not change the framework or architecture.
+Do not remove existing features to avoid fixing their security issues.
+Do not replace meaningful course or seed content with placeholder content.
+Do not weaken RLS to make frontend requests work.
+Do not use service-role credentials in browser code.
+Do not invent successful test results.
+Do not deploy migrations to the live Supabase project.
+Keep changes focused, readable, maintainable and consistent with the existing coding style.
+Before making a potentially breaking schema or API change, inspect every affected frontend call site and update it consistently.
+Final deliverables
+When finished, provide:
+A. Audit report
+Every issue discovered.
+Severity: Critical, High, Medium or Low.
+Affected files and functions.
+Why the issue matters.
+B. Change report
+Every file modified or created.
+What changed and why.
+Any compatibility changes required.
+C. Migration report
+Migration filenames.
+Execution order.
+Any assumptions or manual prerequisites.
+D. Test report
+Tests added.
+Tests actually executed.
+Results.
+Tests that remain unverified and why.
+E. Deployment instructions
+Exact commands to link the existing Supabase project.
+How to inspect the migration plan.
+How to apply migrations to the intended development project.
+How to verify the deployment.
+Do not expose or request secrets in the report.
+Definition of done
+This task is complete only when:
+The existing application architecture is preserved.
+Critical security flaws are corrected in the proposed SQL and frontend integration.
+Progression is controlled by authorized database operations.
+Assessment and submission integrity are enforced.
+Migrations are organized and internally consistent.
+Tests have been added and executed where the environment permits.
+Unverified behavior is explicitly identified.
+No live Supabase deployment has occurred.
+Start by inspecting the repository. Report your findings before making substantial changes. Then implement the corrections in small, logically grouped changes and provide the final report.KORD: SUPABASE SECURITY AND BACKEND INTEGRITY AUDIT & REPAIR
+You are working on the existing Kord web application repository.
+Your task is to conduct a thorough audit and repair of the Supabase database security, learning progression logic, assessment system, and frontend database integration.
+This is an existing project. You are not starting from scratch.
+Project context
+Kord is a skill-development platform built with:
+Vanilla JavaScript, HTML and CSS.
+Supabase for authentication, PostgreSQL database, Row Level Security (RLS), database functions and storage.
+An existing repository architecture and frontend implementation.
+Kord's learning model is:
+Learn → Understand → Demonstrate
+Learners should:
+Learn through structured courses, lessons and resources.
+Demonstrate understanding through quizzes and assessments.
+Demonstrate practical ability through challenges and evidence submissions.
+Practical demonstration must not be replaced by simply passing a multiple-choice quiz.
+Critical project status
+The Supabase project has been created, but the SQL files in this repository have NOT been deployed to Supabase.
+Therefore:
+Treat all existing SQL as proposed implementation, not verified production functionality.
+Do not claim that any database functionality is currently working.
+Do not assume the database schema has been deployed.
+Do not delete existing implementation simply because it has not been deployed.
+Do not invent database tables, policies, functions or frontend behavior without examining the actual repository.
+First task: inspect before modifying
+Inspect the complete relevant implementation, especially:
+"supabase/01_schema.sql"
+"supabase/02_security.sql"
+"supabase/03_functions.sql"
+"supabase/04_storage.sql"
+"supabase/05_seed.sql"
+"supabase/06_dashboard.sql"
+"src/lib/supabase.js"
+"src/lib/validators.js"
+"src/lib/repositories/authRepository.js"
+"src/lib/repositories/contentRepository.js"
+"src/lib/repositories/progressRepository.js"
+"src/lib/repositories/quizRepository.js"
+"src/lib/repositories/submissionRepository.js"
+Relevant learner and administrator pages.
+Inspect the actual table relationships, foreign keys, constraints, existing RPC calls, repository methods, authorization logic and frontend assumptions.
+Do not make changes until you understand how the components interact.
+Security issues to investigate and fix
+A. Profile role escalation
+Inspect the profile update policies and all profile-related functions.
+A learner must never be able to change their own role to administrator by directly updating their profile.
+Requirements:
+New registrations must receive the learner role by default.
+Learners must not be able to update their role.
+Learners must not be able to modify privileged profile fields.
+Administrator provisioning must use a secure, controlled process.
+Profile update functionality must continue working for legitimate editable fields.
+Do not solve this by simply disabling all profile updates.
+B. Learning progression manipulation
+Inspect all policies and database functions affecting:
+Course enrollments.
+Course completions.
+Lesson progress.
+Activity progress.
+Quiz attempts.
+User skills.
+Challenge submissions.
+Learners must not be able to directly manipulate database records to award themselves course completion, lesson completion, demonstrated skill levels or assessment approval.
+Requirements:
+Database-side validation must be authoritative.
+Only permitted actions should change progression.
+The database must validate the authenticated user, enrollment, lesson/course relationship and completion requirements.
+Internal progression functions must not be exposed as unrestricted RPCs.
+Prevent users from submitting progress records for another user.
+Prevent learners from changing privileged fields such as approval status or reviewer identity.
+C. SECURITY DEFINER functions
+Inspect every function declared "SECURITY DEFINER".
+For each function:
+Determine why elevated privileges are needed.
+Ensure its "search_path" is explicitly controlled.
+Check that it validates the caller's identity and authorization.
+Revoke unnecessary execution permissions from "PUBLIC", "anon" and "authenticated".
+Grant execution only to the appropriate roles.
+Separate internal functions from functions intentionally exposed as RPC endpoints.
+Pay particular attention to:
+"upgrade_user_skill_level"
+"evaluate_course_and_skill_progression"
+"submit_quiz_attempt"
+"review_submission"
+All administrator functions.
+All authentication-related triggers and functions.
+Do not blindly revoke permissions from every function. Preserve legitimate application functionality through explicitly authorized entry points.
+D. Quiz and skill progression integrity
+Inspect how quiz results affect skill levels.
+A learner passing a knowledge quiz must not automatically receive a practical demonstration achievement unless the assessment genuinely measures practical performance.
+Requirements:
+Knowledge assessments should update the appropriate knowledge or practice progression.
+Practical demonstration should require an approved practical challenge or another explicitly designed practical assessment.
+Validate all submitted answers on the server.
+Never trust client-submitted scores.
+Ensure quiz questions and answer keys are not exposed to unauthorized learners.
+Prevent learners from accessing correct answers or explanations before the intended release conditions.
+Validate quiz type, question type, answer configuration and scoring rules.
+Preserve the existing quiz system and its intended assessment behavior.
+E. Submission integrity
+Inspect the submission policies, schema and review functions.
+Requirements:
+Learners can submit their own work.
+Learners cannot mark their own submissions as approved.
+Learners cannot assign themselves rubric scores.
+Learners cannot set reviewer IDs or review timestamps.
+Review actions must be administrator-authorized.
+Reviewers must not review their own submissions.
+Rubric scores must be validated against the challenge rubric.
+Submission evidence must belong to the authenticated learner.
+F. Course completion rules
+Inspect the course progression logic.
+Verify that:
+Required lessons are correctly identified.
+Required activities are correctly identified.
+Required quizzes are correctly identified.
+Required challenges are correctly identified.
+Optional content does not accidentally block completion.
+Optional content does not accidentally satisfy required completion conditions.
+Completion is calculated consistently and safely.
+Duplicate or repeated events do not produce incorrect progression.
+G. Storage security
+Inspect "supabase/04_storage.sql" and the submission repository.
+Requirements:
+Evidence storage must remain private.
+Learners can upload only to their own permitted storage folder.
+Learners cannot read or delete another learner's evidence.
+Administrators can access evidence where required for assessment.
+File size and allowed file types must be enforced.
+Database submission records must reference valid evidence belonging to the submitting learner.
+Do not rely on file extensions alone as proof of file content type.
+H. Administrator operations
+Inspect every administrator RPC and database operation.
+Requirements:
+Administrator actions must verify administrator privileges on the server.
+A client-side admin check is not sufficient.
+Validate input IDs and relationships.
+Prevent malformed or unauthorized question updates.
+Validate phase reordering, including duplicate IDs and missing phases.
+Validate course version creation and preserve meaningful version history.
+Frontend and backend integration
+Do not focus only on SQL.
+Inspect the frontend repositories and ensure their database operations agree with the corrected security model.
+In particular:
+Replace unsafe direct client-side progression updates with secure RPC calls where appropriate.
+Preserve legitimate learner functionality.
+Preserve administrator functionality.
+Handle Supabase errors properly.
+Prevent the UI from displaying success when the database operation fails.
+Ensure returned database data is validated before being used.
+Avoid unnecessary queries and repeated fetching of large datasets.
+Do not expose service-role keys or privileged secrets in frontend code.
+Do not rewrite the application in React, Next.js or another framework. Keep the existing architecture.
+Database migrations
+The project has not deployed its SQL yet.
+Review the existing SQL organization and establish a clean, ordered, version-controlled migration structure compatible with the Supabase CLI.
+Prefer a structure such as:
+"supabase/migrations/"
+Use sequential migration filenames and organize them logically:
+Extensions and schema.
+Constraints and indexes.
+Authentication and profile functions.
+RLS policies and permissions.
+Learning progression functions.
+Assessment and submission functions.
+Storage policies.
+Dashboard functions.
+Seed data.
+Adapt this structure to the actual repository rather than duplicating or blindly copying existing SQL.
+Requirements:
+Preserve existing seed data.
+Preserve the existing schema and intended relationships unless a correction is necessary.
+Ensure migration order respects dependencies.
+Avoid destructive operations.
+Do not drop tables or truncate data without explicit justification and approval.
+Make migrations safe to run in the intended fresh-project deployment sequence.
+Avoid duplicate definitions and conflicting policies.
+Ensure the migration history is coherent.
+Do not deploy anything to Supabase. No live deployment has been authorized.
+Testing
+Add meaningful automated tests where possible.
+Include tests for:
+A learner cannot change their role to administrator.
+A learner cannot read another learner's private records.
+A learner cannot award themselves skill progression.
+A learner cannot approve their own submission.
+A learner cannot manipulate quiz scores.
+A learner cannot access protected answer keys.
+An administrator can perform authorized review operations.
+Invalid course progression cannot be awarded.
+Required and optional content are handled correctly.
+Storage ownership restrictions work correctly.
+Use Supabase-compatible database testing where possible.
+If a test cannot be executed because the Supabase project has not been linked or the local Supabase environment is unavailable, state that clearly. Do not claim that an unexecuted test passed.
+Strict implementation rules
+Do not rewrite the entire application.
+Do not introduce unnecessary dependencies.
+Do not change the framework or architecture.
+Do not remove existing features to avoid fixing their security issues.
+Do not replace meaningful course or seed content with placeholder content.
+Do not weaken RLS to make frontend requests work.
+Do not use service-role credentials in browser code.
+Do not invent successful test results.
+Do not deploy migrations to the live Supabase project.
+Keep changes focused, readable, maintainable and consistent with the existing coding style.
+Before making a potentially breaking schema or API change, inspect every affected frontend call site and update it consistently.
+Final deliverables
+When finished, provide:
+A. Audit report
+Every issue discovered.
+Severity: Critical, High, Medium or Low.
+Affected files and functions.
+Why the issue matters.
+B. Change report
+Every file modified or created.
+What changed and why.
+Any compatibility changes required.
+C. Migration report
+Migration filenames.
+Execution order.
+Any assumptions or manual prerequisites.
+D. Test report
+Tests added.
+Tests actually executed.
+Results.
+Tests that remain unverified and why.
+E. Deployment instructions
+Exact commands to link the existing Supabase project.
+How to inspect the migration plan.
+How to apply migrations to the intended development project.
+How to verify the deployment.
+Do not expose or request secrets in the report.
+Definition of done
+This task is complete only when:
+The existing application architecture is preserved.
+Critical security flaws are corrected in the proposed SQL and frontend integration.
+Progression is controlled by authorized database operations.
+Assessment and submission integrity are enforced.
+Migrations are organized and internally consistent.
+Tests have been added and executed where the environment permits.
+Unverified behavior is explicitly identified.
+No live Supabase deployment has occurred.
+Start by inspecting the repository. Report your findings before making substantial changes. Then implement the corrections in small, logically grouped changes and provide the final report.

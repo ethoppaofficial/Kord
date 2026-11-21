@@ -147,6 +147,12 @@ export function renderCourseCard(course, { progress = null, enrollment = null, i
       <div class="course-card-body">
         <div style="display:flex; flex-direction:column; gap:8px;">
           <div class="meta-line">
+            ${
+              course.categoryName || course.skill?.category
+                ? `<span><strong>${escapeHtml(course.categoryName || course.skill?.category)}</strong></span>
+                   <span class="meta-sep" aria-hidden="true">·</span>`
+                : ''
+            }
             <span>${escapeHtml(course.difficulty || 'Beginner')}</span>
             <span class="meta-sep" aria-hidden="true">·</span>
             <span class="mono-num">${escapeHtml(durationLabel)}</span>

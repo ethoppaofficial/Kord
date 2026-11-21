@@ -1,5 +1,7 @@
--- 04_storage.sql
--- Idempotent private evidence bucket scoped to <user-id>/... and administrators
+-- 04_storage.sql (Synchronized with migration 000007)
+
+-- 20261121000007_storage_policies.sql
+-- Hardened private evidence storage bucket, path validation, and immutable submitted evidence protection.
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -37,8 +39,10 @@ create policy "evidence_upload_own_folder"
 on storage.objects for insert to authenticated
 with check (
   bucket_id = 'evidence'
-  and (storage.foldername(name))[1] = auth.uid()::text
   and not public.is_admin()
+  and position('..' in name) = 0
+  and coalesce(array_length(string_to_array(name, '/'), 1), 0) >= 2
+  and (storage.foldername(name))[1] = auth.uid()::text
   and lower(storage.extension(name)) = any(array[
     'pdf','png','jpg','jpeg','webp','txt','md','csv','zip','docx',
     'mp3','wav','m4a','webm','ogg','mp4','mov'
@@ -56,13 +60,24 @@ using (
   )
 );
 
+-- Disallow client overwrites of uploaded evidence objects
+drop policy if exists "evidence_update_own_folder" on storage.objects;
+
+-- Learners may only remove orphan uploads not referenced by any submission record; admins retain cleanup rights
 drop policy if exists "evidence_delete_own_or_admin" on storage.objects;
 create policy "evidence_delete_own_or_admin"
 on storage.objects for delete to authenticated
 using (
   bucket_id = 'evidence'
   and (
-    (storage.foldername(name))[1] = auth.uid()::text
-    or public.is_admin()
+    public.is_admin()
+    or (
+      (storage.foldername(name))[1] = auth.uid()::text
+      and not exists (
+        select 1
+        from public.submissions s
+        where s.file_path = storage.objects.name
+      )
+    )
   )
 );

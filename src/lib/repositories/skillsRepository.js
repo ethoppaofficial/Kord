@@ -33,8 +33,8 @@ export async function declareUserSkill(userId, skillId) {
 /**
  * Evidence-based progression rule:
  * Only upgrades upward (never allows arbitrary jumps by learners;
- * learners reach Practising via activity/phase quiz, Demonstrated via Skill Check,
- * Verified via approved challenge review).
+ * learners reach Practising via lesson/activity/quiz, Demonstrated via practical course completion or approved challenge,
+ * Verified when all published courses for a skill are completed with approved practical deliverables).
  */
 export async function upgradeSkillLevel(userId, skillId, targetLevel) {
   if (!isDemoMode && supabase) {

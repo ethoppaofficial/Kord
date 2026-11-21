@@ -135,6 +135,132 @@ export function validateEvidenceFile(file, challenge = {}) {
   return null;
 }
 
+export function sanitizeEvidenceFilename(fileName) {
+  const base = String(fileName || 'evidence').split(/[\\/]/).pop() || 'evidence';
+  const dotIdx = base.lastIndexOf('.');
+  const rawStem = dotIdx > 0 ? base.slice(0, dotIdx) : base;
+  const rawExt = dotIdx > 0 ? base.slice(dotIdx + 1) : '';
+  const safeStem = rawStem
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || 'evidence';
+  const safeExt = rawExt.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12);
+  return safeExt ? `${safeStem}.${safeExt}` : safeStem;
+}
+
+function bytesMatch(bytes, offset, expected) {
+  if (!bytes || bytes.length < offset + expected.length) return false;
+  for (let i = 0; i < expected.length; i += 1) {
+    if (bytes[offset + i] !== expected[i]) return false;
+  }
+  return true;
+}
+
+function asciiAt(bytes, offset, length) {
+  if (!bytes || bytes.length < offset + length) return '';
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    out += String.fromCharCode(bytes[offset + i]);
+  }
+  return out;
+}
+
+export async function inspectEvidenceFileSignature(file) {
+  if (!file) return null;
+  const ext = getFileExtension(file.name);
+  let buffer;
+  try {
+    const slice = typeof file.slice === 'function' ? file.slice(0, 512) : file;
+    if (typeof slice?.arrayBuffer === 'function') {
+      buffer = await slice.arrayBuffer();
+    } else if (typeof file.arrayBuffer === 'function') {
+      buffer = (await file.arrayBuffer()).slice(0, 512);
+    } else {
+      return null;
+    }
+  } catch {
+    return 'Unable to inspect uploaded file header.';
+  }
+
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length === 0) {
+    return 'Uploaded file appears empty.';
+  }
+
+  if (ext === 'pdf') {
+    if (asciiAt(bytes, 0, 5) !== '%PDF-') {
+      return 'File contents do not match a valid PDF document (%PDF- signature missing).';
+    }
+  } else if (ext === 'png') {
+    if (!bytesMatch(bytes, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+      return 'File contents do not match a valid PNG image signature.';
+    }
+  } else if (ext === 'jpg' || ext === 'jpeg') {
+    if (!bytesMatch(bytes, 0, [0xff, 0xd8, 0xff])) {
+      return 'File contents do not match a valid JPEG image signature.';
+    }
+  } else if (ext === 'webp') {
+    if (asciiAt(bytes, 0, 4) !== 'RIFF' || asciiAt(bytes, 8, 4) !== 'WEBP') {
+      return 'File contents do not match a valid WebP image container.';
+    }
+  } else if (ext === 'zip' || ext === 'docx') {
+    const isZip =
+      bytesMatch(bytes, 0, [0x50, 0x4b, 0x03, 0x04]) ||
+      bytesMatch(bytes, 0, [0x50, 0x4b, 0x05, 0x06]) ||
+      bytesMatch(bytes, 0, [0x50, 0x4b, 0x07, 0x08]);
+    if (!isZip) {
+      return `File contents do not match a valid .${ext} archive container.`;
+    }
+  } else if (ext === 'wav') {
+    if (asciiAt(bytes, 0, 4) !== 'RIFF' || asciiAt(bytes, 8, 4) !== 'WAVE') {
+      return 'File contents do not match a valid WAV audio header.';
+    }
+  } else if (ext === 'ogg') {
+    if (asciiAt(bytes, 0, 4) !== 'OggS') {
+      return 'File contents do not match a valid Ogg container signature.';
+    }
+  } else if (ext === 'mp3') {
+    const hasId3 = asciiAt(bytes, 0, 3) === 'ID3';
+    const hasFrameSync = bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0;
+    if (!hasId3 && !hasFrameSync) {
+      return 'File contents do not match a valid MP3 audio header.';
+    }
+  } else if (ext === 'mp4' || ext === 'm4a' || ext === 'mov') {
+    if (asciiAt(bytes, 4, 4) !== 'ftyp') {
+      return `File contents do not match a valid .${ext} media container (ftyp box missing).`;
+    }
+  } else if (ext === 'webm') {
+    if (!bytesMatch(bytes, 0, [0x1a, 0x45, 0xdf, 0xa3])) {
+      return 'File contents do not match a valid WebM container signature.';
+    }
+  } else if (ext === 'txt' || ext === 'md' || ext === 'markdown' || ext === 'csv') {
+    if (bytes.includes(0)) {
+      return 'Binary data detected inside plain-text evidence file.';
+    }
+    if (bytesMatch(bytes, 0, [0x4d, 0x5a]) || bytesMatch(bytes, 0, [0x7f, 0x45, 0x4c, 0x46])) {
+      return 'Executable binary payload disguised as a text file is not allowed.';
+    }
+    const sample = asciiAt(bytes, 0, Math.min(bytes.length, 256)).toLowerCase();
+    if (
+      sample.includes('<script') ||
+      sample.includes('<!doctype html') ||
+      sample.includes('<html') ||
+      sample.includes('<svg')
+    ) {
+      return 'Active HTML or script markup inside text evidence files is blocked for security.';
+    }
+  }
+
+  return null;
+}
+
+export async function validateEvidenceFileContent(file, challenge = {}) {
+  const syncError = validateEvidenceFile(file, challenge);
+  if (syncError) return syncError;
+  return inspectEvidenceFileSignature(file);
+}
+
 export function validateRubricWeights(rubric = []) {
   if (!Array.isArray(rubric) || rubric.length === 0) {
     return { valid: false, totalWeight: 0, totalPoints: 0, error: 'Rubric must include at least 1 criterion.' };

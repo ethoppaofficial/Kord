@@ -387,9 +387,13 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
       root.querySelector('#course-pause-btn')?.addEventListener('click', async () => {
         if (!enrollment) return;
         const nextStatus = enrollment.status === 'paused' ? 'active' : 'paused';
-        await setCourseEnrollmentStatus(userId, course.id, nextStatus);
-        showToast(nextStatus === 'paused' ? 'Course paused.' : 'Course resumed.', 'success');
-        rerender({ silent: true });
+        try {
+          await setCourseEnrollmentStatus(userId, course.id, nextStatus);
+          showToast(nextStatus === 'paused' ? 'Course paused.' : 'Course resumed.', 'success');
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err?.message || 'Unable to update course status.', 'error');
+        }
       });
     },
   };

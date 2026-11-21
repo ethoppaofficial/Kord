@@ -5,6 +5,16 @@ import { recomputeCourseAndSkillStatus } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import { gradeAssessmentAttempt } from '../assessmentEngine.js';
 
+function sanitizeReturnedResults(results = [], solutionsReleased = false) {
+  if (solutionsReleased) return results;
+  return (results || []).map((r) => ({
+    ...r,
+    correctIndex: null,
+    answerConfig: {},
+    explanation: null,
+  }));
+}
+
 export async function listAssessmentsForCourse(courseId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -156,6 +166,18 @@ export async function getQuizForLearner(quizId, { userId = null, includeDrafts =
   if (!includeDrafts) {
     if (course && course.publicationStatus !== 'published') return null;
     if (!course && skill && skill.publicationStatus !== 'published') return null;
+    if (course && quiz.phaseId) {
+      const phase = (course.phases || []).find((p) => p.id === quiz.phaseId);
+      if (!phase || phase.publicationStatus === 'draft' || phase.publicationStatus === 'archived') {
+        return null;
+      }
+      if (quiz.lessonId) {
+        const lesson = (phase.lessons || []).find((l) => l.id === quiz.lessonId);
+        if (!lesson || lesson.publicationStatus === 'draft' || lesson.publicationStatus === 'archived') {
+          return null;
+        }
+      }
+    }
   }
 
   let hasAccess = true;
@@ -260,6 +282,18 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
         if (!course || course.publicationStatus !== 'published') {
           throw new Error('Course assessment is not currently published.');
         }
+        if (quiz.phaseId) {
+          const phase = (course.phases || []).find((p) => p.id === quiz.phaseId);
+          if (!phase || phase.publicationStatus === 'draft' || phase.publicationStatus === 'archived') {
+            throw new Error('Module assessment is not currently published.');
+          }
+          if (quiz.lessonId) {
+            const lesson = (phase.lessons || []).find((l) => l.id === quiz.lessonId);
+            if (!lesson || lesson.publicationStatus === 'draft' || lesson.publicationStatus === 'archived') {
+              throw new Error('Lesson assessment is not currently published.');
+            }
+          }
+        }
         const enrolled = (state.courseEnrollments || []).some(
           (e) => e.userId === userId && e.courseId === quiz.courseId && (e.status === 'active' || e.status === 'completed')
         );
@@ -279,16 +313,22 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
           answerKeysByQuestionId: state.privateQuizAnswers || {},
           answersMap: existing.answers || answersMap,
         });
+        const replayReviewStatus = existing.reviewStatus || gradedReplay.reviewStatus;
+        const replayAttemptNum = existing.attemptNumber || 1;
+        const solutionsReleased =
+          replayReviewStatus !== 'pending_review' &&
+          (existing.passed || (quiz.maxAttempts != null && replayAttemptNum >= quiz.maxAttempts));
         return {
           attemptId: existing.id,
           quizId,
-          attemptNumber: existing.attemptNumber || 1,
+          attemptNumber: replayAttemptNum,
           score: existing.score,
           total: existing.total,
           percentage: existing.percentage,
           passed: existing.passed,
-          reviewStatus: existing.reviewStatus || gradedReplay.reviewStatus,
-          results: gradedReplay.results,
+          reviewStatus: replayReviewStatus,
+          solutionsReleased,
+          results: sanitizeReturnedResults(gradedReplay.results, solutionsReleased),
         };
       }
 
@@ -306,8 +346,15 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
         answersMap,
       });
 
+      if (graded.total <= 0) {
+        throw new Error('Assessment has no configured questions.');
+      }
+
       const attemptId = `qa-${Date.now()}`;
       const attemptNumber = priorAttempts.length + 1;
+      const solutionsReleased =
+        graded.reviewStatus !== 'pending_review' &&
+        (graded.passed || (quiz.maxAttempts != null && attemptNumber >= quiz.maxAttempts));
 
       updateDemoState((draft) => {
         draft.quizAttempts = draft.quizAttempts || [];
@@ -330,12 +377,12 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
         return draft;
       });
 
+      // Quizzes can establish Practising and trigger course evaluation when enrolled,
+      // but NEVER independently award Demonstrated or Verified without practical completion.
       if (graded.passed && graded.reviewStatus !== 'pending_review') {
+        await upgradeSkillLevel(userId, quiz.skillId, 'practising');
         if (quiz.courseId) {
           await recomputeCourseAndSkillStatus(userId, quiz.courseId);
-        } else {
-          const targetLevel = quiz.quizType === 'skill_check' ? 'demonstrated' : 'practising';
-          await upgradeSkillLevel(userId, quiz.skillId, targetLevel);
         }
       }
 
@@ -348,7 +395,8 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
         percentage: graded.percentage,
         passed: graded.passed,
         reviewStatus: graded.reviewStatus,
-        results: graded.results,
+        solutionsReleased,
+        results: sanitizeReturnedResults(graded.results, solutionsReleased),
       };
     },
     { cacheResult: true }
@@ -579,7 +627,11 @@ export async function adminDeleteQuestion(quizId, questionId) {
   const key = buildIdempotencyKey('admin-q-del', quizId, questionId);
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
-      const { error } = await supabase.from('questions').delete().eq('id', questionId);
+      const { error } = await supabase
+        .from('questions')
+        .delete()
+        .eq('id', questionId)
+        .eq('quiz_id', quizId);
       if (error) throw error;
       return;
     }
@@ -647,38 +699,21 @@ export async function adminListPendingAssessmentAttempts() {
 }
 
 export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, feedback }) {
-  const key = buildIdempotencyKey('admin-grade-attempt', attemptId, JSON.stringify(manualScores), feedback);
+  const cleanFeedback = String(feedback || '').trim();
+  if (!cleanFeedback) {
+    throw new Error('Grading feedback is required.');
+  }
+
+  const key = buildIdempotencyKey('admin-grade-attempt', attemptId, JSON.stringify(manualScores), cleanFeedback);
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
-      const { data: attempt } = await supabase
-        .from('quiz_attempts')
-        .select('*, quizzes(*)')
-        .eq('id', attemptId)
-        .single();
-      if (!attempt) throw new Error('Attempt not found');
-      const manualSum = Object.values(manualScores || {}).reduce((s, v) => s + Number(v || 0), 0);
-      const newScore = Number(attempt.score || 0) + manualSum;
-      const pct = attempt.total > 0 ? Math.round((newScore / attempt.total) * 100) : 0;
-      const passed = pct >= Number(attempt.quizzes?.pass_percent || 70);
-      const { error } = await supabase
-        .from('quiz_attempts')
-        .update({
-          score: newScore,
-          percentage: pct,
-          passed,
-          review_status: 'reviewed',
-          manual_scores: manualScores,
-          manual_feedback: feedback,
-        })
-        .eq('id', attemptId);
-      if (error) throw error;
-      if (passed && attempt.quizzes?.course_id) {
-        await supabase.rpc('evaluate_course_and_skill_progression', {
-          p_user_id: attempt.user_id,
-          p_course_id: attempt.quizzes.course_id,
-        });
-      }
-      return;
+      const { data, error } = await supabase.rpc('admin_grade_attempt', {
+        p_attempt_id: attemptId,
+        p_manual_scores: manualScores || {},
+        p_feedback: cleanFeedback,
+      });
+      if (error) throw new Error(error.message);
+      return data;
     }
 
     let targetUserId = null;
@@ -708,10 +743,16 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       });
 
       let manualSum = 0;
+      const cleanManualScores = {};
       (quiz.questions || []).forEach((q) => {
-        if (manualScores && manualScores[q.id] !== undefined) {
-          const capped = Math.min(Number(q.marks || 1), Math.max(0, Number(manualScores[q.id]) || 0));
-          manualSum += capped;
+        if (['short_answer', 'long_form', 'practical_submission'].includes(q.questionType) && manualScores && manualScores[q.id] !== undefined) {
+          const rawVal = Number(manualScores[q.id]);
+          const maxMarks = Math.max(1, Number(q.marks || 1));
+          if (!Number.isFinite(rawVal) || rawVal < 0 || rawVal > maxMarks) {
+            throw new Error(`Manual score for question "${q.prompt}" must be between 0 and ${maxMarks}.`);
+          }
+          cleanManualScores[q.id] = rawVal;
+          manualSum += rawVal;
         }
       });
 
@@ -724,8 +765,8 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       attempt.percentage = finalPct;
       attempt.passed = passed;
       attempt.reviewStatus = 'reviewed';
-      attempt.manualScores = manualScores;
-      attempt.manualFeedback = String(feedback || '').trim();
+      attempt.manualScores = cleanManualScores;
+      attempt.manualFeedback = cleanFeedback;
       attempt.reviewedBy = reviewerId;
       attempt.reviewedAt = new Date().toISOString();
 
@@ -737,10 +778,11 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
     });
 
     if (didPass && targetUserId) {
+      if (targetSkillId) {
+        await upgradeSkillLevel(targetUserId, targetSkillId, 'practising');
+      }
       if (targetCourseId) {
         await recomputeCourseAndSkillStatus(targetUserId, targetCourseId);
-      } else if (targetSkillId) {
-        await upgradeSkillLevel(targetUserId, targetSkillId, 'demonstrated');
       }
     }
   });

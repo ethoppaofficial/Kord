@@ -274,12 +274,14 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('courses')
-      .select('*, skills(id, slug, title, category), course_skills(skill_id), phases(*, lessons(*), activities(*))')
+      .select('*, skills(id, slug, title, category, category_id), course_skills(skill_id), phases(*, lessons(*), activities(*))')
       .order('title');
     if (error) throw error;
     return (data || [])
       .map((c) => ({
         ...mapFullCourse(c, { includeDrafts }),
+        categoryId: c.skills?.category_id || null,
+        categoryName: c.skills?.category || '',
         skill: c.skills || null,
       }))
       .filter((c) => includeDrafts || c.publicationStatus === 'published');
@@ -289,10 +291,15 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
   const skillById = new Map((state.skills || []).map((s) => [s.id, s]));
   return (state.courses || [])
     .filter((c) => includeDrafts || c.publicationStatus === 'published')
-    .map((c) => ({
-      ...normalizeCourseForRead(c, { includeDrafts }),
-      skill: skillById.get(c.skillId) || null,
-    }));
+    .map((c) => {
+      const skill = skillById.get(c.skillId) || null;
+      return {
+        ...normalizeCourseForRead(c, { includeDrafts }),
+        categoryId: skill?.categoryId || c.categoryId || null,
+        categoryName: skill?.category || '',
+        skill,
+      };
+    });
 }
 
 export async function listAllChallenges() {
@@ -320,6 +327,8 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
     ]);
     return {
       ...course,
+      categoryId: data.skills?.category_id || null,
+      categoryName: data.skills?.category || '',
       skill: data.skills || null,
       versions: (data.course_versions || [])
         .slice()
@@ -368,6 +377,8 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
 
   return {
     ...normalized,
+    categoryId: skill?.categoryId || normalized.categoryId || null,
+    categoryName: skill?.category || '',
     skill,
     associatedSkills,
     versions,
@@ -1141,22 +1152,11 @@ export async function adminReorderLessons(courseId, phaseId, orderedLessonIds) {
   const key = buildIdempotencyKey('admin-lesson-reorder', courseId, phaseId, orderedLessonIds.join(','), Date.now());
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
-      for (let i = 0; i < orderedLessonIds.length; i += 1) {
-        const { error } = await supabase
-          .from('lessons')
-          .update({ position: i + 1000 })
-          .eq('id', orderedLessonIds[i])
-          .eq('phase_id', phaseId);
-        if (error) throw error;
-      }
-      for (let i = 0; i < orderedLessonIds.length; i += 1) {
-        const { error } = await supabase
-          .from('lessons')
-          .update({ position: i + 1 })
-          .eq('id', orderedLessonIds[i])
-          .eq('phase_id', phaseId);
-        if (error) throw error;
-      }
+      const { error } = await supabase.rpc('admin_reorder_lessons', {
+        p_phase_id: phaseId,
+        p_lesson_ids: orderedLessonIds,
+      });
+      if (error) throw new Error(error.message);
       return;
     }
 

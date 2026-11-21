@@ -8,11 +8,17 @@ import {
 import { listSkills, listAllCourses } from '../../lib/repositories/contentRepository.js';
 import { ASSESSMENT_TYPES, QUESTION_TYPES } from '../../lib/constants.js';
 import { escapeHtml } from '../../lib/formatters.js';
+import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { showToast } from '../../components/Toast.js';
 
 let selectedQuizId = null;
 let selectedQuestionType = 'multiple_choice';
+
+registerSessionCleanup(() => {
+  selectedQuizId = null;
+  selectedQuestionType = 'multiple_choice';
+});
 
 export async function renderAdminQuizzesPage({ currentPath, rerender }) {
   const [quizzes, skills, courses] = await Promise.all([

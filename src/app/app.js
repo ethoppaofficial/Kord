@@ -1,12 +1,18 @@
 import { matchRoute } from './router.js';
-import { getCurrentSession, signOut } from '../lib/repositories/authRepository.js';
+import * as defaultAuthRepository from '../lib/repositories/authRepository.js';
+import { runSessionCleanup } from '../lib/sessionLifecycle.js';
 import { renderAppLayout } from '../components/AppLayout.js';
 import { renderErrorState, renderLoadingState } from '../components/Common.js';
 import { showToast } from '../components/Toast.js';
 import { closeModal } from '../components/Modal.js';
 
 import { renderLandingPage } from '../pages/public/LandingPage.js';
-import { renderLoginPage, renderSignupPage, renderForgotPasswordPage } from '../pages/public/AuthPages.js';
+import {
+  renderLoginPage,
+  renderSignupPage,
+  renderForgotPasswordPage,
+  renderResetPasswordPage,
+} from '../pages/public/AuthPages.js';
 import { renderDashboardPage } from '../pages/learner/DashboardPage.js';
 import { renderExplorePage } from '../pages/learner/ExplorePage.js';
 import { renderSkillDetailPage } from '../pages/learner/SkillDetailPage.js';
@@ -28,6 +34,7 @@ import { renderAdminOpportunitiesPage } from '../pages/admin/AdminOpportunitiesP
 // Strict Access Policies:
 // - 'public': '/' landing page (authenticated admins automatically stay in /admin)
 // - 'auth_page': '/login', '/signup', '/forgot-password'
+// - 'recovery': '/reset-password' (accessible during PASSWORD_RECOVERY or active session)
 // - 'learner': strictly authenticated learner only (guests redirected to /login; admins isolated)
 // - 'admin': strictly authenticated admin only (guests redirected to /login; learners blocked)
 const ROUTES = [
@@ -35,6 +42,7 @@ const ROUTES = [
   { pattern: '/login', access: 'auth_page', render: renderLoginPage },
   { pattern: '/signup', access: 'auth_page', render: renderSignupPage },
   { pattern: '/forgot-password', access: 'auth_page', render: renderForgotPasswordPage },
+  { pattern: '/reset-password', access: 'recovery', render: renderResetPasswordPage },
 
   { pattern: '/explore', access: 'learner', render: renderExplorePage },
   { pattern: '/skills/:slug', access: 'learner', render: renderSkillDetailPage },
@@ -58,56 +66,225 @@ const ROUTES = [
   { pattern: '/admin/opportunities', access: 'admin', render: renderAdminOpportunitiesPage },
 ];
 
-export function mountApp(rootEl) {
+export function mountApp(rootEl, options = {}) {
+  const auth = options.auth || defaultAuthRepository;
+
   let renderSeq = 0;
+  let destroyed = false;
+  let localSignOutInProgress = false;
+  let lastKnownAuth = {
+    initialized: false,
+    userId: null,
+    role: null,
+  };
+
+  function getHomePathForRole(role) {
+    return role === 'admin' ? '/admin' : '/dashboard';
+  }
 
   function navigate(path) {
+    if (destroyed) return Promise.resolve();
     closeModal();
     if (window.location.pathname !== path) {
       window.history.pushState({}, '', path);
     }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    renderCurrentRoute({ animateRoute: true });
+    if (typeof window.scrollTo === 'function') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    return renderCurrentRoute({ animateRoute: true });
+  }
+
+  async function handleAuthChange({ event, session: incomingSession, crossTab = true } = {}) {
+    if (destroyed || localSignOutInProgress) return;
+
+    if (event === 'PASSWORD_RECOVERY') {
+      lastKnownAuth = {
+        initialized: true,
+        userId: incomingSession?.user?.id || null,
+        role: incomingSession?.user?.role || null,
+      };
+      closeModal();
+      window.history.replaceState({}, '', '/reset-password');
+      await renderCurrentRoute({ animateRoute: true });
+      return;
+    }
+
+    if (!lastKnownAuth.initialized) {
+      return;
+    }
+
+    const prevUserId = lastKnownAuth.userId;
+    const prevRole = lastKnownAuth.role;
+    const nextUserId = incomingSession?.user?.id || null;
+    const nextRole = incomingSession?.user?.role || null;
+
+    if (prevUserId && !nextUserId) {
+      lastKnownAuth = { initialized: true, userId: null, role: null };
+      closeModal();
+      runSessionCleanup();
+      rootEl.innerHTML = '';
+      if (crossTab) {
+        showToast('Your session ended in another tab. Please sign in again.', 'info');
+      }
+      if (window.location.pathname !== '/login') {
+        window.history.replaceState({}, '', '/login');
+      }
+      await renderCurrentRoute({ animateRoute: true });
+      return;
+    }
+
+    if (prevUserId && nextUserId && prevUserId !== nextUserId) {
+      lastKnownAuth = { initialized: true, userId: nextUserId, role: nextRole };
+      closeModal();
+      runSessionCleanup();
+      rootEl.innerHTML = '';
+      showToast(
+        'Active account changed in another tab. Updating view to match the current session.',
+        'info'
+      );
+      const dest = getHomePathForRole(nextRole);
+      window.history.replaceState({}, '', dest);
+      await renderCurrentRoute({ animateRoute: true });
+      return;
+    }
+
+    if (prevUserId && prevUserId === nextUserId && prevRole !== nextRole) {
+      lastKnownAuth = { initialized: true, userId: nextUserId, role: nextRole };
+      closeModal();
+      runSessionCleanup();
+      rootEl.innerHTML = '';
+      showToast('Account role updated. Redirecting to your authorized workspace.', 'info');
+      const dest = getHomePathForRole(nextRole);
+      window.history.replaceState({}, '', dest);
+      await renderCurrentRoute({ animateRoute: true });
+      return;
+    }
+
+    if (!prevUserId && nextUserId) {
+      lastKnownAuth = { initialized: true, userId: nextUserId, role: nextRole };
+      closeModal();
+      runSessionCleanup();
+      const pathname = window.location.pathname || '/';
+      const matched = matchRoute(ROUTES, pathname);
+      if (
+        crossTab &&
+        (matched?.route.access === 'auth_page' ||
+          (matched?.route.access === 'public' && nextRole === 'admin'))
+      ) {
+        showToast('Signed in from another tab. Opening your workspace.', 'info');
+        const dest = getHomePathForRole(nextRole);
+        window.history.replaceState({}, '', dest);
+        await renderCurrentRoute({ animateRoute: true });
+      } else if (crossTab && matched?.route.access === 'public') {
+        await renderCurrentRoute({ silent: true });
+      }
+    }
+  }
+
+  async function verifyActiveSession() {
+    if (destroyed || localSignOutInProgress || !lastKnownAuth.initialized) return;
+    let freshSession = null;
+    try {
+      freshSession = await auth.getCurrentSession();
+    } catch {
+      freshSession = null;
+    }
+    if (destroyed || localSignOutInProgress) return;
+    const freshUserId = freshSession?.user?.id || null;
+    const freshRole = freshSession?.user?.role || null;
+    if (freshUserId !== lastKnownAuth.userId || freshRole !== lastKnownAuth.role) {
+      await handleAuthChange({
+        event: freshUserId ? 'SIGNED_IN' : 'SIGNED_OUT',
+        session: freshSession,
+        crossTab: true,
+      });
+    }
   }
 
   async function renderCurrentRoute({ silent = false, animateRoute = false } = {}) {
+    if (destroyed) return;
     const seq = ++renderSeq;
     const pathname = window.location.pathname || '/';
     const matched = matchRoute(ROUTES, pathname);
 
     let session = null;
     try {
-      session = await getCurrentSession();
+      session = await auth.getCurrentSession();
     } catch {
       session = null;
     }
 
-    if (seq !== renderSeq) return;
+    if (seq !== renderSeq || destroyed) return;
 
-    const role = session?.user?.role || null;
+    const resolvedUserId = session?.user?.id || null;
+    const resolvedRole = session?.user?.role || null;
+
+    if (lastKnownAuth.initialized) {
+      if (lastKnownAuth.userId && !resolvedUserId) {
+        lastKnownAuth = { initialized: true, userId: null, role: null };
+        closeModal();
+        runSessionCleanup();
+        rootEl.innerHTML = '';
+        if (!localSignOutInProgress) {
+          showToast('Your session ended. Please sign in again.', 'info');
+        }
+        if (pathname !== '/login') {
+          window.history.replaceState({}, '', '/login');
+          return renderCurrentRoute({ animateRoute: true });
+        }
+      } else if (
+        lastKnownAuth.userId &&
+        resolvedUserId &&
+        (lastKnownAuth.userId !== resolvedUserId || lastKnownAuth.role !== resolvedRole)
+      ) {
+        lastKnownAuth = { initialized: true, userId: resolvedUserId, role: resolvedRole };
+        closeModal();
+        runSessionCleanup();
+        rootEl.innerHTML = '';
+        showToast(
+          'Active account changed. Updating view to match the current session.',
+          'info'
+        );
+        const dest = getHomePathForRole(resolvedRole);
+        window.history.replaceState({}, '', dest);
+        return renderCurrentRoute({ animateRoute: true });
+      }
+    }
+
+    lastKnownAuth = {
+      initialized: true,
+      userId: resolvedUserId,
+      role: resolvedRole,
+    };
+
+    const role = resolvedRole;
 
     if (matched) {
-      // 1. Authenticated user hitting login/signup/forgot-password goes straight to their home
       if (matched.route.access === 'auth_page' && session) {
-        const dest = role === 'admin' ? '/admin' : '/dashboard';
+        if (auth.isPasswordRecoveryMode?.()) {
+          window.history.replaceState({}, '', '/reset-password');
+          return renderCurrentRoute({ animateRoute: true });
+        }
+        const dest = getHomePathForRole(role);
         window.history.replaceState({}, '', dest);
         return renderCurrentRoute({ animateRoute: true });
       }
 
-      // 2. Keep signed-in Admin strictly inside the /admin workspace even from '/'
+      // Keep signed-in Admin strictly inside the /admin workspace even from '/'
       if (matched.route.access === 'public' && role === 'admin') {
         window.history.replaceState({}, '', '/admin');
         return renderCurrentRoute({ animateRoute: true });
       }
 
-      // 3. Guest user hitting ANY protected route (Explore, Opportunities, Skills, Dashboard, Admin)
+      // Guest user hitting ANY protected route (Explore, Opportunities, Skills, Dashboard, Admin)
       if ((matched.route.access === 'learner' || matched.route.access === 'admin') && !session) {
+        rootEl.innerHTML = '';
         showToast('Please sign in or create an account to continue.', 'info');
         window.history.replaceState({}, '', '/login');
         return renderCurrentRoute({ animateRoute: true });
       }
 
-      // 4. Learner attempting to access Admin route
+      // Learner attempting to access Admin route
       if (matched.route.access === 'admin' && role !== 'admin') {
         rootEl.innerHTML = renderAppLayout({
           session,
@@ -123,7 +300,7 @@ export function mountApp(rootEl) {
         return;
       }
 
-      // 5. Admin attempting to access Learner-only routes (Explore, Opportunities, Dashboard, etc.)
+      // Admin attempting to access Learner-only routes (Explore, Opportunities, Dashboard, etc.)
       if (matched.route.access === 'learner' && role === 'admin') {
         rootEl.innerHTML = renderAppLayout({
           session,
@@ -139,7 +316,7 @@ export function mountApp(rootEl) {
         return;
       }
     } else if (!session) {
-      // Unknown route for guest -> send to login
+      rootEl.innerHTML = '';
       window.history.replaceState({}, '', '/login');
       return renderCurrentRoute({ animateRoute: true });
     }
@@ -168,13 +345,14 @@ export function mountApp(rootEl) {
         view = await matched.route.render({
           params: matched.params,
           session,
+          auth,
           currentPath: matched.path,
           navigate,
           rerender: (opts = { silent: true }) => renderCurrentRoute(opts),
         });
       }
 
-      if (seq !== renderSeq) return;
+      if (seq !== renderSeq || destroyed) return;
 
       const wrappedContent = animateRoute
         ? `<div class="view-enter">${view.html}</div>`
@@ -191,7 +369,7 @@ export function mountApp(rootEl) {
         view.bind(rootEl);
       }
     } catch (err) {
-      if (seq !== renderSeq) return;
+      if (seq !== renderSeq || destroyed) return;
       rootEl.innerHTML = renderAppLayout({
         session,
         currentPath: pathname,
@@ -208,15 +386,27 @@ export function mountApp(rootEl) {
 
   function bindShellEvents() {
     rootEl.querySelector('[data-sign-out]')?.addEventListener('click', async () => {
-      await signOut();
-      showToast('Signed out.', 'info');
-      navigate('/login');
+      if (localSignOutInProgress || destroyed) return;
+      localSignOutInProgress = true;
+      try {
+        closeModal();
+        rootEl.innerHTML = '';
+        runSessionCleanup();
+        await auth.signOut();
+        lastKnownAuth = { initialized: true, userId: null, role: null };
+        showToast('Signed out.', 'info');
+        window.history.replaceState({}, '', '/login');
+        await renderCurrentRoute({ animateRoute: true });
+      } finally {
+        localSignOutInProgress = false;
+      }
     });
   }
 
-  document.addEventListener('click', (e) => {
-    const link = e.target.closest('a[data-link]');
+  const onDocumentClick = (e) => {
+    const link = e.target?.closest?.('a[data-link]');
     if (!link) return;
+    if (!rootEl.contains(link) && !link.closest?.('.modal-backdrop')) return;
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     const href = link.getAttribute('href');
     if (!href || href.startsWith('http')) return;
@@ -225,12 +415,49 @@ export function mountApp(rootEl) {
       closeModal();
     }
     navigate(href);
-  });
+  };
 
-  window.addEventListener('popstate', () => {
+  const onPopState = () => {
     closeModal();
     renderCurrentRoute({ animateRoute: true });
-  });
+  };
 
-  renderCurrentRoute({ animateRoute: true });
+  const onWindowFocus = () => {
+    verifyActiveSession();
+  };
+
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      verifyActiveSession();
+    }
+  };
+
+  document.addEventListener('click', onDocumentClick);
+  window.addEventListener('popstate', onPopState);
+  window.addEventListener('focus', onWindowFocus);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+
+  const unsubscribeAuth =
+    typeof auth.subscribeAuthChanges === 'function'
+      ? auth.subscribeAuthChanges((payload) => {
+          handleAuthChange(payload);
+        })
+      : () => {};
+
+  const ready = renderCurrentRoute({ animateRoute: true });
+
+  return {
+    ready,
+    navigate,
+    verifyActiveSession,
+    renderCurrentRoute,
+    destroy() {
+      destroyed = true;
+      unsubscribeAuth();
+      document.removeEventListener('click', onDocumentClick);
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('focus', onWindowFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    },
+  };
 }

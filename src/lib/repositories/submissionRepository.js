@@ -3,7 +3,11 @@ import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
 import { recomputeCourseAndSkillStatus } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
-import { validateEvidenceFile } from '../validators.js';
+import {
+  validateEvidenceFileContent,
+  sanitizeEvidenceFilename,
+  isValidUrl,
+} from '../validators.js';
 
 export async function getUserSubmissions(userId, challengeId = null) {
   if (!isDemoMode && supabase) {
@@ -49,8 +53,14 @@ export async function submitChallengeEvidence({
   if (!hasAnyDeliverable) {
     throw new Error('Provide at least one permitted deliverable (URL, file upload, or written response).');
   }
+  if (evidenceUrl && evidenceUrl.trim() && !isValidUrl(evidenceUrl)) {
+    throw new Error('Evidence URL must begin with https:// or http://.');
+  }
+  if (repoUrl && repoUrl.trim() && !isValidUrl(repoUrl)) {
+    throw new Error('Repository URL must begin with https:// or http://.');
+  }
   if (file) {
-    const fileErr = validateEvidenceFile(file, challenge || {});
+    const fileErr = await validateEvidenceFileContent(file, challenge || {});
     if (fileErr) throw new Error(fileErr);
   }
 
@@ -74,33 +84,32 @@ export async function submitChallengeEvidence({
         let filePath = null;
         let fileName = null;
         if (file) {
-          fileName = file.name;
-          filePath = `${userId}/${challengeId}/${Date.now()}-${file.name}`;
+          fileName = sanitizeEvidenceFilename(file.name);
+          filePath = `${userId}/${challengeId}/${Date.now()}-${fileName}`;
           const { error: uploadErr } = await supabase.storage.from('evidence').upload(filePath, file);
           if (uploadErr) throw uploadErr;
         }
 
-        const { data, error } = await supabase
-          .from('submissions')
-          .upsert(
-            {
-              user_id: userId,
-              challenge_id: challengeId,
-              course_id: courseId || null,
-              evidence_url: evidenceUrl || null,
-              repo_url: repoUrl || null,
-              file_path: filePath,
-              file_name: fileName,
-              submission_text: submissionText || '',
-              explanation: cleanExplanation,
-              rubric_max: rubricMax || 20,
-              idempotency_key: effectiveKey,
-            },
-            { onConflict: 'user_id,idempotency_key' }
-          )
-          .select()
-          .single();
-        if (error) throw error;
+        const { data, error } = await supabase.rpc('submit_challenge_evidence', {
+          p_challenge_id: challengeId,
+          p_evidence_url: evidenceUrl?.trim() || null,
+          p_repo_url: repoUrl?.trim() || null,
+          p_file_path: filePath,
+          p_file_name: fileName,
+          p_submission_text: String(submissionText || '').trim(),
+          p_explanation: cleanExplanation,
+          p_idempotency_key: effectiveKey,
+        });
+        if (error) {
+          if (filePath) {
+            try {
+              await supabase.storage.from('evidence').remove([filePath]);
+            } catch {
+              // Ignore secondary cleanup failure
+            }
+          }
+          throw new Error(error.message);
+        }
         return mapSubmission(data);
       }
 
@@ -124,6 +133,12 @@ export async function submitChallengeEvidence({
         if (!course || course.publicationStatus !== 'published') {
           throw new Error('Course practical challenge is not currently published.');
         }
+        if (resolvedChallenge.phaseId) {
+          const phase = (course.phases || []).find((p) => p.id === resolvedChallenge.phaseId);
+          if (!phase || phase.publicationStatus === 'draft' || phase.publicationStatus === 'archived') {
+            throw new Error('Module practical challenge is not currently published.');
+          }
+        }
         const enrolled = (state.courseEnrollments || []).some(
           (e) => e.userId === userId && e.courseId === targetCourseId && (e.status === 'active' || e.status === 'completed')
         );
@@ -133,11 +148,12 @@ export async function submitChallengeEvidence({
       }
 
       if (file) {
-        const fileErr = validateEvidenceFile(file, resolvedChallenge);
+        const fileErr = await validateEvidenceFileContent(file, resolvedChallenge);
         if (fileErr) throw new Error(fileErr);
       }
 
-      const filePath = file ? `${userId}/${challengeId}/${file.name}` : null;
+      const safeFileName = file ? sanitizeEvidenceFilename(file.name) : null;
+      const filePath = file ? `${userId}/${challengeId}/${safeFileName}` : null;
       const newSub = {
         id: `sub-${Date.now()}`,
         userId,
@@ -146,9 +162,9 @@ export async function submitChallengeEvidence({
         evidenceUrl: evidenceUrl?.trim() || null,
         repoUrl: repoUrl?.trim() || null,
         filePath,
-        fileName: file ? file.name : null,
+        fileName: safeFileName,
         submissionText: String(submissionText || '').trim(),
-        explanation: explanation.trim(),
+        explanation: cleanExplanation,
         status: 'pending',
         rubricScores: {},
         rubricTotal: null,
@@ -227,7 +243,12 @@ export async function adminReviewSubmission({
   rubricMax,
   feedback,
 }) {
-  const key = buildIdempotencyKey('admin-review', submissionId, status, rubricTotal, feedback);
+  const cleanFeedback = String(feedback || '').trim();
+  if (!cleanFeedback) {
+    throw new Error('Reviewer feedback is required.');
+  }
+
+  const key = buildIdempotencyKey('admin-review', submissionId, status, rubricTotal, cleanFeedback);
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
       const { data, error } = await supabase.rpc('review_submission', {
@@ -236,15 +257,16 @@ export async function adminReviewSubmission({
         p_rubric_scores: rubricScores,
         p_rubric_total: rubricTotal,
         p_rubric_max: rubricMax,
-        p_feedback: feedback,
+        p_feedback: cleanFeedback,
       });
-      if (error) throw error;
+      if (error) throw new Error(error.message);
       return mapSubmission(data);
     }
 
     let targetUserId = null;
     let targetSkillId = null;
     let targetCourseId = null;
+    let hasPublishedCoursesForSkill = false;
 
     updateDemoState((draft) => {
       if (!['approved', 'needs_revision'].includes(status)) {
@@ -288,25 +310,41 @@ export async function adminReviewSubmission({
         Object.assign(cleanScores, rubricScores || {});
       }
 
+      const passingScore = Number(challenge?.passingScore || 0);
+      if (status === 'approved' && validatedTotal < passingScore) {
+        throw new Error(`Approved submissions must meet or exceed the passing score (${passingScore}).`);
+      }
+
       sub.status = status;
       sub.rubricScores = cleanScores;
       sub.rubricTotal = validatedTotal;
       sub.rubricMax = validatedMax;
-      sub.feedback = String(feedback || '').trim();
+      sub.feedback = cleanFeedback;
       sub.reviewedBy = reviewerId;
       sub.reviewedAt = new Date().toISOString();
 
       targetUserId = sub.userId;
       targetSkillId = challenge?.skillId || null;
       targetCourseId = sub.courseId || challenge?.courseId || null;
+      if (targetSkillId) {
+        hasPublishedCoursesForSkill = (draft.courses || []).some(
+          (c) =>
+            c.publicationStatus === 'published' &&
+            (c.skillId === targetSkillId || (c.associatedSkillIds || []).includes(targetSkillId))
+        );
+      }
       return draft;
     });
 
-    if (status === 'approved' && targetUserId) {
+    if (targetUserId) {
       if (targetCourseId) {
         await recomputeCourseAndSkillStatus(targetUserId, targetCourseId);
-      } else if (targetSkillId) {
-        await upgradeSkillLevel(targetUserId, targetSkillId, 'demonstrated');
+      } else if (status === 'approved' && targetSkillId) {
+        await upgradeSkillLevel(
+          targetUserId,
+          targetSkillId,
+          hasPublishedCoursesForSkill ? 'demonstrated' : 'verified'
+        );
       }
     }
   });

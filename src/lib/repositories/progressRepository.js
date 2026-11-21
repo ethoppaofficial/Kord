@@ -38,37 +38,22 @@ export async function enrollInCourse(userId, courseId) {
   const key = buildIdempotencyKey('course-enroll', userId, courseId);
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
-      const { data: course } = await supabase
-        .from('courses')
-        .select('id, skill_id, publication_status')
-        .eq('id', courseId)
-        .single();
-      if (!course || course.publication_status !== 'published') {
-        throw new Error('This course is not available for enrollment.');
-      }
-      const { data, error } = await supabase
-        .from('course_enrollments')
-        .upsert(
-          {
-            user_id: userId,
-            course_id: courseId,
-            skill_id: course.skill_id,
-            status: 'active',
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_id,course_id' }
-        )
-        .select()
-        .single();
-      if (error) throw error;
-      if (course?.skill_id) {
-        await supabase.rpc('declare_user_skill', { p_skill_id: course.skill_id });
-      }
+      const { data, error } = await supabase.rpc('enroll_in_course', {
+        p_course_id: courseId,
+      });
+      if (error) throw new Error(error.message);
       return data;
     }
 
     let skillIds = [];
     updateDemoState((draft) => {
+      if (draft.currentUserId && draft.currentUserId !== userId) {
+        throw new Error('You cannot enroll another learner.');
+      }
+      const actor = (draft.users || []).find((u) => u.id === userId);
+      if (actor?.role === 'admin') {
+        throw new Error('Learner authentication required.');
+      }
       draft.courseEnrollments = draft.courseEnrollments || [];
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course || course.publicationStatus !== 'published') {
@@ -108,23 +93,33 @@ export async function enrollInCourse(userId, courseId) {
 export async function setCourseEnrollmentStatus(userId, courseId, status) {
   const key = buildIdempotencyKey('course-enroll-status', userId, courseId, status);
   return runIdempotent(key, async () => {
+    if (!['active', 'paused'].includes(status)) {
+      throw new Error('Enrollment status can only be active or paused.');
+    }
+
     if (!isDemoMode && supabase) {
-      const { data, error } = await supabase
-        .from('course_enrollments')
-        .update({ status, updated_at: new Date().toISOString() })
-        .eq('user_id', userId)
-        .eq('course_id', courseId)
-        .select()
-        .single();
-      if (error) throw error;
+      const { data, error } = await supabase.rpc('set_course_enrollment_status', {
+        p_course_id: courseId,
+        p_status: status,
+      });
+      if (error) throw new Error(error.message);
       return data;
     }
 
     return updateDemoState((draft) => {
+      if (draft.currentUserId && draft.currentUserId !== userId) {
+        throw new Error('You cannot alter another learner’s enrollment.');
+      }
       const existing = (draft.courseEnrollments || []).find(
         (e) => e.userId === userId && e.courseId === courseId
       );
-      if (existing && existing.status !== status) {
+      if (!existing) {
+        throw new Error('Course enrollment not found.');
+      }
+      if (existing.status === 'completed') {
+        throw new Error('Completed courses cannot be paused or reverted.');
+      }
+      if (existing.status !== status) {
         existing.status = status;
         existing.updatedAt = new Date().toISOString();
       }
@@ -188,21 +183,28 @@ export async function saveLessonNotes(userId, lessonId, courseId, notes) {
   const key = buildIdempotencyKey('lesson-notes', userId, lessonId, notes);
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
-      const { error } = await supabase.from('lesson_progress').upsert(
-        {
-          user_id: userId,
-          lesson_id: lessonId,
-          course_id: courseId,
-          notes,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id,lesson_id' }
-      );
-      if (error) throw error;
-      return;
+      const { data, error } = await supabase.rpc('save_lesson_notes', {
+        p_lesson_id: lessonId,
+        p_notes: String(notes || ''),
+      });
+      if (error) throw new Error(error.message);
+      return data;
     }
 
     updateDemoState((draft) => {
+      if (draft.currentUserId && draft.currentUserId !== userId) {
+        throw new Error('You cannot edit another learner’s notes.');
+      }
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      if (!course || course.publicationStatus !== 'published') {
+        throw new Error('Published course not found.');
+      }
+      const enrolled = (draft.courseEnrollments || []).some(
+        (e) => e.userId === userId && e.courseId === courseId && ['active', 'completed'].includes(e.status)
+      );
+      if (!enrolled) {
+        throw new Error('Active course enrollment required to save lesson notes.');
+      }
       draft.lessonProgress = draft.lessonProgress || [];
       const now = new Date().toISOString();
       const existing = draft.lessonProgress.find(
@@ -236,34 +238,44 @@ export async function toggleLessonComplete(userId, courseId, lessonId, estMinute
   return runIdempotent(key, async () => {
     const now = new Date().toISOString();
     if (!isDemoMode && supabase) {
-      const { error } = await supabase.from('lesson_progress').upsert(
-        {
-          user_id: userId,
-          course_id: courseId,
-          lesson_id: lessonId,
-          completed,
-          minutes_spent: completed ? estMinutes : null,
-          completed_at: completed ? now : null,
-          updated_at: now,
-        },
-        { onConflict: 'user_id,lesson_id' }
-      );
-      if (error) throw error;
-      await supabase.rpc('evaluate_course_and_skill_progression', {
-        p_user_id: userId,
-        p_course_id: courseId,
+      const { data, error } = await supabase.rpc('set_lesson_completion', {
+        p_lesson_id: lessonId,
+        p_completed: Boolean(completed),
       });
-      return;
+      if (error) throw new Error(error.message);
+      return data;
     }
 
     updateDemoState((draft) => {
+      if (draft.currentUserId && draft.currentUserId !== userId) {
+        throw new Error('You cannot modify another learner’s progress.');
+      }
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      if (!course || course.publicationStatus !== 'published') {
+        throw new Error('Published course not found.');
+      }
+      const lesson = (course.phases || [])
+        .filter((p) => p.publicationStatus !== 'draft' && p.publicationStatus !== 'archived')
+        .flatMap((p) => p.lessons || [])
+        .find((l) => l.id === lessonId && l.publicationStatus !== 'draft' && l.publicationStatus !== 'archived');
+      if (!lesson) {
+        throw new Error('Published lesson not found.');
+      }
+      const enrolled = (draft.courseEnrollments || []).some(
+        (e) => e.userId === userId && e.courseId === courseId && ['active', 'completed'].includes(e.status)
+      );
+      if (!enrolled) {
+        throw new Error('Active course enrollment required to complete lessons.');
+      }
+      const derivedMinutes = Math.max(1, Number(lesson.estMinutes || estMinutes || 25));
+
       draft.lessonProgress = draft.lessonProgress || [];
       const existing = draft.lessonProgress.find(
         (lp) => lp.userId === userId && lp.lessonId === lessonId
       );
       if (existing) {
         existing.completed = completed;
-        existing.minutesSpent = completed ? estMinutes : null;
+        existing.minutesSpent = completed ? derivedMinutes : null;
         existing.completedAt = completed ? (existing.completedAt || now) : null;
         existing.updatedAt = now;
       } else {
@@ -274,7 +286,7 @@ export async function toggleLessonComplete(userId, courseId, lessonId, estMinute
           lessonId,
           notes: '',
           completed,
-          minutesSpent: completed ? estMinutes : null,
+          minutesSpent: completed ? derivedMinutes : null,
           completedAt: completed ? now : null,
           updatedAt: now,
         });
@@ -304,27 +316,38 @@ export async function togglePhaseActivityComplete(
   return runIdempotent(key, async () => {
     const now = new Date().toISOString();
     if (!isDemoMode && supabase) {
-      const payload = {
-        user_id: userId,
-        activity_id: activityId,
-        completed,
-        minutes_spent: completed ? estMinutes : null,
-        completed_at: completed ? now : null,
-        updated_at: now,
-      };
-      if (notes !== undefined) payload.notes = notes;
-      const { error } = await supabase
-        .from('activity_progress')
-        .upsert(payload, { onConflict: 'user_id,activity_id' });
-      if (error) throw error;
-      await supabase.rpc('evaluate_course_and_skill_progression', {
-        p_user_id: userId,
-        p_course_id: courseId,
+      const { data, error } = await supabase.rpc('set_activity_completion', {
+        p_activity_id: activityId,
+        p_completed: Boolean(completed),
+        p_notes: notes === undefined ? null : String(notes),
       });
-      return;
+      if (error) throw new Error(error.message);
+      return data;
     }
 
     updateDemoState((draft) => {
+      if (draft.currentUserId && draft.currentUserId !== userId) {
+        throw new Error('You cannot modify another learner’s activity progress.');
+      }
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      if (!course || course.publicationStatus !== 'published') {
+        throw new Error('Published course not found.');
+      }
+      const activity = (course.phases || [])
+        .filter((p) => p.publicationStatus !== 'draft' && p.publicationStatus !== 'archived')
+        .flatMap((p) => p.activities || [])
+        .find((a) => a.id === activityId);
+      if (!activity) {
+        throw new Error('Published phase activity not found.');
+      }
+      const enrolled = (draft.courseEnrollments || []).some(
+        (e) => e.userId === userId && e.courseId === courseId && ['active', 'completed'].includes(e.status)
+      );
+      if (!enrolled) {
+        throw new Error('Active course enrollment required to track activities.');
+      }
+      const derivedMinutes = Math.max(1, Number(activity.estMinutes || estMinutes || 20));
+
       draft.activityProgress = draft.activityProgress || [];
       const existing = draft.activityProgress.find(
         (ap) => ap.userId === userId && ap.activityId === activityId
@@ -332,7 +355,7 @@ export async function togglePhaseActivityComplete(
       if (existing) {
         existing.completed = completed;
         if (notes !== undefined) existing.notes = notes;
-        existing.minutesSpent = completed ? estMinutes : null;
+        existing.minutesSpent = completed ? derivedMinutes : null;
         existing.completedAt = completed ? (existing.completedAt || now) : null;
         existing.updatedAt = now;
       } else {
@@ -343,7 +366,7 @@ export async function togglePhaseActivityComplete(
           activityId,
           notes: notes || '',
           completed,
-          minutesSpent: completed ? estMinutes : null,
+          minutesSpent: completed ? derivedMinutes : null,
           completedAt: completed ? now : null,
           updatedAt: now,
         });
@@ -358,25 +381,26 @@ export async function togglePhaseActivityComplete(
 /**
  * Evaluates course completion and upgrades linked Skill(s) conservatively:
  * - Any completed lesson or practical activity -> skill >= 'practising'
- * - Quizzes & lessons alone NEVER grant 'verified' (stays 'awaiting_practical_assessment' until capstone approved)
+ * - Quizzes & lessons alone NEVER grant 'demonstrated' or 'verified' (stays 'awaiting_practical_assessment' until capstone approved)
  * - Course completed (with practical approval) -> skill >= 'demonstrated'
  * - ALL published courses linked to a skill completed with practical approval -> skill upgrades to 'verified'
+ * Note: In live Supabase mode progression is recalculated automatically inside server-side SECURITY DEFINER RPCs.
  */
 export async function recomputeCourseAndSkillStatus(userId, courseId) {
   if (!userId || !courseId) return null;
 
   if (!isDemoMode && supabase) {
-    const { data, error } = await supabase.rpc('evaluate_course_and_skill_progression', {
-      p_user_id: userId,
-      p_course_id: courseId,
-    });
-    if (error) throw error;
-    return data;
+    return null;
   }
 
   const state = getDemoState();
   const targetCourse = (state.courses || []).find((c) => c.id === courseId);
-  if (!targetCourse) return null;
+  if (!targetCourse || targetCourse.publicationStatus !== 'published') return null;
+
+  const targetEnrollment = (state.courseEnrollments || []).find(
+    (e) => e.userId === userId && e.courseId === courseId
+  );
+  if (!targetEnrollment) return null;
 
   const userLessonProgress = (state.lessonProgress || []).filter((lp) => lp.userId === userId);
   const userActivityProgress = (state.activityProgress || []).filter((ap) => ap.userId === userId);
@@ -412,6 +436,9 @@ export async function recomputeCourseAndSkillStatus(userId, courseId) {
       if (targetProgress.isCompleted) {
         enr.status = 'completed';
         enr.completedAt = enr.completedAt || now;
+      } else if (enr.status === 'completed') {
+        enr.status = 'active';
+        enr.completedAt = null;
       }
       enr.updatedAt = now;
     }

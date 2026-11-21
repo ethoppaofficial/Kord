@@ -21,13 +21,15 @@ export async function renderAdminOverviewPage({ session, currentPath }) {
       buildUserGreeting(session?.user),
     ]);
 
-  let learnerCount = (getDemoState().users || []).filter((u) => u.role === 'learner').length;
+  let learnerCount = 0;
   if (hasSupabaseEnv && supabase) {
     const { count } = await supabase
       .from('profiles')
       .select('id', { count: 'exact', head: true })
       .eq('role', 'learner');
     if (typeof count === 'number') learnerCount = count;
+  } else {
+    learnerCount = (getDemoState().users || []).filter((u) => u.role === 'learner').length;
   }
 
   const pendingChallenges = submissions.filter((s) => s.status === 'pending').length;

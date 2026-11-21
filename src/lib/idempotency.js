@@ -1,3 +1,5 @@
+import { registerSessionCleanup } from './sessionLifecycle.js';
+
 const inFlightActions = new Map();
 const completedResults = new Map();
 
@@ -38,7 +40,9 @@ export async function runIdempotent(idempotencyKey, fn, { cacheResult = false } 
       return result;
     })
     .finally(() => {
-      inFlightActions.delete(idempotencyKey);
+      if (inFlightActions.get(idempotencyKey) === promise) {
+        inFlightActions.delete(idempotencyKey);
+      }
     });
 
   inFlightActions.set(idempotencyKey, promise);
@@ -48,9 +52,15 @@ export async function runIdempotent(idempotencyKey, fn, { cacheResult = false } 
 export function clearIdempotencyCache(prefix = '') {
   if (!prefix) {
     completedResults.clear();
+    inFlightActions.clear();
     return;
   }
   for (const key of completedResults.keys()) {
     if (key.startsWith(prefix)) completedResults.delete(key);
   }
+  for (const key of inFlightActions.keys()) {
+    if (key.startsWith(prefix)) inFlightActions.delete(key);
+  }
 }
+
+registerSessionCleanup(() => clearIdempotencyCache());
