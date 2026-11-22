@@ -322,7 +322,10 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
     if (!includeDrafts && data.publication_status !== 'published') return null;
     const course = mapFullCourse(data, { includeDrafts });
     const [{ data: assessments }, { data: challenges }] = await Promise.all([
-      supabase.from('quizzes').select('id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts').eq('course_id', course.id),
+      supabase
+        .from('quizzes')
+        .select('id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts, questions(id)')
+        .eq('course_id', course.id),
       supabase.from('challenges').select('*').eq('course_id', course.id),
     ]);
     return {
@@ -352,6 +355,7 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
         passPercent: a.pass_percent,
         timeLimitMinutes: a.time_limit_minutes,
         maxAttempts: a.max_attempts,
+        questions: Array.isArray(a.questions) ? a.questions : [],
       })),
       challenges: (challenges || []).map(mapChallenge),
     };
@@ -546,19 +550,26 @@ export async function adminUpsertCourse(payload) {
           .filter(Boolean);
 
     const requestedStatus = payload.publicationStatus || 'draft';
+    if (requestedStatus === 'published' && !payload.id) {
+      throw new Error(
+        'New courses must be saved as draft first and pass publish validation before publishing.'
+      );
+    }
     if (requestedStatus === 'published' && payload.id) {
       const existingFull = await getCourseById(payload.id, { includeDrafts: true });
-      if (existingFull) {
-        const candidate = {
-          ...existingFull,
-          title: cleanTitle,
-          description: String(payload.description || '').trim(),
-          outcomes: parsedOutcomes,
-        };
-        const check = validateCourseForPublish(candidate);
-        if (!check.valid) {
-          throw new Error(check.errors.join(' '));
-        }
+      if (!existingFull) {
+        throw new Error('Course not found');
+      }
+      const candidate = {
+        ...existingFull,
+        title: cleanTitle,
+        description: String(payload.description || '').trim(),
+        outcomes: parsedOutcomes,
+        completionRules: payload.completionRules || existingFull.completionRules,
+      };
+      const check = validateCourseForPublish(candidate);
+      if (!check.valid) {
+        throw new Error(check.errors.join(' '));
       }
     }
 

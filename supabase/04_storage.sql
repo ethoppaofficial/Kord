@@ -1,4 +1,4 @@
--- 04_storage.sql (Synchronized with migration 000007)
+-- 04_storage.sql (Synchronized with migrations 000007 and 20261122000010)
 
 -- 20261121000007_storage_policies.sql
 -- Hardened private evidence storage bucket, path validation, and immutable submitted evidence protection.
@@ -41,6 +41,7 @@ with check (
   bucket_id = 'evidence'
   and not public.is_admin()
   and position('..' in name) = 0
+  and left(name, 1) <> '/'
   and coalesce(array_length(string_to_array(name, '/'), 1), 0) >= 2
   and (storage.foldername(name))[1] = auth.uid()::text
   and lower(storage.extension(name)) = any(array[

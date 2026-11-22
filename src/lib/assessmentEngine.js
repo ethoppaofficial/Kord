@@ -54,27 +54,36 @@ export function gradeAssessmentAttempt({ quiz, questions, answerKeysByQuestionId
     let isCorrect = false;
     const optCount = Array.isArray(q.options) ? q.options.length : 0;
     if (qType === 'multiple_select') {
-      const selected = Array.isArray(rawAnswer)
-        ? Array.from(new Set(rawAnswer.map(Number)))
-            .filter((idx) => Number.isInteger(idx) && idx >= 0 && (optCount === 0 || idx < optCount))
-            .sort((a, b) => a - b)
+      const validElems =
+        Array.isArray(rawAnswer) &&
+        rawAnswer.every((v) => {
+          const n = Number(v);
+          return v !== null && v !== '' && Number.isInteger(n) && n >= 0 && (optCount === 0 || n < optCount);
+        });
+      const selected = validElems
+        ? Array.from(new Set(rawAnswer.map(Number))).sort((a, b) => a - b)
         : [];
       const expected = Array.isArray(key.correctIndices)
         ? Array.from(new Set(key.correctIndices.map(Number))).sort((a, b) => a - b)
         : [Number(key.correctIndex ?? 0)];
-      isCorrect = expected.length > 0 && arraysEqual(selected, expected);
+      isCorrect = validElems && expected.length > 0 && arraysEqual(selected, expected);
     } else if (qType === 'fill_blank') {
       const accepted = Array.isArray(key.acceptedAnswers) ? key.acceptedAnswers : [];
       const userNorm = normalizeText(rawAnswer);
       isCorrect = Boolean(userNorm) && accepted.some((ans) => normalizeText(ans) === userNorm);
     } else if (qType === 'ordering') {
-      const userOrder = Array.isArray(rawAnswer)
-        ? rawAnswer.map(Number).filter((idx) => Number.isInteger(idx) && idx >= 0 && (optCount === 0 || idx < optCount))
-        : [];
       const expectedOrder = Array.isArray(key.correctOrder)
         ? key.correctOrder.map(Number)
         : (q.options || []).map((_, idx) => idx);
-      isCorrect = arraysEqual(userOrder, expectedOrder);
+      const validOrder =
+        Array.isArray(rawAnswer) &&
+        rawAnswer.length === expectedOrder.length &&
+        rawAnswer.every((v) => {
+          const n = Number(v);
+          return v !== null && v !== '' && Number.isInteger(n) && n >= 0 && (optCount === 0 || n < optCount);
+        });
+      const userOrder = validOrder ? rawAnswer.map(Number) : [];
+      isCorrect = validOrder && arraysEqual(userOrder, expectedOrder);
     } else {
       // multiple_choice, true_false, scenario, case_study
       const parsed = rawAnswer === '' || rawAnswer === null || rawAnswer === undefined ? -1 : Number(rawAnswer);

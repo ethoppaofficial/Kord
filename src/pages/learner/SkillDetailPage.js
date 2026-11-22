@@ -17,6 +17,7 @@ import { getUserSkills, declareUserSkill } from '../../lib/repositories/skillsRe
 import { listRankedOpportunities } from '../../lib/repositories/opportunityRepository.js';
 import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../lib/progressionEngine.js';
 import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
+import { renderSkillCoverHtml } from '../../lib/skillCovers.js';
 import { escapeHtml } from '../../lib/formatters.js';
 import { icon } from '../../lib/icons.js';
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
@@ -93,42 +94,45 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
       <div class="lab-split">
         <div style="display:flex; flex-direction:column; gap:20px;">
           <!-- Skill Competency Overview -->
-          <section class="card">
-            <div class="meta-line" style="margin-bottom:8px;">
-              <span>${escapeHtml(skill.category)}</span>
-              <span class="meta-sep" aria-hidden="true">·</span>
-              <span>${escapeHtml(skill.level)}</span>
-              <span class="meta-sep" aria-hidden="true">·</span>
-              <span class="mono-num">${courses.length} ${courses.length === 1 ? 'course' : 'courses'}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
-              <h1 class="page-title">${escapeHtml(skill.title)}</h1>
-              ${userSkill ? renderStatusBadge(userSkill.level) : renderStatusBadge('declared')}
-            </div>
-            <p style="margin-top:12px; color:var(--color-text-secondary);">${escapeHtml(skill.summary)}</p>
-
-            ${
-              skill.competencyExpectations
-                ? `
-              <div style="margin-top:14px; padding:12px 14px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-size:13.5px; color:var(--color-text-secondary);">
-                <strong style="color:var(--color-navy);">Competency expectation:</strong> ${escapeHtml(skill.competencyExpectations)}
+          <section class="card" style="padding:0; overflow:hidden;">
+            ${renderSkillCoverHtml(skill, { variant: 'banner' })}
+            <div style="padding:20px 24px;">
+              <div class="meta-line" style="margin-bottom:8px;">
+                <span>${escapeHtml(skill.category)}</span>
+                <span class="meta-sep" aria-hidden="true">·</span>
+                <span>${escapeHtml(skill.level)}</span>
+                <span class="meta-sep" aria-hidden="true">·</span>
+                <span class="mono-num">${courses.length} ${courses.length === 1 ? 'course' : 'courses'}</span>
               </div>
-            `
-                : ''
-            }
-
-            ${
-              skill.outcomes?.length
-                ? `
-              <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--color-border);">
-                <h2 style="font-size:1rem; margin-bottom:10px;">Target competency outcomes</h2>
-                <ul style="margin:0; padding-left:18px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:6px;">
-                  ${skill.outcomes.map((o) => `<li>${escapeHtml(o)}</li>`).join('')}
-                </ul>
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+                <h1 class="page-title">${escapeHtml(skill.title)}</h1>
+                ${userSkill ? renderStatusBadge(userSkill.level) : renderStatusBadge('declared')}
               </div>
-            `
-                : ''
-            }
+              <p style="margin-top:12px; color:var(--color-text-secondary);">${escapeHtml(skill.summary)}</p>
+
+              ${
+                skill.competencyExpectations
+                  ? `
+                <div style="margin-top:14px; padding:12px 14px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-size:13.5px; color:var(--color-text-secondary);">
+                  <strong style="color:var(--color-navy);">Competency expectation:</strong> ${escapeHtml(skill.competencyExpectations)}
+                </div>
+              `
+                  : ''
+              }
+
+              ${
+                skill.outcomes?.length
+                  ? `
+                <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--color-border);">
+                  <h2 style="font-size:1rem; margin-bottom:10px;">Target competency outcomes</h2>
+                  <ul style="margin:0; padding-left:18px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:6px;">
+                    ${skill.outcomes.map((o) => `<li>${escapeHtml(o)}</li>`).join('')}
+                  </ul>
+                </div>
+              `
+                  : ''
+              }
+            </div>
           </section>
 
           <!-- Structured Courses Under This Skill -->

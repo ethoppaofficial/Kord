@@ -1,6 +1,7 @@
 import { escapeHtml } from '../../lib/formatters.js';
 import { icon } from '../../lib/icons.js';
 import { renderProgressRail } from '../../components/Common.js';
+import { renderSkillCoverHtml } from '../../lib/skillCovers.js';
 
 const STAGES = [
   {
@@ -143,27 +144,30 @@ export async function renderLandingPage({ session }) {
           ${FEATURED_PREVIEWS.map(
             (item) => `
             <article class="skill-card">
-              <div style="display:flex; flex-direction:column; gap:8px;">
-                <div class="meta-line">
-                  <span>${escapeHtml(item.category)}</span>
-                  <span class="meta-sep" aria-hidden="true">·</span>
-                  <span>${escapeHtml(item.level)}</span>
-                  <span class="meta-sep" aria-hidden="true">·</span>
-                  <span class="mono-num">${escapeHtml(item.hours)}</span>
+              ${renderSkillCoverHtml(item)}
+              <div class="skill-card-body">
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                  <div class="meta-line">
+                    <span>${escapeHtml(item.category)}</span>
+                    <span class="meta-sep" aria-hidden="true">·</span>
+                    <span>${escapeHtml(item.level)}</span>
+                    <span class="meta-sep" aria-hidden="true">·</span>
+                    <span class="mono-num">${escapeHtml(item.hours)}</span>
+                  </div>
+                  <h3 style="font-size:1.1rem;">${escapeHtml(item.title)}</h3>
+                  <p class="line-clamp-2" style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(item.summary)}</p>
                 </div>
-                <h3 style="font-size:1.1rem;">${escapeHtml(item.title)}</h3>
-                <p class="line-clamp-2" style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(item.summary)}</p>
-              </div>
-              <div style="display:flex; flex-direction:column; gap:12px;">
-                ${renderProgressRail({
-                  label: 'Sample progression',
-                  value: item.pct,
-                  max: 100,
-                  detail: `${item.pct}%`,
-                })}
-                <a href="${isSignedIn ? '/explore' : '/login'}" data-link class="btn btn-secondary btn-sm">
-                  ${isSignedIn ? 'Open roadmap' : 'Sign in to start'} ${icon('arrowRight', 14)}
-                </a>
+                <div style="display:flex; flex-direction:column; gap:12px;">
+                  ${renderProgressRail({
+                    label: 'Sample progression',
+                    value: item.pct,
+                    max: 100,
+                    detail: `${item.pct}%`,
+                  })}
+                  <a href="${isSignedIn ? '/explore' : '/login'}" data-link class="btn btn-secondary btn-sm">
+                    ${isSignedIn ? 'Open roadmap' : 'Sign in to start'} ${icon('arrowRight', 14)}
+                  </a>
+                </div>
               </div>
             </article>
           `

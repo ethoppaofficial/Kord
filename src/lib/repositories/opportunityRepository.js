@@ -124,7 +124,62 @@ export async function listRankedOpportunities(userId) {
     userId ? getUserSkills(userId) : Promise.resolve([]),
   ]);
 
-  const demoState = isDemoMode ? getDemoState() : null;
+  let evidenceState = null;
+  if (!isDemoMode && supabase) {
+    const [
+      { data: quizzesData, error: quizzesErr },
+      { data: challengesData, error: challengesErr },
+      attemptsRes,
+      submissionsRes,
+    ] = await Promise.all([
+      userId
+        ? supabase.from('quizzes').select('id, skill_id, quiz_type')
+        : Promise.resolve({ data: [], error: null }),
+      userId
+        ? supabase.from('challenges').select('id, skill_id')
+        : Promise.resolve({ data: [], error: null }),
+      userId
+        ? supabase.from('quiz_attempts').select('quiz_id, percentage').eq('user_id', userId)
+        : Promise.resolve({ data: [], error: null }),
+      userId
+        ? supabase
+            .from('submissions')
+            .select('challenge_id, status, rubric_total, rubric_max')
+            .eq('user_id', userId)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (quizzesErr) throw quizzesErr;
+    if (challengesErr) throw challengesErr;
+    if (attemptsRes.error) throw attemptsRes.error;
+    if (submissionsRes.error) throw submissionsRes.error;
+
+    evidenceState = {
+      quizzes: (quizzesData || []).map((q) => ({
+        id: q.id,
+        skillId: q.skill_id,
+        quizType: q.quiz_type,
+      })),
+      challenges: (challengesData || []).map((c) => ({
+        id: c.id,
+        skillId: c.skill_id,
+      })),
+      quizAttempts: (attemptsRes.data || []).map((a) => ({
+        userId,
+        quizId: a.quiz_id,
+        percentage: a.percentage,
+      })),
+      submissions: (submissionsRes.data || []).map((s) => ({
+        userId,
+        challengeId: s.challenge_id,
+        status: s.status,
+        rubricTotal: s.rubric_total,
+        rubricMax: s.rubric_max,
+      })),
+    };
+  } else {
+    evidenceState = getDemoState();
+  }
+
   const skillBySlug = new Map(skills.map((s) => [s.slug, s]));
   const userSkillBySkillId = new Map(userSkills.map((us) => [us.skillId, us]));
 
@@ -146,11 +201,11 @@ export async function listRankedOpportunities(userId) {
           title: def.slug,
         };
         const skillQuiz =
-          demoState &&
-          ((demoState.quizzes || []).find((q) => q.skillId === rawSkill.id && q.quizType === 'skill_check') ||
-            (demoState.quizzes || []).find((q) => q.skillId === rawSkill.id));
+          evidenceState &&
+          ((evidenceState.quizzes || []).find((q) => q.skillId === rawSkill.id && q.quizType === 'skill_check') ||
+            (evidenceState.quizzes || []).find((q) => q.skillId === rawSkill.id));
         const skillChallenge =
-          demoState && (demoState.challenges || []).find((c) => c.skillId === rawSkill.id);
+          evidenceState && (evidenceState.challenges || []).find((c) => c.skillId === rawSkill.id);
         const skill = {
           ...rawSkill,
           skillCheckQuizId: rawSkill.skillCheckQuizId || skillQuiz?.id || null,
@@ -159,8 +214,8 @@ export async function listRankedOpportunities(userId) {
 
         const userSkill = userSkillBySkillId.get(skill.id);
         const evidence =
-          userId && demoState
-            ? getSkillEvidenceForUser(userId, skill.id, demoState)
+          userId && evidenceState
+            ? getSkillEvidenceForUser(userId, skill.id, evidenceState)
             : { bestQuizPct: 0, bestReviewedPct: 0 };
 
         const row = computeSkillRowScore({

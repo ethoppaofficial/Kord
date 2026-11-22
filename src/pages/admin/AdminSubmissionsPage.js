@@ -182,7 +182,7 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
                 <div class="rubric-sheet">
                   ${rubric
                     .map((r) => {
-                      const currentVal = activeSub.rubricScores?.[r.id] ?? Math.min(4, r.maxPoints);
+                      const currentVal = activeSub.rubricScores?.[r.id] ?? 0;
                       return `
                         <div class="rubric-row">
                           <div>
@@ -274,7 +274,7 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
                     </div>
                     <div class="field">
                       <label class="field-label" style="font-size:12.5px;">Awarded marks (0 – ${q.marks || 1})</label>
-                      <input class="input written-mark-input" type="number" min="0" max="${q.marks || 1}" data-q-id="${escapeHtml(q.id)}" value="${activeAttempt.manualScores?.[q.id] ?? (q.marks || 1)}" />
+                      <input class="input written-mark-input" type="number" min="0" max="${q.marks || 1}" data-q-id="${escapeHtml(q.id)}" value="${activeAttempt.manualScores?.[q.id] ?? 0}" />
                     </div>
                   </div>
                 `

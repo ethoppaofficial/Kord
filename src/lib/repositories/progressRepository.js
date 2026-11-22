@@ -383,12 +383,152 @@ export async function togglePhaseActivityComplete(
   });
 }
 
+function computeCourseProgressFromState(state, userId, course) {
+  const userLessonProgress = (state.lessonProgress || []).filter(
+    (lp) => lp.userId === userId && lp.courseId === course.id
+  );
+  const userActivityProgress = (state.activityProgress || []).filter(
+    (ap) => ap.userId === userId && ap.courseId === course.id
+  );
+  const userAttempts = (state.quizAttempts || []).filter((qa) => qa.userId === userId);
+  const userSubs = (state.submissions || []).filter((s) => s.userId === userId);
+  const enrollment = (state.courseEnrollments || []).find(
+    (e) => e.userId === userId && e.courseId === course.id
+  );
+  return computeCourseProgress({
+    course,
+    lessonProgress: userLessonProgress,
+    activityProgress: userActivityProgress,
+    assessments: state.quizzes || [],
+    quizAttempts: userAttempts,
+    challenges: state.challenges || [],
+    submissions: userSubs,
+    enrollment,
+  });
+}
+
+export async function recomputeDemoSkillLevel(userId, skillId) {
+  if (!userId || !skillId) return null;
+  if (!isDemoMode && supabase) return null;
+
+  const state = getDemoState();
+  const publishedCoursesForSkill = (state.courses || []).filter(
+    (c) => c.publicationStatus === 'published' && getCourseLinkedSkillIds(c).includes(skillId)
+  );
+  const courseProgressById = {};
+  publishedCoursesForSkill.forEach((c) => {
+    courseProgressById[c.id] = computeCourseProgressFromState(state, userId, c);
+  });
+
+  const overall = computeOverallSkillCourseProgress({
+    publishedCourses: publishedCoursesForSkill,
+    courseProgressById,
+  });
+
+  const skillChallengeIds = new Set(
+    (state.challenges || []).filter((ch) => ch.skillId === skillId).map((ch) => ch.id)
+  );
+  const hasApprovedStandaloneChallenge = (state.submissions || []).some(
+    (s) =>
+      s.userId === userId &&
+      s.status === 'approved' &&
+      skillChallengeIds.has(s.challengeId) &&
+      !s.courseId
+  );
+  const hasAnyCoursePracticalApproved = Object.values(courseProgressById).some(
+    (p) => Boolean(p?.practicalApproved)
+  );
+
+  const publishedLessonIdsForSkill = new Set(
+    publishedCoursesForSkill.flatMap((c) =>
+      (c.phases || [])
+        .filter((ph) => ph.publicationStatus !== 'draft' && ph.publicationStatus !== 'archived')
+        .flatMap((ph) =>
+          (ph.lessons || [])
+            .filter((l) => l.publicationStatus !== 'draft' && l.publicationStatus !== 'archived')
+            .map((l) => l.id)
+        )
+    )
+  );
+  const publishedActivityIdsForSkill = new Set(
+    publishedCoursesForSkill.flatMap((c) =>
+      (c.phases || [])
+        .filter((ph) => ph.publicationStatus !== 'draft' && ph.publicationStatus !== 'archived')
+        .flatMap((ph) => (ph.activities || []).map((a) => a.id))
+    )
+  );
+  const skillQuizIds = new Set(
+    (state.quizzes || []).filter((q) => q.skillId === skillId).map((q) => q.id)
+  );
+
+  const hasCompletedLesson = (state.lessonProgress || []).some(
+    (lp) => lp.userId === userId && lp.completed && publishedLessonIdsForSkill.has(lp.lessonId)
+  );
+  const hasCompletedActivity = (state.activityProgress || []).some(
+    (ap) => ap.userId === userId && ap.completed && publishedActivityIdsForSkill.has(ap.activityId)
+  );
+  const hasPassedQuiz = (state.quizAttempts || []).some(
+    (qa) =>
+      qa.userId === userId &&
+      skillQuizIds.has(qa.quizId) &&
+      qa.passed &&
+      qa.reviewStatus !== 'pending_review'
+  );
+  const isEnrolledInSkillCourse = (state.courseEnrollments || []).some(
+    (e) =>
+      e.userId === userId &&
+      publishedCoursesForSkill.some((c) => c.id === e.courseId)
+  );
+  const existingRecord = (state.userSkills || []).find(
+    (us) => us.userId === userId && us.skillId === skillId
+  );
+
+  let targetLevel = null;
+  if (
+    (overall.totalPublishedCourses > 0 && overall.allCoursesVerified) ||
+    (overall.totalPublishedCourses === 0 && hasApprovedStandaloneChallenge)
+  ) {
+    targetLevel = 'verified';
+  } else if (hasAnyCoursePracticalApproved || hasApprovedStandaloneChallenge) {
+    targetLevel = 'demonstrated';
+  } else if (hasCompletedLesson || hasCompletedActivity || hasPassedQuiz) {
+    targetLevel = 'practising';
+  } else if (isEnrolledInSkillCourse || existingRecord) {
+    targetLevel = 'declared';
+  }
+
+  if (targetLevel) {
+    updateDemoState((draft) => {
+      draft.userSkills = draft.userSkills || [];
+      const rec = draft.userSkills.find(
+        (us) => us.userId === userId && us.skillId === skillId
+      );
+      const now = new Date().toISOString();
+      if (!rec) {
+        draft.userSkills.push({
+          id: `us-${Date.now()}`,
+          userId,
+          skillId,
+          level: targetLevel,
+          updatedAt: now,
+        });
+      } else if (rec.level !== targetLevel) {
+        rec.level = targetLevel;
+        rec.updatedAt = now;
+      }
+      return draft;
+    });
+  }
+
+  return { overall, targetLevel };
+}
+
 /**
- * Evaluates course completion and upgrades linked Skill(s) conservatively:
- * - Any completed lesson or practical activity -> skill >= 'practising'
- * - Quizzes & lessons alone NEVER grant 'demonstrated' or 'verified' (stays 'awaiting_practical_assessment' until capstone approved)
- * - Course completed (with practical approval) -> skill >= 'demonstrated'
- * - ALL published courses linked to a skill completed with practical approval -> skill upgrades to 'verified'
+ * Evaluates course completion and recomputes linked Skill(s) upward or downward:
+ * - Any completed published lesson, activity, or passed skill quiz -> skill 'practising'
+ * - Quizzes & lessons alone NEVER grant 'demonstrated' or 'verified' (0-challenge courses stay capped at 'practising')
+ * - Any approved practical capstone or standalone challenge -> skill 'demonstrated'
+ * - ALL published courses linked to a skill completed with practical approval -> skill 'verified'
  * Note: In live Supabase mode progression is recalculated automatically inside server-side SECURITY DEFINER RPCs.
  */
 export async function recomputeCourseAndSkillStatus(userId, courseId) {
@@ -407,28 +547,7 @@ export async function recomputeCourseAndSkillStatus(userId, courseId) {
   );
   if (!targetEnrollment) return null;
 
-  const userLessonProgress = (state.lessonProgress || []).filter((lp) => lp.userId === userId);
-  const userActivityProgress = (state.activityProgress || []).filter((ap) => ap.userId === userId);
-  const userAttempts = (state.quizAttempts || []).filter((qa) => qa.userId === userId);
-  const userSubs = (state.submissions || []).filter((s) => s.userId === userId);
-
-  const computeForCourse = (course) => {
-    const enrollment = (state.courseEnrollments || []).find(
-      (e) => e.userId === userId && e.courseId === course.id
-    );
-    return computeCourseProgress({
-      course,
-      lessonProgress: userLessonProgress.filter((lp) => lp.courseId === course.id),
-      activityProgress: userActivityProgress.filter((ap) => ap.courseId === course.id),
-      assessments: state.quizzes || [],
-      quizAttempts: userAttempts,
-      challenges: state.challenges || [],
-      submissions: userSubs,
-      enrollment,
-    });
-  };
-
-  const targetProgress = computeForCourse(targetCourse);
+  const targetProgress = computeCourseProgressFromState(state, userId, targetCourse);
   const now = new Date().toISOString();
 
   updateDemoState((draft) => {
@@ -474,30 +593,8 @@ export async function recomputeCourseAndSkillStatus(userId, courseId) {
   let lastOverall = null;
 
   for (const sid of linkedSkillIds) {
-    const publishedCoursesForSkill = (state.courses || []).filter(
-      (c) => c.publicationStatus === 'published' && getCourseLinkedSkillIds(c).includes(sid)
-    );
-    const courseProgressById = {};
-    publishedCoursesForSkill.forEach((c) => {
-      courseProgressById[c.id] = c.id === courseId ? targetProgress : computeForCourse(c);
-    });
-
-    const overall = computeOverallSkillCourseProgress({
-      publishedCourses: publishedCoursesForSkill,
-      courseProgressById,
-    });
-    lastOverall = overall;
-
-    if (overall.allCoursesVerified && overall.totalPublishedCourses > 0) {
-      await upgradeSkillLevel(userId, sid, 'verified');
-    } else if (targetProgress?.isCompleted) {
-      await upgradeSkillLevel(userId, sid, 'demonstrated');
-    } else if (
-      (targetProgress?.completedLessonsCount || 0) > 0 ||
-      (targetProgress?.completedActivitiesCount || 0) > 0
-    ) {
-      await upgradeSkillLevel(userId, sid, 'practising');
-    }
+    const res = await recomputeDemoSkillLevel(userId, sid);
+    if (res?.overall) lastOverall = res.overall;
   }
 
   return { courseProgress: targetProgress, overall: lastOverall };

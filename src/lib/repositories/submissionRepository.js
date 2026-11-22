@@ -1,10 +1,11 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
-import { recomputeCourseAndSkillStatus } from './progressRepository.js';
+import { recomputeCourseAndSkillStatus, recomputeDemoSkillLevel } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import {
   validateEvidenceFileContent,
+  validateSubmissionForm,
   sanitizeEvidenceFilename,
   isValidUrl,
 } from '../validators.js';
@@ -59,6 +60,25 @@ export async function submitChallengeEvidence({
   if (repoUrl && repoUrl.trim() && !isValidUrl(repoUrl)) {
     throw new Error('Repository URL must begin with https:// or http://.');
   }
+  if (challenge) {
+    const formErrors = validateSubmissionForm({
+      evidenceUrl,
+      repoUrl,
+      file,
+      submissionText,
+      explanation: cleanExplanation,
+      challenge,
+    });
+    const deliverableErr =
+      formErrors.evidenceUrl ||
+      formErrors.repoUrl ||
+      formErrors.submissionText ||
+      formErrors.file ||
+      formErrors.evidence;
+    if (deliverableErr) {
+      throw new Error(deliverableErr);
+    }
+  }
   if (file) {
     const fileErr = await validateEvidenceFileContent(file, challenge || {});
     if (fileErr) throw new Error(fileErr);
@@ -77,8 +97,10 @@ export async function submitChallengeEvidence({
       cleanExplanation
     );
 
+  const inFlightKey = buildIdempotencyKey('challenge-submit-lock', userId, challengeId, effectiveKey);
+
   return runIdempotent(
-    effectiveKey,
+    inFlightKey,
     async () => {
       if (!isDemoMode && supabase) {
         let filePath = null;
@@ -122,10 +144,33 @@ export async function submitChallengeEvidence({
       const existing = (state.submissions || []).find(
         (s) => s.userId === userId && s.idempotencyKey === effectiveKey
       );
-      if (existing) return existing;
+      if (existing) {
+        if (existing.challengeId !== challengeId) {
+          throw new Error('Idempotency key already used for a different challenge.');
+        }
+        return existing;
+      }
 
       const resolvedChallenge = challenge || (state.challenges || []).find((c) => c.id === challengeId);
       if (!resolvedChallenge) throw new Error('Practical challenge not found.');
+
+      const resolvedErrors = validateSubmissionForm({
+        evidenceUrl,
+        repoUrl,
+        file,
+        submissionText,
+        explanation: cleanExplanation,
+        challenge: resolvedChallenge,
+      });
+      const resolvedDeliverableErr =
+        resolvedErrors.evidenceUrl ||
+        resolvedErrors.repoUrl ||
+        resolvedErrors.submissionText ||
+        resolvedErrors.file ||
+        resolvedErrors.evidence;
+      if (resolvedDeliverableErr) {
+        throw new Error(resolvedDeliverableErr);
+      }
 
       const targetCourseId = courseId || resolvedChallenge.courseId || null;
       if (targetCourseId) {
@@ -152,6 +197,10 @@ export async function submitChallengeEvidence({
         if (fileErr) throw new Error(fileErr);
       }
 
+      const computedRubricMax =
+        Array.isArray(resolvedChallenge.rubric) && resolvedChallenge.rubric.length > 0
+          ? resolvedChallenge.rubric.reduce((sum, r) => sum + Math.max(1, Number(r.maxPoints || 5)), 0)
+          : Number(resolvedChallenge.maxScore || rubricMax || 20);
       const safeFileName = file ? sanitizeEvidenceFilename(file.name) : null;
       const filePath = file ? `${userId}/${challengeId}/${safeFileName}` : null;
       const newSub = {
@@ -168,7 +217,7 @@ export async function submitChallengeEvidence({
         status: 'pending',
         rubricScores: {},
         rubricTotal: null,
-        rubricMax: rubricMax || 20,
+        rubricMax: computedRubricMax,
         feedback: '',
         reviewedBy: null,
         reviewedAt: null,
@@ -183,7 +232,7 @@ export async function submitChallengeEvidence({
       });
       return newSub;
     },
-    { cacheResult: true }
+    { cacheResult: false }
   );
 }
 
@@ -339,12 +388,8 @@ export async function adminReviewSubmission({
     if (targetUserId) {
       if (targetCourseId) {
         await recomputeCourseAndSkillStatus(targetUserId, targetCourseId);
-      } else if (status === 'approved' && targetSkillId) {
-        await upgradeSkillLevel(
-          targetUserId,
-          targetSkillId,
-          hasPublishedCoursesForSkill ? 'demonstrated' : 'verified'
-        );
+      } else if (targetSkillId) {
+        await recomputeDemoSkillLevel(targetUserId, targetSkillId);
       }
     }
   });

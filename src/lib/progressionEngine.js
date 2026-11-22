@@ -291,8 +291,10 @@ export function computeOverallSkillCourseProgress({
     return {
       totalPublishedCourses: 0,
       completedCoursesCount: 0,
+      verifiedCoursesCount: 0,
       averagePercent: 0,
       allCoursesCompleted: false,
+      allCoursesVerified: false,
     };
   }
 
@@ -303,10 +305,7 @@ export function computeOverallSkillCourseProgress({
     const p = courseProgressById[c.id];
     sumPct += p?.progressPercent || 0;
     if (p?.isCompleted) completedCoursesCount += 1;
-    if (
-      p?.completionState === 'completed_verified' ||
-      (p?.isCompleted && c.completionRules?.requireChallengeApproval === false)
-    ) {
+    if (p?.completionState === 'completed_verified' && p?.practicalApproved) {
       verifiedCoursesCount += 1;
     }
   });

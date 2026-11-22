@@ -296,30 +296,61 @@ export function validateRubricWeights(rubric = []) {
 
 export function validateSubmissionForm({ evidenceUrl, repoUrl, file, submissionText, explanation, challenge = {} }) {
   const errors = {};
-  const allowed = Array.isArray(challenge.allowedEvidenceTypes) && challenge.allowedEvidenceTypes.length > 0
-    ? challenge.allowedEvidenceTypes
-    : ['written', 'file', 'project_url', 'repo_url', 'screenshot', 'audio', 'video'];
+  const allowed =
+    Array.isArray(challenge.allowedEvidenceTypes) && challenge.allowedEvidenceTypes.length > 0
+      ? challenge.allowedEvidenceTypes
+      : ['written', 'file', 'project_url', 'repo_url', 'screenshot', 'audio', 'video'];
 
   const hasUrl = Boolean(evidenceUrl && evidenceUrl.trim().length > 0);
   const hasRepo = Boolean(repoUrl && repoUrl.trim().length > 0);
   const hasFile = Boolean(file);
-  const hasWritten = Boolean(submissionText && submissionText.trim().length >= 20);
+  const rawText = String(submissionText || '').trim();
+  const hasWritten = rawText.length >= 20;
 
   if (!hasUrl && !hasRepo && !hasFile && !hasWritten) {
-    errors.evidence = 'Provide at least one permitted deliverable (project URL, repository link, uploaded file, or written response of 20+ characters).';
+    errors.evidence =
+      'Provide at least one permitted deliverable (project URL, repository link, uploaded file, or written response of 20+ characters).';
   }
-  if (hasUrl && !isValidUrl(evidenceUrl)) {
-    errors.evidenceUrl = 'Enter a full URL starting with https:// or http://.';
+  if (hasUrl) {
+    if (!allowed.includes('project_url')) {
+      errors.evidenceUrl = 'Project URLs are not listed in accepted evidence types for this assignment.';
+    } else if (!isValidUrl(evidenceUrl)) {
+      errors.evidenceUrl = 'Enter a full URL starting with https:// or http://.';
+    }
   }
-  if (hasRepo && !isValidUrl(repoUrl)) {
-    errors.repoUrl = 'Enter a valid repository URL starting with https:// or http://.';
+  if (hasRepo) {
+    if (!allowed.includes('repo_url')) {
+      errors.repoUrl = 'Repository links are not listed in accepted evidence types for this assignment.';
+    } else if (!isValidUrl(repoUrl)) {
+      errors.repoUrl = 'Enter a valid repository URL starting with https:// or http://.';
+    }
   }
-  if (hasRepo && !allowed.includes('repo_url') && !allowed.includes('project_url')) {
-    errors.repoUrl = 'Repository links are not listed in accepted evidence types for this assignment.';
+  if (rawText.length > 0 && !allowed.includes('written')) {
+    errors.submissionText = 'Written text deliverables are not accepted for this assignment.';
   }
   if (hasFile) {
-    const fileErr = validateEvidenceFile(file, challenge);
-    if (fileErr) errors.file = fileErr;
+    const acceptsAnyFile =
+      allowed.includes('file') ||
+      allowed.includes('screenshot') ||
+      allowed.includes('audio') ||
+      allowed.includes('video');
+    if (!acceptsAnyFile) {
+      errors.file = 'File uploads are not accepted for this assignment.';
+    } else {
+      const fileErr = validateEvidenceFile(file, challenge);
+      if (fileErr) {
+        errors.file = fileErr;
+      } else if (!allowed.includes('file')) {
+        const mime = String(file.type || '');
+        const subtypeOk =
+          (allowed.includes('screenshot') && mime.startsWith('image/')) ||
+          (allowed.includes('audio') && mime.startsWith('audio/')) ||
+          (allowed.includes('video') && mime.startsWith('video/'));
+        if (!subtypeOk) {
+          errors.file = 'Uploaded file category is not accepted for this assignment.';
+        }
+      }
+    }
   }
   if (!explanation || explanation.trim().length < 20) {
     errors.explanation = 'Explain what you produced and how it meets the brief (at least 20 characters).';

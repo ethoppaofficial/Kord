@@ -1,6 +1,7 @@
 import { escapeHtml } from '../lib/formatters.js';
 import { icon } from '../lib/icons.js';
 import { renderCourseThumbnailHtml } from '../lib/courseThumbnails.js';
+import { renderSkillCoverHtml } from '../lib/skillCovers.js';
 
 export function renderProgressRail({
   label = 'Progress',
@@ -75,47 +76,50 @@ export function renderSkillCard(
 
   return `
     <article class="skill-card view-enter" style="animation-delay:${Math.min(index, 6) * 20}ms;">
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        <div class="meta-line">
-          <span>${escapeHtml(skill.category)}</span>
-          <span class="meta-sep" aria-hidden="true">·</span>
-          <span>${escapeHtml(skill.level)}</span>
-          <span class="meta-sep" aria-hidden="true">·</span>
-          <span class="mono-num">${courseCount === 0 ? 'No courses yet' : `${courseCount} ${courseCount === 1 ? 'course' : 'courses'}`}</span>
+      ${renderSkillCoverHtml(skill)}
+      <div class="skill-card-body">
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div class="meta-line">
+            <span>${escapeHtml(skill.category)}</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span>${escapeHtml(skill.level)}</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span class="mono-num">${courseCount === 0 ? 'No courses yet' : `${courseCount} ${courseCount === 1 ? 'course' : 'courses'}`}</span>
+          </div>
+
+          <h3 style="font-size:1.1rem;">${escapeHtml(skill.title)}</h3>
+          <p class="line-clamp-2" style="font-size:14px; color:var(--color-text-secondary);">
+            ${escapeHtml(skill.summary)}
+          </p>
         </div>
 
-        <h3 style="font-size:1.1rem;">${escapeHtml(skill.title)}</h3>
-        <p class="line-clamp-2" style="font-size:14px; color:var(--color-text-secondary);">
-          ${escapeHtml(skill.summary)}
-        </p>
-      </div>
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          ${
+            courseCount > 0
+              ? renderProgressRail({
+                  label: `Course pathway (${completedCoursesCount}/${courseCount} completed)`,
+                  value: pct,
+                  max: 100,
+                  detail: `${pct}%`,
+                })
+              : `<div style="font-size:12.5px; color:var(--color-text-muted); padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
+                  ${
+                    skill.supportedByCourseSlug
+                      ? 'Covered via flagship foundational course pathway'
+                      : 'Competency published · Awaiting course development'
+                  }
+                </div>`
+          }
 
-      <div style="display:flex; flex-direction:column; gap:12px;">
-        ${
-          courseCount > 0
-            ? renderProgressRail({
-                label: `Course pathway (${completedCoursesCount}/${courseCount} completed)`,
-                value: pct,
-                max: 100,
-                detail: `${pct}%`,
-              })
-            : `<div style="font-size:12.5px; color:var(--color-text-muted); padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
-                ${
-                  skill.supportedByCourseSlug
-                    ? 'Covered via flagship foundational course pathway'
-                    : 'Competency published · Awaiting course development'
-                }
-              </div>`
-        }
-
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:10px; border-top:1px solid var(--color-border); flex-wrap:wrap;">
-          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-            ${courseCount > 0 ? renderStatusBadge('full') : renderStatusBadge('coming_soon')}
-            ${userLevel ? renderStatusBadge(userLevel) : ''}
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:10px; border-top:1px solid var(--color-border); flex-wrap:wrap;">
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              ${courseCount > 0 ? renderStatusBadge('full') : renderStatusBadge('coming_soon')}
+              ${userLevel ? renderStatusBadge(userLevel) : ''}
+            </div>
+            <a href="/skills/${escapeHtml(skill.slug)}" data-link class="btn btn-secondary btn-sm">
+              ${courseCount > 0 ? 'View courses' : 'View skill'} ${icon('arrowRight', 14)}
+            </a>
           </div>
-          <a href="/skills/${escapeHtml(skill.slug)}" data-link class="btn btn-secondary btn-sm">
-            ${courseCount > 0 ? 'View courses' : 'View skill'} ${icon('arrowRight', 14)}
-          </a>
         </div>
       </div>
     </article>

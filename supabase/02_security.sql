@@ -1,4 +1,4 @@
--- 02_security.sql (Synchronized with migrations 000003-000004)
+-- 02_security.sql (Synchronized with migrations 000003-000004 and 20261122000010)
 
 -- 20261121000003_auth_and_profiles.sql
 -- Hardened authentication, role protection, and controlled admin provisioning.
@@ -203,14 +203,14 @@ create policy "catalog_admin_categories" on public.categories
 
 drop policy if exists "catalog_read_skills" on public.skills;
 create policy "catalog_read_skills" on public.skills
-  for select to authenticated, anon using (publication_status = 'published' or public.is_admin());
+  for select to authenticated, anon using (publication_status = 'published');
 drop policy if exists "catalog_admin_skills" on public.skills;
 create policy "catalog_admin_skills" on public.skills
   for all to authenticated using (public.is_admin()) with check (public.is_admin());
 
 drop policy if exists "catalog_read_courses" on public.courses;
 create policy "catalog_read_courses" on public.courses
-  for select to authenticated, anon using (publication_status = 'published' or public.is_admin());
+  for select to authenticated, anon using (publication_status = 'published');
 drop policy if exists "catalog_admin_courses" on public.courses;
 create policy "catalog_admin_courses" on public.courses
   for all to authenticated using (public.is_admin()) with check (public.is_admin());
@@ -219,8 +219,7 @@ drop policy if exists "catalog_read_course_skills" on public.course_skills;
 create policy "catalog_read_course_skills" on public.course_skills
   for select to authenticated, anon
   using (
-    public.is_admin()
-    or exists (
+    exists (
       select 1 from public.courses c
       where c.id = course_skills.course_id and c.publication_status = 'published'
     )
@@ -247,13 +246,10 @@ drop policy if exists "catalog_read_phases" on public.phases;
 create policy "catalog_read_phases" on public.phases
   for select to authenticated, anon
   using (
-    public.is_admin()
-    or (
-      publication_status = 'published'
-      and exists (
-        select 1 from public.courses c
-        where c.id = phases.course_id and c.publication_status = 'published'
-      )
+    publication_status = 'published'
+    and exists (
+      select 1 from public.courses c
+      where c.id = phases.course_id and c.publication_status = 'published'
     )
   );
 drop policy if exists "catalog_admin_phases" on public.phases;
@@ -264,17 +260,14 @@ drop policy if exists "catalog_read_lessons" on public.lessons;
 create policy "catalog_read_lessons" on public.lessons
   for select to authenticated, anon
   using (
-    public.is_admin()
-    or (
-      publication_status = 'published'
-      and exists (
-        select 1
-        from public.phases p
-        join public.courses c on c.id = p.course_id
-        where p.id = lessons.phase_id
-          and p.publication_status = 'published'
-          and c.publication_status = 'published'
-      )
+    publication_status = 'published'
+    and exists (
+      select 1
+      from public.phases p
+      join public.courses c on c.id = p.course_id
+      where p.id = lessons.phase_id
+        and p.publication_status = 'published'
+        and c.publication_status = 'published'
     )
   );
 drop policy if exists "catalog_admin_lessons" on public.lessons;
@@ -285,8 +278,7 @@ drop policy if exists "catalog_read_lesson_resources" on public.lesson_resources
 create policy "catalog_read_lesson_resources" on public.lesson_resources
   for select to authenticated, anon
   using (
-    public.is_admin()
-    or exists (
+    exists (
       select 1
       from public.lessons l
       join public.phases p on p.id = l.phase_id
@@ -305,8 +297,7 @@ drop policy if exists "catalog_read_activities" on public.activities;
 create policy "catalog_read_activities" on public.activities
   for select to authenticated, anon
   using (
-    public.is_admin()
-    or exists (
+    exists (
       select 1
       from public.phases p
       join public.courses c on c.id = p.course_id
@@ -401,7 +392,6 @@ create policy "catalog_admin_opportunities" on public.opportunities
 -- ---------------------------------------------------------------------------
 revoke all on public.questions from public, anon, authenticated;
 grant select (id, quiz_id, position, question_type, difficulty, marks, prompt, context_text, options) on public.questions to authenticated;
-grant insert, update, delete on public.questions to authenticated;
 
 drop policy if exists "questions_read_authenticated" on public.questions;
 create policy "questions_read_authenticated" on public.questions
@@ -519,3 +509,81 @@ create policy "submissions_select_own_or_admin" on public.submissions
   using (user_id = auth.uid() or public.is_admin());
 drop policy if exists "submissions_insert_own" on public.submissions;
 drop policy if exists "submissions_admin_update" on public.submissions;
+
+-- ---------------------------------------------------------------------------
+-- 5. Explicit least-privilege table grants & anon surface lock (000010 sync)
+-- ---------------------------------------------------------------------------
+revoke insert, update, delete, truncate on
+  public.profiles,
+  public.categories,
+  public.skills,
+  public.courses,
+  public.course_skills,
+  public.course_versions,
+  public.phases,
+  public.lessons,
+  public.lesson_resources,
+  public.activities,
+  public.quizzes,
+  public.questions,
+  public.challenges,
+  public.course_enrollments,
+  public.course_completions,
+  public.lesson_progress,
+  public.enrollments,
+  public.activity_progress,
+  public.quiz_attempts,
+  public.submissions,
+  public.user_skills,
+  public.opportunities
+from public, anon;
+
+revoke select on
+  public.profiles,
+  public.course_versions,
+  public.quizzes,
+  public.questions,
+  public.challenges,
+  public.course_enrollments,
+  public.course_completions,
+  public.lesson_progress,
+  public.enrollments,
+  public.activity_progress,
+  public.quiz_attempts,
+  public.submissions,
+  public.user_skills
+from anon;
+
+grant select on
+  public.categories,
+  public.skills,
+  public.courses,
+  public.course_skills,
+  public.phases,
+  public.lessons,
+  public.lesson_resources,
+  public.activities,
+  public.opportunities
+to anon, authenticated;
+
+grant select on
+  public.course_versions,
+  public.quizzes,
+  public.challenges
+to authenticated;
+
+grant insert, update, delete on
+  public.categories,
+  public.skills,
+  public.courses,
+  public.course_skills,
+  public.course_versions,
+  public.phases,
+  public.lessons,
+  public.lesson_resources,
+  public.activities,
+  public.quizzes,
+  public.challenges,
+  public.opportunities
+to authenticated;
+

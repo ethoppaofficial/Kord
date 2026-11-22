@@ -12,7 +12,7 @@ function startOfIsoWeek(date) {
   return d;
 }
 
-function buildTimeSeries(completedEntries) {
+export function buildTimeSeries(completedEntries = []) {
   const now = new Date();
   const currentWeekStart = startOfIsoWeek(now);
   const weeks = [];
@@ -53,16 +53,69 @@ function buildTimeSeries(completedEntries) {
   return { weeklyMinutes: weeks, hourlyDistribution: hourlyBuckets };
 }
 
+export function normalizeDashboardPayload(data = {}, recommendations = []) {
+  const defaults = buildTimeSeries([]);
+  const rawLearning = data?.learning || {};
+  const rawUnderstanding = data?.understanding || {};
+  const rawDemonstrating = data?.demonstrating || {};
+  const weeklyMinutes =
+    Array.isArray(data?.weeklyMinutes) && data.weeklyMinutes.length > 0
+      ? data.weeklyMinutes.map((w) => ({
+          key: w.key || '',
+          label: w.label || '',
+          minutes: Number(w.minutes || 0),
+        }))
+      : defaults.weeklyMinutes;
+  const hourlyDistribution =
+    Array.isArray(data?.hourlyDistribution) && data.hourlyDistribution.length > 0
+      ? data.hourlyDistribution.map((b) => ({
+          label: b.label || '',
+          start: Number(b.start || 0),
+          end: Number(b.end || 0),
+          minutes: Number(b.minutes || 0),
+        }))
+      : defaults.hourlyDistribution;
+
+  const activeCourses = Number(rawLearning.activeCourses ?? rawLearning.activeRoadmaps ?? 0);
+  const pausedCourses = Number(rawLearning.pausedCourses ?? rawLearning.pausedRoadmaps ?? 0);
+  const completedCourses = Number(rawLearning.completedCourses ?? 0);
+
+  return {
+    learning: {
+      activeCourses,
+      pausedCourses,
+      completedCourses,
+      activeRoadmaps: Number(rawLearning.activeRoadmaps ?? activeCourses),
+      pausedRoadmaps: Number(rawLearning.pausedRoadmaps ?? pausedCourses),
+      completedLessons: Number(rawLearning.completedLessons ?? 0),
+      completedActivities: Number(rawLearning.completedActivities ?? 0),
+      minutesLearned: Number(rawLearning.minutesLearned ?? 0),
+    },
+    understanding: {
+      passedQuizzes: Number(rawUnderstanding.passedQuizzes ?? 0),
+      totalAttempts: Number(rawUnderstanding.totalAttempts ?? 0),
+      averageScore: Number(rawUnderstanding.averageScore ?? 0),
+    },
+    demonstrating: {
+      approvedSubmissions: Number(rawDemonstrating.approvedSubmissions ?? 0),
+      pendingSubmissions: Number(rawDemonstrating.pendingSubmissions ?? 0),
+      needsRevisionSubmissions: Number(rawDemonstrating.needsRevisionSubmissions ?? 0),
+      totalSubmissions: Number(rawDemonstrating.totalSubmissions ?? 0),
+    },
+    enrolledCourses: Array.isArray(data?.enrolledCourses) ? data.enrolledCourses : [],
+    skillLevels: Array.isArray(data?.skillLevels) ? data.skillLevels : [],
+    weeklyMinutes,
+    hourlyDistribution,
+    recommendations: Array.isArray(recommendations) ? recommendations : [],
+  };
+}
+
 export async function getDashboardData(userId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.rpc('get_dashboard');
     if (error) throw error;
     const recommendations = await listRankedOpportunities(userId);
-    return {
-      ...data,
-      enrolledCourses: data.enrolledCourses || [],
-      recommendations: recommendations.slice(0, 3),
-    };
+    return normalizeDashboardPayload(data || {}, recommendations.slice(0, 3));
   }
 
   const state = getDemoState();

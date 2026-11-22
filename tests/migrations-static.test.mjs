@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const MIGRATIONS_DIR = path.resolve('supabase/migrations');
+const SUPABASE_DIR = path.resolve('supabase');
+const MIGRATIONS_DIR = path.join(SUPABASE_DIR, 'migrations');
 const SRC_DIR = path.resolve('src');
 
 function collectFiles(dir, extFilter) {
@@ -16,7 +17,7 @@ function collectFiles(dir, extFilter) {
   return out;
 }
 
-test('Ordered Supabase migrations 000001-000009 exist and stay non-destructive', () => {
+test('Ordered Supabase migrations 000001-000010 exist and stay non-destructive', () => {
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
   assert.deepEqual(files, [
     '20261121000001_extensions_and_schema.sql',
@@ -28,12 +29,17 @@ test('Ordered Supabase migrations 000001-000009 exist and stay non-destructive',
     '20261121000007_storage_policies.sql',
     '20261121000008_dashboard_functions.sql',
     '20261121000009_seed_data.sql',
+    '20261122000010_backend_hardening.sql',
   ]);
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
     assert.doesNotMatch(sql, /\bdrop\s+table\b/i, `${file} must not DROP TABLE`);
-    assert.doesNotMatch(sql, /\btruncate\b/i, `${file} must not TRUNCATE`);
+    assert.doesNotMatch(
+      sql,
+      /\btruncate\s+(?:table\b|only\b|[a-z_][a-z0-9_]*\.)|^\s*truncate\b/im,
+      `${file} must not TRUNCATE tables`
+    );
   }
 });
 
@@ -44,6 +50,7 @@ test('SQL security policies enforce role protection, RLS column locks, internal 
   const m6 = fs.readFileSync(path.join(MIGRATIONS_DIR, '20261121000006_assessment_and_submission_functions.sql'), 'utf8');
   const m7 = fs.readFileSync(path.join(MIGRATIONS_DIR, '20261121000007_storage_policies.sql'), 'utf8');
   const m9 = fs.readFileSync(path.join(MIGRATIONS_DIR, '20261121000009_seed_data.sql'), 'utf8');
+  const m10 = fs.readFileSync(path.join(MIGRATIONS_DIR, '20261122000010_backend_hardening.sql'), 'utf8');
 
   // Role escalation protection
   assert.match(m3, /trg_protect_profile_privileged_fields/);
@@ -52,8 +59,8 @@ test('SQL security policies enforce role protection, RLS column locks, internal 
 
   // Profiles & Questions column protection + revoked direct mutations on learner tables
   assert.match(m4, /grant update \(first_name, full_name\) on public\.profiles to authenticated/);
-  assert.match(m4, /revoke all on public\.questions from public, anon, authenticated/);
-  assert.match(m4, /grant select \(id, quiz_id, position, question_type, difficulty, marks, prompt, context_text, options\) on public\.questions to authenticated/);
+  assert.match(m10, /revoke all on public\.questions from public, anon, authenticated/);
+  assert.match(m10, /grant select \(id, quiz_id, position, question_type, difficulty, marks, prompt, context_text, options\)\s+on public\.questions to authenticated/i);
   for (const tbl of [
     'course_enrollments',
     'course_completions',
@@ -69,21 +76,46 @@ test('SQL security policies enforce role protection, RLS column locks, internal 
 
   // Internal progression RPCs never callable from client sessions
   assert.match(m5, /revoke all on function public\.upgrade_user_skill_level\(uuid, uuid, text\) from public, anon, authenticated/);
-  assert.match(m5, /revoke all on function public\.evaluate_course_and_skill_progression\(uuid, uuid\) from public, anon, authenticated/);
+  assert.match(m10, /revoke all on function public\.recompute_user_skill_level\(uuid, uuid\) from public, anon, authenticated/);
+  assert.match(m10, /revoke all on function public\.evaluate_course_and_skill_progression\(uuid, uuid\) from public, anon, authenticated/);
+  assert.match(m10, /revoke all on function public\.recompute_course_progression_for_course\(uuid\) from public, anon, authenticated/);
 
   // Quizzes (submit_quiz & admin_grade_attempt) never award 'demonstrated' directly and withhold solutions when unreleased
   const quizFunctionsSql =
-    m6.slice(m6.indexOf('function public.submit_quiz'), m6.indexOf('function public.submit_challenge_evidence')) +
-    m6.slice(m6.indexOf('function public.admin_grade_attempt'), m6.indexOf('function public.admin_get_quiz_questions'));
+    m10.slice(m10.indexOf('function public.submit_quiz'), m10.indexOf('function public.submit_challenge_evidence'));
   assert.doesNotMatch(quizFunctionsSql, /'demonstrated'/);
-  assert.match(m6, /solutionsReleased/);
+  assert.match(m10, /solutionsReleased/);
   assert.match(m6, /v_sub\.user_id = auth\.uid\(\)/);
-  assert.match(m6, /v_att\.user_id = auth\.uid\(\)/);
-  assert.match(m6, /admin_grade_attempt/);
+  assert.match(m10, /v_att\.user_id = auth\.uid\(\)/);
+  assert.match(m10, /admin_delete_question/);
 
-  // Storage deletion blocks submitted evidence objects
+  // Storage deletion blocks submitted evidence objects and blocks leading slashes / traversal
   assert.match(m7, /from public\.submissions s\s+where s\.file_path = storage\.objects\.name/i);
-  assert.match(m7, /position\('\.\.' in name\) = 0/);
+  assert.match(m10, /position\('\.\.' in name\) = 0/);
+  assert.match(m10, /left\(name, 1\) <> '\/'/);
+
+  // Dashboard contract returns real analytics keys matching dashboardData.js
+  for (const key of [
+    'activeCourses',
+    'pausedCourses',
+    'completedCourses',
+    'completedLessons',
+    'completedActivities',
+    'minutesLearned',
+    'passedQuizzes',
+    'totalAttempts',
+    'averageScore',
+    'approvedSubmissions',
+    'pendingSubmissions',
+    'needsRevisionSubmissions',
+    'totalSubmissions',
+    'enrolledCourses',
+    'skillLevels',
+    'weeklyMinutes',
+    'hourlyDistribution',
+  ]) {
+    assert.match(m10, new RegExp(`'${key}'`), `get_dashboard() must emit '${key}'`);
+  }
 
   // Seed data keeps 4 flagship courses without broken /src/assets/images/*.jpg URLs
   assert.doesNotMatch(m9, /\/src\/assets\/images\/course_thumb_/);
@@ -93,7 +125,57 @@ test('SQL security policies enforce role protection, RLS column locks, internal 
   assert.match(m9, /communication-and-public-speaking/);
 });
 
-test('Frontend codebase contains zero service_role keys or direct internal progression RPC calls', () => {
+test('Every SECURITY DEFINER function across migrations and standalone SQL pins search_path and revokes PUBLIC/anon execute', () => {
+  const sqlFiles = collectFiles(SUPABASE_DIR, '.sql');
+  const definerRegex = /create\s+or\s+replace\s+function\s+(public\.[a-zA-Z0-9_]+)\s*\(([\s\S]*?)\)\s*returns\b[\s\S]*?language\s+\w+([\s\S]*?)as\s+\$\$/gi;
+
+  for (const file of sqlFiles) {
+    const content = fs.readFileSync(file, 'utf8');
+    let match;
+    while ((match = definerRegex.exec(content)) !== null) {
+      const fnName = match[1];
+      const header = match[3];
+      if (!/security\s+definer/i.test(header)) continue;
+
+      assert.match(
+        header,
+        /set\s+search_path\s*=\s*public\b/i,
+        `${path.basename(file)} ${fnName} uses SECURITY DEFINER without fixed "set search_path = public"`
+      );
+
+      const revokeRegex = new RegExp(`revoke\\s+all\\s+on\\s+function\\s+${fnName.replace('.', '\\.')}\\s*\\([^)]*\\)\\s*from\\s+public,\\s*anon`, 'i');
+      assert.match(
+        content,
+        revokeRegex,
+        `${path.basename(file)} ${fnName} must REVOKE ALL FROM public, anon`
+      );
+    }
+  }
+});
+
+test('Standalone SQL files and Supabase CLI configuration stay synchronized with hardening migration', () => {
+  const configToml = fs.readFileSync(path.join(SUPABASE_DIR, 'config.toml'), 'utf8');
+  assert.match(configToml, /\[storage\.buckets\.evidence\]/);
+  assert.match(configToml, /file_size_limit\s*=\s*"50MiB"/);
+
+  assert.ok(fs.existsSync(path.join(SUPABASE_DIR, 'README.md')), 'supabase/README.md must exist');
+
+  const s2 = fs.readFileSync(path.join(SUPABASE_DIR, '02_security.sql'), 'utf8');
+  const s3 = fs.readFileSync(path.join(SUPABASE_DIR, '03_functions.sql'), 'utf8');
+  const s4 = fs.readFileSync(path.join(SUPABASE_DIR, '04_storage.sql'), 'utf8');
+  const s6 = fs.readFileSync(path.join(SUPABASE_DIR, '06_dashboard.sql'), 'utf8');
+
+  assert.doesNotMatch(s2, /grant\s+insert\s*,\s*update\s*,\s*delete\s+on\s+public\.questions\s+to\s+authenticated/i);
+  assert.match(s3, /recompute_user_skill_level/);
+  assert.match(s3, /admin_delete_question/);
+  assert.match(s4, /left\(name,\s*1\)\s*<>\s*'\/'/i);
+  assert.match(s6, /enrolledCourses/);
+  assert.match(s6, /weeklyMinutes/);
+  assert.match(s6, /hourlyDistribution/);
+  assert.match(s6, /averageScore/);
+});
+
+test('Frontend codebase contains zero service_role keys, unparenthesized CASE-in-IF traps, or direct internal progression RPC calls', () => {
   const jsFiles = collectFiles(SRC_DIR, '.js');
   for (const file of jsFiles) {
     const content = fs.readFileSync(file, 'utf8');
@@ -107,6 +189,11 @@ test('Frontend codebase contains zero service_role keys or direct internal progr
       content,
       /\.rpc\(['"]upgrade_user_skill_level['"]/,
       `${file} must not call internal upgrade_user_skill_level directly`
+    );
+    assert.doesNotMatch(
+      content,
+      /\.rpc\(['"]recompute_user_skill_level['"]/,
+      `${file} must not call internal recompute_user_skill_level directly`
     );
   }
 });

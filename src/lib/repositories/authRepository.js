@@ -1,5 +1,4 @@
 import { supabase, isDemoMode } from '../supabase.js';
-import { ADMIN_EMAIL } from '../constants.js';
 import {
   getDemoState,
   updateDemoState,
@@ -65,33 +64,30 @@ export function createAuthService({
       .eq('id', authUser.id)
       .single();
 
-    if (profileError && profileError.code !== 'PGRST116') {
-      console.warn('Unable to load user profile:', profileError.message);
-      if (profileError.status === 401 || profileError.status === 403) {
-        return null;
+    if (profileError || !profile || !['learner', 'admin'].includes(profile.role)) {
+      if (profileError) {
+        console.warn('Unable to load user profile:', profileError.message);
       }
+      return null;
     }
 
     const emailPrefix = String(authUser.email || 'user').split('@')[0];
     const fullName =
-      profile?.full_name ||
+      profile.full_name ||
       authUser.user_metadata?.full_name ||
       emailPrefix;
     const firstName =
-      profile?.first_name ||
+      profile.first_name ||
       authUser.user_metadata?.first_name ||
       extractFirstName(fullName, emailPrefix);
-
-    // Strictly resolve role from authoritative profiles table; never trust client metadata
-    const role = profile?.role === 'admin' ? 'admin' : 'learner';
 
     return {
       user: {
         id: authUser.id,
-        email: profile?.email || authUser.email,
+        email: profile.email || authUser.email,
         firstName,
         fullName,
-        role,
+        role: profile.role,
       },
     };
   }
@@ -185,7 +181,7 @@ export function createAuthService({
       throw new Error('An account with that email already exists.');
     }
 
-    const assignedRole = cleanEmail === ADMIN_EMAIL ? 'admin' : 'learner';
+    const assignedRole = 'learner';
     const newUser = {
       id: `user-${Date.now()}`,
       email: cleanEmail,

@@ -1,9 +1,9 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
-import { recomputeCourseAndSkillStatus } from './progressRepository.js';
+import { recomputeCourseAndSkillStatus, recomputeDemoSkillLevel } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
-import { gradeAssessmentAttempt } from '../assessmentEngine.js';
+import { gradeAssessmentAttempt, isManualQuestionType } from '../assessmentEngine.js';
 
 function sanitizeReturnedResults(results = [], solutionsReleased = false) {
   if (solutionsReleased) return results;
@@ -255,8 +255,10 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
   const effectiveKey =
     idempotencyKey || buildIdempotencyKey('quiz-submit', userId, quizId, JSON.stringify(answersMap));
 
+  const inFlightKey = buildIdempotencyKey('quiz-submit-lock', userId, quizId, effectiveKey);
+
   return runIdempotent(
-    effectiveKey,
+    inFlightKey,
     async () => {
       if (!isDemoMode && supabase) {
         const { data, error } = await supabase.rpc('submit_quiz', {
@@ -307,6 +309,9 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
         (a) => a.userId === userId && a.idempotencyKey === effectiveKey
       );
       if (existing) {
+        if (existing.quizId !== quizId) {
+          throw new Error('Idempotency key already used for a different assessment.');
+        }
         const gradedReplay = gradeAssessmentAttempt({
           quiz,
           questions: quiz.questions || [],
@@ -379,11 +384,10 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
 
       // Quizzes can establish Practising and trigger course evaluation when enrolled,
       // but NEVER independently award Demonstrated or Verified without practical completion.
-      if (graded.passed && graded.reviewStatus !== 'pending_review') {
-        await upgradeSkillLevel(userId, quiz.skillId, 'practising');
-        if (quiz.courseId) {
-          await recomputeCourseAndSkillStatus(userId, quiz.courseId);
-        }
+      if (quiz.courseId) {
+        await recomputeCourseAndSkillStatus(userId, quiz.courseId);
+      } else if (quiz.skillId) {
+        await recomputeDemoSkillLevel(userId, quiz.skillId);
       }
 
       return {
@@ -399,7 +403,7 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
         results: sanitizeReturnedResults(graded.results, solutionsReleased),
       };
     },
-    { cacheResult: true }
+    { cacheResult: false }
   );
 }
 
@@ -543,6 +547,7 @@ export async function adminGetQuizQuestions(quizId) {
 export async function adminUpsertQuestion({
   id,
   quizId,
+  position = null,
   questionType = 'multiple_choice',
   difficulty = 'medium',
   marks = 1,
@@ -566,7 +571,7 @@ export async function adminUpsertQuestion({
       const { data, error } = await supabase.rpc('admin_upsert_question', {
         p_id: id || null,
         p_quiz_id: quizId,
-        p_position: Date.now() % 10000,
+        p_position: position ?? null,
         p_prompt: prompt,
         p_options: options,
         p_correct_index: Number(correctIndex || 0),
@@ -627,12 +632,11 @@ export async function adminDeleteQuestion(quizId, questionId) {
   const key = buildIdempotencyKey('admin-q-del', quizId, questionId);
   return runIdempotent(key, async () => {
     if (!isDemoMode && supabase) {
-      const { error } = await supabase
-        .from('questions')
-        .delete()
-        .eq('id', questionId)
-        .eq('quiz_id', quizId);
-      if (error) throw error;
+      const { error } = await supabase.rpc('admin_delete_question', {
+        p_quiz_id: quizId,
+        p_question_id: questionId,
+      });
+      if (error) throw new Error(error.message);
       return;
     }
 
@@ -653,28 +657,38 @@ export async function adminListPendingAssessmentAttempts() {
       .select('*, profiles!quiz_attempts_user_id_fkey(full_name, email), quizzes(title, pass_percent, course_id, skill_id)')
       .order('created_at', { ascending: false });
     if (error) throw error;
-    return (data || [])
-      .filter((a) => a.review_status === 'pending_review' || a.review_status === 'reviewed')
-      .map((a) => ({
-        id: a.id,
-        userId: a.user_id,
-        quizId: a.quiz_id,
-        learnerName: a.profiles?.full_name || 'Learner',
-        learnerEmail: a.profiles?.email || '',
-        quizTitle: a.quizzes?.title || 'Assessment',
-        passPercent: a.quizzes?.pass_percent || 70,
-        courseId: a.quizzes?.course_id || null,
-        skillId: a.quizzes?.skill_id || null,
-        answers: a.answers || {},
-        score: a.score,
-        total: a.total,
-        percentage: a.percentage,
-        passed: a.passed,
-        reviewStatus: a.review_status,
-        manualScores: a.manual_scores || {},
-        manualFeedback: a.manual_feedback || '',
-        createdAt: a.created_at,
-      }));
+    const filtered = (data || []).filter(
+      (a) => a.review_status === 'pending_review' || a.review_status === 'reviewed'
+    );
+    const uniqueQuizIds = Array.from(new Set(filtered.map((a) => a.quiz_id).filter(Boolean)));
+    const questionsByQuizId = new Map();
+    if (uniqueQuizIds.length > 0) {
+      const questionLists = await Promise.all(
+        uniqueQuizIds.map(async (qid) => [qid, await adminGetQuizQuestions(qid)])
+      );
+      questionLists.forEach(([qid, qList]) => questionsByQuizId.set(qid, qList));
+    }
+    return filtered.map((a) => ({
+      id: a.id,
+      userId: a.user_id,
+      quizId: a.quiz_id,
+      learnerName: a.profiles?.full_name || 'Learner',
+      learnerEmail: a.profiles?.email || '',
+      quizTitle: a.quizzes?.title || 'Assessment',
+      passPercent: a.quizzes?.pass_percent || 70,
+      courseId: a.quizzes?.course_id || null,
+      skillId: a.quizzes?.skill_id || null,
+      answers: a.answers || {},
+      score: a.score,
+      total: a.total,
+      percentage: a.percentage,
+      passed: a.passed,
+      reviewStatus: a.review_status,
+      manualScores: a.manual_scores || {},
+      manualFeedback: a.manual_feedback || '',
+      questions: questionsByQuizId.get(a.quiz_id) || [],
+      createdAt: a.created_at,
+    }));
   }
 
   const state = getDemoState();
@@ -745,7 +759,11 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       let manualSum = 0;
       const cleanManualScores = {};
       (quiz.questions || []).forEach((q) => {
-        if (['short_answer', 'long_form', 'practical_submission'].includes(q.questionType) && manualScores && manualScores[q.id] !== undefined) {
+        if (isManualQuestionType(q.questionType)) {
+          const rawPresent = manualScores && Object.prototype.hasOwnProperty.call(manualScores, q.id) && manualScores[q.id] !== null && manualScores[q.id] !== '';
+          if (!rawPresent) {
+            throw new Error(`Manual score for question "${q.prompt}" is required.`);
+          }
           const rawVal = Number(manualScores[q.id]);
           const maxMarks = Math.max(1, Number(q.marks || 1));
           if (!Number.isFinite(rawVal) || rawVal < 0 || rawVal > maxMarks) {
@@ -777,12 +795,11 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       return draft;
     });
 
-    if (didPass && targetUserId) {
-      if (targetSkillId) {
-        await upgradeSkillLevel(targetUserId, targetSkillId, 'practising');
-      }
+    if (targetUserId) {
       if (targetCourseId) {
         await recomputeCourseAndSkillStatus(targetUserId, targetCourseId);
+      } else if (targetSkillId) {
+        await recomputeDemoSkillLevel(targetUserId, targetSkillId);
       }
     }
   });

@@ -1,4 +1,4 @@
--- 03_functions.sql (Synchronized with migrations 000005-000006)
+-- 03_functions.sql (Synchronized with migrations 000005-000006 and 20261122000010)
 
 -- 20261121000005_progression_functions.sql
 -- Internal progression engine and authenticated learner progression RPCs.
@@ -44,6 +44,144 @@ $$;
 
 revoke all on function public.upgrade_user_skill_level(uuid, uuid, text) from public, anon, authenticated;
 
+-- INTERNAL ONLY: recomputes current level cleanly (supports both upward and downward recalculation)
+create or replace function public.recompute_user_skill_level(
+  p_user_id uuid,
+  p_skill_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_pub_courses integer := 0;
+  v_verified_courses integer := 0;
+  v_any_practical_course boolean := false;
+  v_any_standalone_approved boolean := false;
+  v_any_practising boolean := false;
+  v_any_declared boolean := false;
+  v_target_level text := null;
+begin
+  if p_user_id is null or p_skill_id is null then
+    return;
+  end if;
+
+  if not exists (select 1 from public.skills where id = p_skill_id) then
+    return;
+  end if;
+
+  select count(distinct c.id) into v_pub_courses
+  from public.courses c
+  left join public.course_skills cs on cs.course_id = c.id
+  where c.publication_status = 'published'
+    and (c.skill_id = p_skill_id or cs.skill_id = p_skill_id);
+
+  select count(distinct c.id) into v_verified_courses
+  from public.courses c
+  left join public.course_skills cs on cs.course_id = c.id
+  join public.course_completions cc on cc.course_id = c.id and cc.user_id = p_user_id
+  where c.publication_status = 'published'
+    and (c.skill_id = p_skill_id or cs.skill_id = p_skill_id)
+    and cc.completion_state = 'completed_verified'
+    and cc.practical_approved = true;
+
+  select exists (
+    select 1
+    from public.courses c
+    left join public.course_skills cs on cs.course_id = c.id
+    join public.course_completions cc on cc.course_id = c.id and cc.user_id = p_user_id
+    where c.publication_status = 'published'
+      and (c.skill_id = p_skill_id or cs.skill_id = p_skill_id)
+      and cc.practical_approved = true
+  ) into v_any_practical_course;
+
+  select exists (
+    select 1
+    from public.submissions s
+    join public.challenges ch on ch.id = s.challenge_id
+    where s.user_id = p_user_id
+      and s.status = 'approved'
+      and ch.skill_id = p_skill_id
+      and ch.course_id is null
+  ) into v_any_standalone_approved;
+
+  select (
+    exists (
+      select 1
+      from public.lesson_progress lp
+      join public.lessons l on l.id = lp.lesson_id
+      join public.phases p on p.id = l.phase_id
+      join public.courses c on c.id = p.course_id
+      left join public.course_skills cs on cs.course_id = c.id
+      where lp.user_id = p_user_id
+        and lp.completed = true
+        and l.publication_status = 'published'
+        and p.publication_status = 'published'
+        and c.publication_status = 'published'
+        and (c.skill_id = p_skill_id or cs.skill_id = p_skill_id)
+    )
+    or exists (
+      select 1
+      from public.activity_progress ap
+      join public.activities a on a.id = ap.activity_id
+      join public.phases p on p.id = a.phase_id
+      join public.courses c on c.id = p.course_id
+      left join public.course_skills cs on cs.course_id = c.id
+      where ap.user_id = p_user_id
+        and ap.completed = true
+        and p.publication_status = 'published'
+        and c.publication_status = 'published'
+        and (c.skill_id = p_skill_id or cs.skill_id = p_skill_id)
+    )
+    or exists (
+      select 1
+      from public.quiz_attempts qa
+      join public.quizzes q on q.id = qa.quiz_id
+      where qa.user_id = p_user_id
+        and q.skill_id = p_skill_id
+        and qa.passed = true
+        and qa.review_status in ('auto_graded', 'reviewed', 'graded')
+    )
+  ) into v_any_practising;
+
+  select (
+    exists (select 1 from public.user_skills us where us.user_id = p_user_id and us.skill_id = p_skill_id)
+    or exists (select 1 from public.enrollments e where e.user_id = p_user_id and e.skill_id = p_skill_id)
+    or exists (
+      select 1
+      from public.course_enrollments ce
+      join public.courses c on c.id = ce.course_id
+      left join public.course_skills cs on cs.course_id = c.id
+      where ce.user_id = p_user_id
+        and (c.skill_id = p_skill_id or cs.skill_id = p_skill_id)
+    )
+  ) into v_any_declared;
+
+  if (v_pub_courses > 0 and v_verified_courses >= v_pub_courses)
+     or (v_pub_courses = 0 and v_any_standalone_approved) then
+    v_target_level := 'verified';
+  elsif v_any_practical_course or v_any_standalone_approved then
+    v_target_level := 'demonstrated';
+  elsif v_any_practising then
+    v_target_level := 'practising';
+  elsif v_any_declared then
+    v_target_level := 'declared';
+  end if;
+
+  if v_target_level is not null then
+    insert into public.user_skills (user_id, skill_id, level, updated_at)
+    values (p_user_id, p_skill_id, v_target_level, now())
+    on conflict (user_id, skill_id) do update
+      set level = excluded.level,
+          updated_at = now()
+      where public.user_skills.level is distinct from excluded.level;
+  end if;
+end;
+$$;
+
+revoke all on function public.recompute_user_skill_level(uuid, uuid) from public, anon, authenticated;
+
 -- INTERNAL ONLY: evaluates published course requirements & skill progression
 create or replace function public.evaluate_course_and_skill_progression(
   p_user_id uuid,
@@ -71,7 +209,6 @@ declare
   v_activities_ok boolean := true;
   v_quizzes_ok boolean := false;
   v_challenges_sub_ok boolean := true;
-  v_challenges_app_ok boolean := false;
   v_practical_approved boolean := false;
   v_instructional_done boolean := false;
   v_require_approval boolean := true;
@@ -79,15 +216,13 @@ declare
   v_course_done boolean := false;
   v_has_content boolean := false;
   v_skill_rec record;
-  v_pub_courses integer := 0;
-  v_done_verified_courses integer := 0;
 begin
   select skill_id, coalesce(completion_rules, '{}'::jsonb), publication_status
   into v_primary_skill_id, v_rules, v_course_pub
   from public.courses
   where id = p_course_id;
 
-  if v_primary_skill_id is null or v_course_pub <> 'published' then
+  if v_primary_skill_id is null then
     return;
   end if;
 
@@ -98,145 +233,146 @@ begin
     return;
   end if;
 
-  select count(*) into v_req_lessons
-  from public.lessons l
-  join public.phases p on p.id = l.phase_id
-  where p.course_id = p_course_id
-    and p.publication_status = 'published'
-    and l.publication_status = 'published'
-    and l.is_required = true;
+  if v_course_pub = 'published' then
+    select count(*) into v_req_lessons
+    from public.lessons l
+    join public.phases p on p.id = l.phase_id
+    where p.course_id = p_course_id
+      and p.publication_status = 'published'
+      and l.publication_status = 'published'
+      and l.is_required = true;
 
-  select count(*) into v_done_lessons
-  from public.lesson_progress lp
-  join public.lessons l on l.id = lp.lesson_id
-  join public.phases p on p.id = l.phase_id
-  where p.course_id = p_course_id
-    and p.publication_status = 'published'
-    and l.publication_status = 'published'
-    and l.is_required = true
-    and lp.user_id = p_user_id
-    and lp.completed = true;
+    select count(*) into v_done_lessons
+    from public.lesson_progress lp
+    join public.lessons l on l.id = lp.lesson_id
+    join public.phases p on p.id = l.phase_id
+    where p.course_id = p_course_id
+      and p.publication_status = 'published'
+      and l.publication_status = 'published'
+      and l.is_required = true
+      and lp.user_id = p_user_id
+      and lp.completed = true;
 
-  select count(*) into v_req_activities
-  from public.activities a
-  join public.phases p on p.id = a.phase_id
-  where p.course_id = p_course_id
-    and p.publication_status = 'published'
-    and a.is_required = true;
+    select count(*) into v_req_activities
+    from public.activities a
+    join public.phases p on p.id = a.phase_id
+    where p.course_id = p_course_id
+      and p.publication_status = 'published'
+      and a.is_required = true;
 
-  select count(*) into v_done_activities
-  from public.activity_progress ap
-  join public.activities a on a.id = ap.activity_id
-  join public.phases p on p.id = a.phase_id
-  where p.course_id = p_course_id
-    and p.publication_status = 'published'
-    and a.is_required = true
-    and ap.user_id = p_user_id
-    and ap.completed = true;
+    select count(*) into v_done_activities
+    from public.activity_progress ap
+    join public.activities a on a.id = ap.activity_id
+    join public.phases p on p.id = a.phase_id
+    where p.course_id = p_course_id
+      and p.publication_status = 'published'
+      and a.is_required = true
+      and ap.user_id = p_user_id
+      and ap.completed = true;
 
-  select count(*) into v_req_quizzes
-  from public.quizzes q
-  where q.course_id = p_course_id
-    and (
-      q.phase_id is null
-      or exists (
-        select 1 from public.phases p
-        where p.id = q.phase_id and p.publication_status = 'published'
+    select count(*) into v_req_quizzes
+    from public.quizzes q
+    where q.course_id = p_course_id
+      and (
+        q.phase_id is null
+        or exists (
+          select 1 from public.phases p
+          where p.id = q.phase_id and p.publication_status = 'published'
+        )
       )
-    )
-    and (
-      q.lesson_id is null
-      or exists (
-        select 1 from public.lessons l
-        where l.id = q.lesson_id and l.publication_status = 'published'
-      )
-    );
+      and (
+        q.lesson_id is null
+        or exists (
+          select 1 from public.lessons l
+          where l.id = q.lesson_id and l.publication_status = 'published'
+        )
+      );
 
-  select count(distinct qa.quiz_id) into v_passed_quizzes
-  from public.quiz_attempts qa
-  join public.quizzes q on q.id = qa.quiz_id
-  where q.course_id = p_course_id
-    and (
-      q.phase_id is null
-      or exists (
-        select 1 from public.phases p
-        where p.id = q.phase_id and p.publication_status = 'published'
+    select count(distinct qa.quiz_id) into v_passed_quizzes
+    from public.quiz_attempts qa
+    join public.quizzes q on q.id = qa.quiz_id
+    where q.course_id = p_course_id
+      and (
+        q.phase_id is null
+        or exists (
+          select 1 from public.phases p
+          where p.id = q.phase_id and p.publication_status = 'published'
+        )
       )
-    )
-    and (
-      q.lesson_id is null
-      or exists (
-        select 1 from public.lessons l
-        where l.id = q.lesson_id and l.publication_status = 'published'
+      and (
+        q.lesson_id is null
+        or exists (
+          select 1 from public.lessons l
+          where l.id = q.lesson_id and l.publication_status = 'published'
+        )
       )
-    )
-    and qa.user_id = p_user_id
-    and qa.passed = true
-    and qa.review_status in ('auto_graded', 'reviewed', 'graded');
+      and qa.user_id = p_user_id
+      and qa.passed = true
+      and qa.review_status in ('auto_graded', 'reviewed', 'graded');
 
-  select count(*) into v_req_challenges
-  from public.challenges c
-  where c.course_id = p_course_id
-    and c.is_required = true
-    and (
-      c.phase_id is null
-      or exists (
-        select 1 from public.phases p
-        where p.id = c.phase_id and p.publication_status = 'published'
+    select count(*) into v_req_challenges
+    from public.challenges c
+    where c.course_id = p_course_id
+      and c.is_required = true
+      and (
+        c.phase_id is null
+        or exists (
+          select 1 from public.phases p
+          where p.id = c.phase_id and p.publication_status = 'published'
+        )
+      );
+
+    select count(distinct s.challenge_id) into v_submitted_challenges
+    from public.submissions s
+    join public.challenges c on c.id = s.challenge_id
+    where c.course_id = p_course_id
+      and c.is_required = true
+      and (
+        c.phase_id is null
+        or exists (
+          select 1 from public.phases p
+          where p.id = c.phase_id and p.publication_status = 'published'
+        )
       )
-    );
+      and s.user_id = p_user_id;
 
-  select count(distinct s.challenge_id) into v_submitted_challenges
-  from public.submissions s
-  join public.challenges c on c.id = s.challenge_id
-  where c.course_id = p_course_id
-    and c.is_required = true
-    and (
-      c.phase_id is null
-      or exists (
-        select 1 from public.phases p
-        where p.id = c.phase_id and p.publication_status = 'published'
+    select count(distinct s.challenge_id) into v_approved_challenges
+    from public.submissions s
+    join public.challenges c on c.id = s.challenge_id
+    where c.course_id = p_course_id
+      and c.is_required = true
+      and (
+        c.phase_id is null
+        or exists (
+          select 1 from public.phases p
+          where p.id = c.phase_id and p.publication_status = 'published'
+        )
       )
-    )
-    and s.user_id = p_user_id;
+      and s.user_id = p_user_id
+      and s.status = 'approved';
 
-  select count(distinct s.challenge_id) into v_approved_challenges
-  from public.submissions s
-  join public.challenges c on c.id = s.challenge_id
-  where c.course_id = p_course_id
-    and c.is_required = true
-    and (
-      c.phase_id is null
-      or exists (
-        select 1 from public.phases p
-        where p.id = c.phase_id and p.publication_status = 'published'
-      )
-    )
-    and s.user_id = p_user_id
-    and s.status = 'approved';
+    v_has_content := (v_req_lessons + v_req_activities + v_req_quizzes + v_req_challenges) > 0;
+    v_lessons_ok := coalesce((v_rules ->> 'requireAllRequiredLessons')::boolean, true) = false or v_done_lessons >= v_req_lessons;
+    v_activities_ok := coalesce((v_rules ->> 'requireAllActivities')::boolean, true) = false or v_done_activities >= v_req_activities;
+    v_quizzes_ok := coalesce((v_rules ->> 'requireAllAssessments')::boolean, true) = false or v_passed_quizzes >= v_req_quizzes;
+    v_challenges_sub_ok := coalesce((v_rules ->> 'requireChallengeSubmission')::boolean, true) = false or v_submitted_challenges >= v_req_challenges;
+    v_require_approval := coalesce((v_rules ->> 'requireChallengeApproval')::boolean, true);
+    v_practical_approved := v_req_challenges > 0 and v_approved_challenges >= v_req_challenges;
+    v_instructional_done := v_has_content and v_lessons_ok and v_activities_ok and v_quizzes_ok;
 
-  v_has_content := (v_req_lessons + v_req_activities + v_req_quizzes + v_req_challenges) > 0;
-  v_lessons_ok := coalesce((v_rules ->> 'requireAllRequiredLessons')::boolean, true) = false or v_done_lessons >= v_req_lessons;
-  v_activities_ok := coalesce((v_rules ->> 'requireAllActivities')::boolean, true) = false or v_done_activities >= v_req_activities;
-  v_quizzes_ok := coalesce((v_rules ->> 'requireAllAssessments')::boolean, true) = false or v_passed_quizzes >= v_req_quizzes;
-  v_challenges_sub_ok := coalesce((v_rules ->> 'requireChallengeSubmission')::boolean, true) = false or v_submitted_challenges >= v_req_challenges;
-  v_require_approval := coalesce((v_rules ->> 'requireChallengeApproval')::boolean, true);
-  v_challenges_app_ok := (not v_require_approval) or v_approved_challenges >= v_req_challenges;
-  v_practical_approved := v_req_challenges > 0 and v_approved_challenges >= v_req_challenges;
-  v_instructional_done := v_has_content and v_lessons_ok and v_activities_ok and v_quizzes_ok;
-
-  if v_instructional_done then
-    if v_require_approval and v_req_challenges > 0 then
-      if v_practical_approved then
-        v_completion_state := 'completed_verified';
-      else
-        v_completion_state := 'awaiting_practical_assessment';
-      end if;
-    elsif v_challenges_sub_ok then
-      if v_practical_approved then
-        v_completion_state := 'completed_verified';
-      else
-        v_completion_state := 'completed';
+    if v_instructional_done then
+      if v_req_challenges > 0 and v_require_approval then
+        if v_practical_approved then
+          v_completion_state := 'completed_verified';
+        else
+          v_completion_state := 'awaiting_practical_assessment';
+        end if;
+      elsif v_challenges_sub_ok then
+        if v_practical_approved then
+          v_completion_state := 'completed_verified';
+        else
+          v_completion_state := 'completed';
+        end if;
       end if;
     end if;
   end if;
@@ -276,36 +412,108 @@ begin
       select cs.skill_id from public.course_skills cs where cs.course_id = p_course_id
     ) s
   loop
-    if v_done_lessons > 0 or v_done_activities > 0 then
-      perform public.upgrade_user_skill_level(p_user_id, v_skill_rec.skill_id, 'practising');
-    end if;
-
-    if v_course_done then
-      perform public.upgrade_user_skill_level(p_user_id, v_skill_rec.skill_id, 'demonstrated');
-    end if;
-
-    select count(distinct c.id) into v_pub_courses
-    from public.courses c
-    left join public.course_skills cs on cs.course_id = c.id
-    where c.publication_status = 'published'
-      and (c.skill_id = v_skill_rec.skill_id or cs.skill_id = v_skill_rec.skill_id);
-
-    select count(distinct c.id) into v_done_verified_courses
-    from public.courses c
-    left join public.course_skills cs on cs.course_id = c.id
-    join public.course_completions cc on cc.course_id = c.id and cc.user_id = p_user_id
-    where c.publication_status = 'published'
-      and (c.skill_id = v_skill_rec.skill_id or cs.skill_id = v_skill_rec.skill_id)
-      and cc.completion_state = 'completed_verified';
-
-    if v_pub_courses > 0 and v_done_verified_courses >= v_pub_courses then
-      perform public.upgrade_user_skill_level(p_user_id, v_skill_rec.skill_id, 'verified');
-    end if;
+    perform public.recompute_user_skill_level(p_user_id, v_skill_rec.skill_id);
   end loop;
 end;
 $$;
 
 revoke all on function public.evaluate_course_and_skill_progression(uuid, uuid) from public, anon, authenticated;
+
+create or replace function public.recompute_course_progression_for_course(p_course_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_enr record;
+begin
+  if p_course_id is null then
+    return;
+  end if;
+  for v_enr in
+    select user_id from public.course_enrollments where course_id = p_course_id
+  loop
+    perform public.evaluate_course_and_skill_progression(v_enr.user_id, p_course_id);
+  end loop;
+end;
+$$;
+
+revoke all on function public.recompute_course_progression_for_course(uuid) from public, anon, authenticated;
+
+create or replace function public.trg_recompute_on_curriculum_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_course_id uuid;
+  v_phase_id uuid;
+begin
+  if pg_trigger_depth() > 1 then
+    return null;
+  end if;
+
+  if tg_table_name = 'courses' then
+    if tg_op = 'UPDATE' then
+      if old.publication_status is not distinct from new.publication_status
+         and old.completion_rules is not distinct from new.completion_rules
+         and old.skill_id is not distinct from new.skill_id then
+        return null;
+      end if;
+    end if;
+    v_course_id := coalesce(new.id, old.id);
+  elsif tg_table_name in ('phases', 'quizzes', 'challenges', 'course_skills') then
+    v_course_id := coalesce(new.course_id, old.course_id);
+  elsif tg_table_name in ('lessons', 'activities') then
+    v_phase_id := coalesce(new.phase_id, old.phase_id);
+    if v_phase_id is not null then
+      select course_id into v_course_id from public.phases where id = v_phase_id;
+    end if;
+  end if;
+
+  if v_course_id is not null and exists (
+    select 1 from public.course_enrollments where course_id = v_course_id
+  ) then
+    perform public.recompute_course_progression_for_course(v_course_id);
+  end if;
+
+  return null;
+end;
+$$;
+
+revoke all on function public.trg_recompute_on_curriculum_change() from public, anon, authenticated;
+
+drop trigger if exists trg_recompute_courses on public.courses;
+create trigger trg_recompute_courses
+  after update on public.courses
+  for each row execute function public.trg_recompute_on_curriculum_change();
+
+drop trigger if exists trg_recompute_phases on public.phases;
+create trigger trg_recompute_phases
+  after insert or update or delete on public.phases
+  for each row execute function public.trg_recompute_on_curriculum_change();
+
+drop trigger if exists trg_recompute_lessons on public.lessons;
+create trigger trg_recompute_lessons
+  after insert or update or delete on public.lessons
+  for each row execute function public.trg_recompute_on_curriculum_change();
+
+drop trigger if exists trg_recompute_activities on public.activities;
+create trigger trg_recompute_activities
+  after insert or update or delete on public.activities
+  for each row execute function public.trg_recompute_on_curriculum_change();
+
+drop trigger if exists trg_recompute_quizzes on public.quizzes;
+create trigger trg_recompute_quizzes
+  after insert or update or delete on public.quizzes
+  for each row execute function public.trg_recompute_on_curriculum_change();
+
+drop trigger if exists trg_recompute_challenges on public.challenges;
+create trigger trg_recompute_challenges
+  after insert or update or delete on public.challenges
+  for each row execute function public.trg_recompute_on_curriculum_change();
 
 -- ---------------------------------------------------------------------------
 -- Learner-facing authenticated progression RPCs (derive user strictly from auth.uid())
@@ -698,8 +906,10 @@ declare
   v_is_correct boolean;
   v_sel_sorted jsonb;
   v_exp_sorted jsonb;
+  v_exp_order jsonb;
   v_clean_answers jsonb := '{}'::jsonb;
   v_idem text := nullif(trim(coalesce(p_idempotency_key, '')), '');
+  v_replay boolean := false;
 begin
   if auth.uid() is null or public.is_admin() then
     raise exception 'Learner authentication required';
@@ -714,25 +924,17 @@ begin
     raise exception 'Assessment not found';
   end if;
 
+  perform pg_advisory_xact_lock(hashtext('submit_quiz:' || auth.uid()::text || ':' || p_quiz_id::text));
+
   if v_idem is not null then
     select * into v_existing
     from public.quiz_attempts
     where user_id = auth.uid() and idempotency_key = v_idem;
     if found then
-      v_solutions_released := (v_existing.review_status <> 'pending_review')
-        and (v_existing.passed or (v_quiz.max_attempts is not null and v_existing.attempt_number >= v_quiz.max_attempts));
-      return jsonb_build_object(
-        'attemptId', v_existing.id,
-        'quizId', v_existing.quiz_id,
-        'attemptNumber', v_existing.attempt_number,
-        'score', v_existing.score,
-        'total', v_existing.total,
-        'percentage', v_existing.percentage,
-        'passed', v_existing.passed,
-        'reviewStatus', v_existing.review_status,
-        'solutionsReleased', v_solutions_released,
-        'results', '[]'::jsonb
-      );
+      if v_existing.quiz_id <> p_quiz_id then
+        raise exception 'Idempotency key already used for a different assessment';
+      end if;
+      v_replay := true;
     end if;
   end if;
 
@@ -775,12 +977,14 @@ begin
     end if;
   end if;
 
-  select count(*) + 1 into v_attempt_num
-  from public.quiz_attempts
-  where user_id = auth.uid() and quiz_id = p_quiz_id;
+  if not v_replay then
+    select count(*) + 1 into v_attempt_num
+    from public.quiz_attempts
+    where user_id = auth.uid() and quiz_id = p_quiz_id;
 
-  if v_quiz.max_attempts is not null and (v_attempt_num - 1) >= v_quiz.max_attempts then
-    raise exception 'Maximum number of attempts reached for this assessment';
+    if v_quiz.max_attempts is not null and (v_attempt_num - 1) >= v_quiz.max_attempts then
+      raise exception 'Maximum number of attempts reached for this assessment';
+    end if;
   end if;
 
   for v_q in
@@ -790,7 +994,11 @@ begin
     order by position asc
   loop
     v_total := v_total + greatest(1, coalesce(v_q.marks, 1));
-    v_raw := p_answers -> (v_q.id::text);
+    if v_replay then
+      v_raw := v_existing.answers -> (v_q.id::text);
+    else
+      v_raw := p_answers -> (v_q.id::text);
+    end if;
     v_is_correct := false;
     v_opt_len := coalesce(jsonb_array_length(v_q.options), 0);
 
@@ -802,32 +1010,55 @@ begin
       v_has_manual := true;
     elsif v_q.question_type = 'multiple_select' then
       if v_raw is not null and jsonb_typeof(v_raw) = 'array' then
-        select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_sel_sorted
-        from jsonb_array_elements_text(v_raw) val
-        where val ~ '^\d+$' and val::int >= 0 and val::int < v_opt_len;
+        if not exists (
+          select 1 from jsonb_array_elements_text(v_raw) val
+          where val !~ '^\d+$' or val::int < 0 or val::int >= v_opt_len
+        ) then
+          select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_sel_sorted
+          from jsonb_array_elements_text(v_raw) val;
 
-        select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_exp_sorted
-        from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'correctIndices', '[]'::jsonb)) val
-        where val ~ '^\d+$';
+          select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_exp_sorted
+          from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'correctIndices', '[]'::jsonb)) val
+          where val ~ '^\d+$';
 
-        v_is_correct := jsonb_array_length(v_exp_sorted) > 0 and v_sel_sorted = v_exp_sorted;
+          v_is_correct := jsonb_array_length(v_exp_sorted) > 0 and v_sel_sorted = v_exp_sorted;
+        end if;
       end if;
     elsif v_q.question_type = 'fill_blank' then
       v_is_correct := exists (
         select 1
         from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'acceptedAnswers', '[]'::jsonb)) acc
-        where lower(trim(acc)) = lower(trim(coalesce(v_raw #>> '{}', '')))
+        where lower(regexp_replace(trim(acc), '\s+', ' ', 'g')) =
+              lower(regexp_replace(trim(coalesce(v_raw #>> '{}', '')), '\s+', ' ', 'g'))
           and trim(coalesce(v_raw #>> '{}', '')) <> ''
       );
     elsif v_q.question_type = 'ordering' then
-      if v_raw is not null and jsonb_typeof(v_raw) = 'array' then
-        v_is_correct := v_raw = coalesce(v_q.answer_config -> 'correctOrder', '[]'::jsonb);
+      v_exp_order := coalesce(v_q.answer_config -> 'correctOrder', '[]'::jsonb);
+      if v_raw is not null
+         and jsonb_typeof(v_raw) = 'array'
+         and jsonb_array_length(v_raw) = jsonb_array_length(v_exp_order)
+         and jsonb_array_length(v_exp_order) >= 2 then
+        v_is_correct := not exists (
+          select 1
+          from generate_series(0, jsonb_array_length(v_exp_order) - 1) idx
+          where (v_raw ->> idx) !~ '^\d+$'
+             or (v_exp_order ->> idx) !~ '^\d+$'
+             or (v_raw ->> idx)::int <> (v_exp_order ->> idx)::int
+        );
+      end if;
+    elsif v_q.question_type = 'true_false' then
+      v_raw_text := trim(coalesce(v_raw #>> '{}', ''));
+      if v_raw_text ~ '^\d+$' then
+        v_selected := v_raw_text::integer;
+        if v_selected >= 0 and v_selected < coalesce(nullif(v_opt_len, 0), 2) then
+          v_is_correct := (v_selected = v_q.correct_index);
+        end if;
       end if;
     else
       v_raw_text := trim(coalesce(v_raw #>> '{}', ''));
       if v_raw_text ~ '^\d+$' then
         v_selected := v_raw_text::integer;
-        if v_selected >= 0 and (v_opt_len = 0 or v_selected < v_opt_len) then
+        if v_selected >= 0 and v_selected < v_opt_len then
           v_is_correct := (v_selected = v_q.correct_index);
         end if;
       end if;
@@ -849,6 +1080,31 @@ begin
       'explanation', v_q.explanation
     );
   end loop;
+
+  if v_replay then
+    v_solutions_released := (v_existing.review_status <> 'pending_review')
+      and (v_existing.passed or (v_quiz.max_attempts is not null and v_existing.attempt_number >= v_quiz.max_attempts));
+    if not v_solutions_released then
+      select coalesce(jsonb_agg(
+        (elem - 'correctIndex' - 'answerConfig' - 'explanation')
+        || jsonb_build_object('correctIndex', null, 'answerConfig', '{}'::jsonb, 'explanation', null)
+      ), '[]'::jsonb)
+      into v_results
+      from jsonb_array_elements(v_results) elem;
+    end if;
+    return jsonb_build_object(
+      'attemptId', v_existing.id,
+      'quizId', v_existing.quiz_id,
+      'attemptNumber', v_existing.attempt_number,
+      'score', v_existing.score,
+      'total', v_existing.total,
+      'percentage', v_existing.percentage,
+      'passed', v_existing.passed,
+      'reviewStatus', v_existing.review_status,
+      'solutionsReleased', v_solutions_released,
+      'results', v_results
+    );
+  end if;
 
   if v_total <= 0 then
     raise exception 'Assessment has no configured questions';
@@ -890,9 +1146,8 @@ begin
     where user_id = auth.uid() and idempotency_key = v_idem;
   end if;
 
-  -- Knowledge assessments advance to practising; demonstrated/verified require practical course/challenge completion
   if v_passed then
-    perform public.upgrade_user_skill_level(auth.uid(), v_quiz.skill_id, 'practising');
+    perform public.recompute_user_skill_level(auth.uid(), v_quiz.skill_id);
     if v_quiz.course_id is not null then
       perform public.evaluate_course_and_skill_progression(auth.uid(), v_quiz.course_id);
     end if;
@@ -935,6 +1190,7 @@ declare
   v_challenge public.challenges;
   v_existing public.submissions;
   v_row public.submissions;
+  v_obj record;
   v_evidence_url text := nullif(trim(coalesce(p_evidence_url, '')), '');
   v_repo_url text := nullif(trim(coalesce(p_repo_url, '')), '');
   v_file_path text := nullif(trim(coalesce(p_file_path, '')), '');
@@ -942,8 +1198,15 @@ declare
   v_sub_text text := trim(coalesce(p_submission_text, ''));
   v_explanation text := trim(coalesce(p_explanation, ''));
   v_idem text := nullif(trim(coalesce(p_idempotency_key, '')), '');
+  v_allowed_types jsonb;
+  v_allowed_mimes jsonb;
+  v_max_bytes bigint;
+  v_obj_size bigint;
+  v_obj_mime text;
+  v_file_ext text;
   v_rubric_max integer := 0;
   v_crit jsonb;
+  v_has_file_evidence boolean := false;
 begin
   if auth.uid() is null or public.is_admin() then
     raise exception 'Learner authentication required';
@@ -954,11 +1217,16 @@ begin
     raise exception 'Challenge not found';
   end if;
 
+  perform pg_advisory_xact_lock(hashtext('submit_challenge:' || auth.uid()::text || ':' || p_challenge_id::text));
+
   if v_idem is not null then
     select * into v_existing
     from public.submissions
     where user_id = auth.uid() and idempotency_key = v_idem;
     if found then
+      if v_existing.challenge_id <> p_challenge_id then
+        raise exception 'Idempotency key already used for a different challenge';
+      end if;
       return v_existing;
     end if;
   end if;
@@ -999,26 +1267,114 @@ begin
     raise exception 'Submission explanation must be at least 20 characters';
   end if;
 
-  if v_evidence_url is not null and (length(v_evidence_url) > 1000 or v_evidence_url !~* '^https?://') then
-    raise exception 'Evidence URL must begin with https:// or http://';
+  v_allowed_types := coalesce(
+    v_challenge.allowed_evidence_types,
+    '["written","file","project_url","repo_url","screenshot","audio","video"]'::jsonb
+  );
+  v_allowed_mimes := coalesce(v_challenge.allowed_mime_types, '[]'::jsonb);
+  v_max_bytes := greatest(1, coalesce(v_challenge.max_file_size_mb, 25))::bigint * 1024 * 1024;
+
+  if v_evidence_url is not null then
+    if not (v_allowed_types ? 'project_url') then
+      raise exception 'Project URL submissions are not permitted for this challenge';
+    end if;
+    if length(v_evidence_url) > 1000 or v_evidence_url !~* '^https?://' then
+      raise exception 'Evidence URL must begin with https:// or http://';
+    end if;
   end if;
 
-  if v_repo_url is not null and (length(v_repo_url) > 1000 or v_repo_url !~* '^https?://') then
-    raise exception 'Repository URL must begin with https:// or http://';
+  if v_repo_url is not null then
+    if not (v_allowed_types ? 'repo_url') then
+      raise exception 'Repository URL submissions are not permitted for this challenge';
+    end if;
+    if length(v_repo_url) > 1000 or v_repo_url !~* '^https?://' then
+      raise exception 'Repository URL must begin with https:// or http://';
+    end if;
+  end if;
+
+  if length(v_sub_text) > 0 then
+    if length(v_sub_text) < 20 and v_evidence_url is null and v_repo_url is null and v_file_path is null then
+      raise exception 'Written deliverable must be at least 20 characters';
+    end if;
+    if not (v_allowed_types ? 'written') then
+      raise exception 'Written text deliverables are not permitted for this challenge';
+    end if;
   end if;
 
   if v_file_path is not null then
+    v_has_file_evidence := (
+      (v_allowed_types ? 'file')
+      or (v_allowed_types ? 'screenshot')
+      or (v_allowed_types ? 'audio')
+      or (v_allowed_types ? 'video')
+    );
+    if not v_has_file_evidence then
+      raise exception 'File uploads are not permitted for this challenge';
+    end if;
+
     if position('..' in v_file_path) > 0
+       or left(v_file_path, 1) = '/'
        or split_part(v_file_path, '/', 1) <> auth.uid()::text
        or coalesce(array_length(string_to_array(v_file_path, '/'), 1), 0) < 2 then
       raise exception 'Invalid evidence file ownership path';
     end if;
 
-    if not exists (
-      select 1 from storage.objects o
-      where o.bucket_id = 'evidence' and o.name = v_file_path
-    ) then
+    select o.id, o.owner, o.owner_id, o.metadata
+    into v_obj
+    from storage.objects o
+    where o.bucket_id = 'evidence' and o.name = v_file_path;
+
+    if not found then
       raise exception 'Uploaded evidence file not found in private storage';
+    end if;
+
+    if (v_obj.owner is not null and v_obj.owner <> auth.uid())
+       or (nullif(v_obj.owner_id, '') is not null and v_obj.owner_id <> auth.uid()::text) then
+      raise exception 'Uploaded evidence file is not owned by the submitting learner';
+    end if;
+
+    if exists (
+      select 1 from public.submissions s
+      where s.file_path = v_file_path
+        and (s.user_id <> auth.uid() or s.challenge_id <> p_challenge_id)
+    ) then
+      raise exception 'Uploaded evidence file cannot be reused across submissions';
+    end if;
+
+    v_file_ext := lower(coalesce(nullif(regexp_replace(v_file_path, '^.*\.', ''), v_file_path), ''));
+    if v_file_ext = '' or not (v_file_ext = any(array[
+      'pdf','png','jpg','jpeg','webp','txt','md','csv','zip','docx',
+      'mp3','wav','m4a','webm','ogg','mp4','mov'
+    ])) then
+      raise exception 'Evidence file extension ".%" is not permitted', v_file_ext;
+    end if;
+
+    if coalesce(v_obj.metadata ->> 'size', '') ~ '^\d+$' then
+      v_obj_size := (v_obj.metadata ->> 'size')::bigint;
+      if v_obj_size <= 0 or v_obj_size > v_max_bytes then
+        raise exception 'Uploaded evidence file exceeds the % MB limit for this challenge', greatest(1, coalesce(v_challenge.max_file_size_mb, 25));
+      end if;
+    end if;
+
+    v_obj_mime := lower(nullif(trim(coalesce(v_obj.metadata ->> 'mimetype', '')), ''));
+    if v_obj_mime is not null then
+      if jsonb_typeof(v_allowed_mimes) = 'array' and jsonb_array_length(v_allowed_mimes) > 0 then
+        if not exists (
+          select 1 from jsonb_array_elements_text(v_allowed_mimes) m where lower(m) = v_obj_mime
+        ) then
+          raise exception 'File MIME type "%" is not permitted for this challenge', v_obj_mime;
+        end if;
+      end if;
+
+      if not (v_allowed_types ? 'file') then
+        if (v_allowed_types ? 'screenshot') and not (v_allowed_types ? 'audio') and not (v_allowed_types ? 'video')
+           and v_obj_mime not like 'image/%' then
+          raise exception 'Challenge only accepts image screenshot uploads';
+        elsif not (v_allowed_types ? 'screenshot') and ((v_allowed_types ? 'audio') or (v_allowed_types ? 'video'))
+           and v_obj_mime not like 'audio/%' and v_obj_mime not like 'video/%' then
+          raise exception 'Challenge only accepts audio or video media uploads';
+        end if;
+      end if;
     end if;
   end if;
 
@@ -1098,12 +1454,13 @@ declare
   v_crit jsonb;
   v_crit_id text;
   v_crit_max integer;
+  v_crit_raw text;
   v_crit_score integer;
   v_calc_total integer := 0;
   v_calc_max integer := 0;
   v_clean_scores jsonb := '{}'::jsonb;
   v_clean_feedback text := trim(coalesce(p_feedback, ''));
-  v_pub_courses integer := 0;
+  v_target_course_id uuid;
 begin
   if not public.is_admin() then
     raise exception 'Administrator access required';
@@ -1117,6 +1474,10 @@ begin
     raise exception 'Reviewer feedback is required';
   end if;
 
+  if p_rubric_scores is not null and jsonb_typeof(p_rubric_scores) <> 'object' then
+    raise exception 'Rubric scores payload must be a JSON object';
+  end if;
+
   select * into v_sub from public.submissions where id = p_submission_id;
   if not found then
     raise exception 'Submission not found';
@@ -1128,14 +1489,20 @@ begin
 
   select * into v_challenge from public.challenges where id = v_sub.challenge_id;
   if found and jsonb_typeof(v_challenge.rubric) = 'array' and jsonb_array_length(v_challenge.rubric) > 0 then
+    if p_rubric_scores is null then
+      raise exception 'Rubric scores are required for rubric-evaluated challenges';
+    end if;
     for v_crit in select value from jsonb_array_elements(v_challenge.rubric) loop
       v_crit_id := v_crit ->> 'id';
       v_crit_max := greatest(1, coalesce((v_crit ->> 'maxPoints')::integer, 5));
-      if coalesce(p_rubric_scores ->> v_crit_id, '') ~ '^-?\d+$' then
-        v_crit_score := (p_rubric_scores ->> v_crit_id)::integer;
-      else
-        v_crit_score := 0;
+      if not (p_rubric_scores ? v_crit_id) then
+        raise exception 'Rubric score missing for criterion %', v_crit_id;
       end if;
+      v_crit_raw := trim(coalesce(p_rubric_scores ->> v_crit_id, ''));
+      if v_crit_raw !~ '^-?\d+$' then
+        raise exception 'Rubric score for % must be an integer', v_crit_id;
+      end if;
+      v_crit_score := v_crit_raw::integer;
       if v_crit_score < 0 or v_crit_score > v_crit_max then
         raise exception 'Rubric score for % must be between 0 and %', v_crit_id, v_crit_max;
       end if;
@@ -1167,24 +1534,12 @@ begin
   where id = p_submission_id
   returning * into v_sub;
 
-  if v_sub.status = 'approved' then
-    if v_challenge.course_id is not null then
-      perform public.evaluate_course_and_skill_progression(v_sub.user_id, v_challenge.course_id);
-    elsif v_challenge.skill_id is not null then
-      select count(distinct c.id) into v_pub_courses
-      from public.courses c
-      left join public.course_skills cs on cs.course_id = c.id
-      where c.publication_status = 'published'
-        and (c.skill_id = v_challenge.skill_id or cs.skill_id = v_challenge.skill_id);
-
-      if v_pub_courses = 0 then
-        perform public.upgrade_user_skill_level(v_sub.user_id, v_challenge.skill_id, 'verified');
-      else
-        perform public.upgrade_user_skill_level(v_sub.user_id, v_challenge.skill_id, 'demonstrated');
-      end if;
-    end if;
-  elsif v_challenge.course_id is not null then
-    perform public.evaluate_course_and_skill_progression(v_sub.user_id, v_challenge.course_id);
+  v_target_course_id := coalesce(v_challenge.course_id, v_sub.course_id);
+  if v_target_course_id is not null then
+    perform public.evaluate_course_and_skill_progression(v_sub.user_id, v_target_course_id);
+  end if;
+  if v_challenge.skill_id is not null then
+    perform public.recompute_user_skill_level(v_sub.user_id, v_challenge.skill_id);
   end if;
 
   return v_sub;
@@ -1215,10 +1570,12 @@ declare
   v_is_correct boolean;
   v_sel_sorted jsonb;
   v_exp_sorted jsonb;
+  v_exp_order jsonb;
   v_total integer := 0;
   v_score integer := 0;
   v_pct integer := 0;
   v_passed boolean := false;
+  v_manual_raw text;
   v_manual_val integer := 0;
   v_clean_manual jsonb := '{}'::jsonb;
   v_clean_feedback text := trim(coalesce(p_feedback, ''));
@@ -1260,11 +1617,14 @@ begin
     v_opt_len := coalesce(jsonb_array_length(v_q.options), 0);
 
     if v_q.question_type in ('short_answer', 'long_form', 'practical_submission') then
-      if coalesce(p_manual_scores ->> (v_q.id::text), '') ~ '^-?\d+$' then
-        v_manual_val := (p_manual_scores ->> (v_q.id::text))::integer;
-      else
-        v_manual_val := 0;
+      if not (p_manual_scores ? (v_q.id::text)) then
+        raise exception 'Manual score missing for question %', v_q.id;
       end if;
+      v_manual_raw := trim(coalesce(p_manual_scores ->> (v_q.id::text), ''));
+      if v_manual_raw !~ '^\d+$' then
+        raise exception 'Manual score for question % must be a non-negative integer', v_q.id;
+      end if;
+      v_manual_val := v_manual_raw::integer;
       if v_manual_val < 0 or v_manual_val > greatest(1, coalesce(v_q.marks, 1)) then
         raise exception 'Manual score for question % must be between 0 and %', v_q.id, greatest(1, coalesce(v_q.marks, 1));
       end if;
@@ -1274,32 +1634,55 @@ begin
       v_is_correct := false;
       if v_q.question_type = 'multiple_select' then
         if v_raw is not null and jsonb_typeof(v_raw) = 'array' then
-          select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_sel_sorted
-          from jsonb_array_elements_text(v_raw) val
-          where val ~ '^\d+$' and val::int >= 0 and val::int < v_opt_len;
+          if not exists (
+            select 1 from jsonb_array_elements_text(v_raw) val
+            where val !~ '^\d+$' or val::int < 0 or val::int >= v_opt_len
+          ) then
+            select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_sel_sorted
+            from jsonb_array_elements_text(v_raw) val;
 
-          select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_exp_sorted
-          from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'correctIndices', '[]'::jsonb)) val
-          where val ~ '^\d+$';
+            select coalesce(jsonb_agg(distinct val::int order by val::int), '[]'::jsonb) into v_exp_sorted
+            from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'correctIndices', '[]'::jsonb)) val
+            where val ~ '^\d+$';
 
-          v_is_correct := jsonb_array_length(v_exp_sorted) > 0 and v_sel_sorted = v_exp_sorted;
+            v_is_correct := jsonb_array_length(v_exp_sorted) > 0 and v_sel_sorted = v_exp_sorted;
+          end if;
         end if;
       elsif v_q.question_type = 'fill_blank' then
         v_is_correct := exists (
           select 1
           from jsonb_array_elements_text(coalesce(v_q.answer_config -> 'acceptedAnswers', '[]'::jsonb)) acc
-          where lower(trim(acc)) = lower(trim(coalesce(v_raw #>> '{}', '')))
+          where lower(regexp_replace(trim(acc), '\s+', ' ', 'g')) =
+                lower(regexp_replace(trim(coalesce(v_raw #>> '{}', '')), '\s+', ' ', 'g'))
             and trim(coalesce(v_raw #>> '{}', '')) <> ''
         );
       elsif v_q.question_type = 'ordering' then
-        if v_raw is not null and jsonb_typeof(v_raw) = 'array' then
-          v_is_correct := v_raw = coalesce(v_q.answer_config -> 'correctOrder', '[]'::jsonb);
+        v_exp_order := coalesce(v_q.answer_config -> 'correctOrder', '[]'::jsonb);
+        if v_raw is not null
+           and jsonb_typeof(v_raw) = 'array'
+           and jsonb_array_length(v_raw) = jsonb_array_length(v_exp_order)
+           and jsonb_array_length(v_exp_order) >= 2 then
+          v_is_correct := not exists (
+            select 1
+            from generate_series(0, jsonb_array_length(v_exp_order) - 1) idx
+            where (v_raw ->> idx) !~ '^\d+$'
+               or (v_exp_order ->> idx) !~ '^\d+$'
+               or (v_raw ->> idx)::int <> (v_exp_order ->> idx)::int
+          );
+        end if;
+      elsif v_q.question_type = 'true_false' then
+        v_raw_text := trim(coalesce(v_raw #>> '{}', ''));
+        if v_raw_text ~ '^\d+$' then
+          v_selected := v_raw_text::integer;
+          if v_selected >= 0 and v_selected < coalesce(nullif(v_opt_len, 0), 2) then
+            v_is_correct := (v_selected = v_q.correct_index);
+          end if;
         end if;
       else
         v_raw_text := trim(coalesce(v_raw #>> '{}', ''));
         if v_raw_text ~ '^\d+$' then
           v_selected := v_raw_text::integer;
-          if v_selected >= 0 and (v_opt_len = 0 or v_selected < v_opt_len) then
+          if v_selected >= 0 and v_selected < v_opt_len then
             v_is_correct := (v_selected = v_q.correct_index);
           end if;
         end if;
@@ -1329,12 +1712,10 @@ begin
   where id = p_attempt_id
   returning * into v_att;
 
-  if v_passed then
-    perform public.upgrade_user_skill_level(v_att.user_id, v_quiz.skill_id, 'practising');
-    if v_quiz.course_id is not null then
-      perform public.evaluate_course_and_skill_progression(v_att.user_id, v_quiz.course_id);
-    end if;
+  if v_quiz.course_id is not null then
+    perform public.evaluate_course_and_skill_progression(v_att.user_id, v_quiz.course_id);
   end if;
+  perform public.recompute_user_skill_level(v_att.user_id, v_quiz.skill_id);
 
   return v_att;
 end;
@@ -1387,6 +1768,10 @@ declare
   v_opts jsonb := coalesce(p_options, '[]'::jsonb);
   v_cfg jsonb := coalesce(p_answer_config, '{}'::jsonb);
   v_opt_len integer;
+  v_bad_idx boolean;
+  v_ord_len integer;
+  v_ord_distinct integer;
+  v_next_pos integer;
 begin
   if not public.is_admin() then
     raise exception 'Administrator access required';
@@ -1419,9 +1804,24 @@ begin
   if jsonb_typeof(v_opts) <> 'array' then
     raise exception 'Question options must be a JSON array';
   end if;
+
+  if jsonb_typeof(v_cfg) <> 'object' then
+    raise exception 'answer_config must be a JSON object';
+  end if;
+
+  if v_qtype = 'true_false' and jsonb_array_length(v_opts) = 0 then
+    v_opts := '["True","False"]'::jsonb;
+  end if;
   v_opt_len := jsonb_array_length(v_opts);
 
-  if v_qtype in ('multiple_choice', 'true_false', 'scenario', 'case_study') then
+  if v_qtype = 'true_false' then
+    if v_opt_len <> 2 then
+      raise exception 'True/false questions require exactly 2 options';
+    end if;
+    if coalesce(p_correct_index, 0) not in (0, 1) then
+      raise exception 'correct_index out of bounds for true_false options';
+    end if;
+  elsif v_qtype in ('multiple_choice', 'scenario', 'case_study') then
     if v_opt_len < 2 then
       raise exception 'Choice questions require at least 2 options';
     end if;
@@ -1432,13 +1832,43 @@ begin
     if v_opt_len < 2 or jsonb_typeof(v_cfg -> 'correctIndices') <> 'array' or jsonb_array_length(v_cfg -> 'correctIndices') = 0 then
       raise exception 'Multiple-select questions require at least 2 options and non-empty correctIndices';
     end if;
+    select exists (
+      select 1
+      from jsonb_array_elements_text(v_cfg -> 'correctIndices') val
+      where val !~ '^\d+$' or val::int < 0 or val::int >= v_opt_len
+    ) into v_bad_idx;
+    if v_bad_idx then
+      raise exception 'correctIndices contains out-of-range or invalid index';
+    end if;
   elsif v_qtype = 'fill_blank' then
-    if jsonb_typeof(v_cfg -> 'acceptedAnswers') <> 'array' or jsonb_array_length(v_cfg -> 'acceptedAnswers') = 0 then
+    if jsonb_typeof(v_cfg -> 'acceptedAnswers') <> 'array'
+       or not exists (
+         select 1
+         from jsonb_array_elements_text(v_cfg -> 'acceptedAnswers') acc
+         where trim(acc) <> ''
+       ) then
       raise exception 'Fill-blank questions require non-empty acceptedAnswers';
     end if;
   elsif v_qtype = 'ordering' then
-    if jsonb_typeof(v_cfg -> 'correctOrder') <> 'array' or jsonb_array_length(v_cfg -> 'correctOrder') < 2 then
-      raise exception 'Ordering questions require at least 2 items in correctOrder';
+    if v_opt_len < 2 or jsonb_typeof(v_cfg -> 'correctOrder') <> 'array' then
+      raise exception 'Ordering questions require at least 2 options and correctOrder array';
+    end if;
+    v_ord_len := jsonb_array_length(v_cfg -> 'correctOrder');
+    if v_ord_len <> v_opt_len then
+      raise exception 'correctOrder length must equal options count';
+    end if;
+    select exists (
+      select 1
+      from jsonb_array_elements_text(v_cfg -> 'correctOrder') val
+      where val !~ '^\d+$' or val::int < 0 or val::int >= v_opt_len
+    ) into v_bad_idx;
+    if v_bad_idx then
+      raise exception 'correctOrder contains out-of-range or invalid index';
+    end if;
+    select count(distinct val::int) into v_ord_distinct
+    from jsonb_array_elements_text(v_cfg -> 'correctOrder') val;
+    if v_ord_distinct <> v_opt_len then
+      raise exception 'correctOrder must contain distinct indices covering all options';
     end if;
   end if;
 
@@ -1463,12 +1893,20 @@ begin
     return v_row;
   end if;
 
+  if p_position is null then
+    select coalesce(max(position), 0) + 1 into v_next_pos
+    from public.questions
+    where quiz_id = p_quiz_id;
+  else
+    v_next_pos := p_position;
+  end if;
+
   insert into public.questions (
     quiz_id, position, question_type, difficulty, marks, prompt, context_text, options, correct_index, answer_config, explanation
   )
   values (
     p_quiz_id,
-    coalesce(p_position, 1),
+    v_next_pos,
     v_qtype,
     v_diff,
     v_marks,
@@ -1487,6 +1925,33 @@ $$;
 
 revoke all on function public.admin_upsert_question(uuid, uuid, integer, text, jsonb, integer, text, text, text, integer, text, jsonb) from public, anon;
 grant execute on function public.admin_upsert_question(uuid, uuid, integer, text, jsonb, integer, text, text, text, integer, text, jsonb) to authenticated;
+
+create or replace function public.admin_delete_question(
+  p_quiz_id uuid,
+  p_question_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Administrator access required';
+  end if;
+
+  delete from public.questions
+  where id = p_question_id and quiz_id = p_quiz_id;
+
+  if not found then
+    raise exception 'Question not found for quiz %', p_quiz_id;
+  end if;
+  return true;
+end;
+$$;
+
+revoke all on function public.admin_delete_question(uuid, uuid) from public, anon;
+grant execute on function public.admin_delete_question(uuid, uuid) to authenticated;
 
 create or replace function public.admin_reorder_phases(
   p_course_id uuid,
