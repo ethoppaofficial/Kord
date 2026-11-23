@@ -1,5 +1,6 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
+import { appendDemoAuditLog } from '../demo/demoAudit.js';
 import { PROGRESSION_RANK, PROGRESSION_WEIGHT, PROGRESSION_LABEL } from '../constants.js';
 import { getUserSkills } from './skillsRepository.js';
 import { listSkills } from './contentRepository.js';
@@ -362,13 +363,29 @@ export async function adminUpsertOpportunity(payload) {
       };
 
       if (existing) {
+        const prev = { title: existing.title, organization: existing.organization };
         Object.assign(existing, enriched);
+        appendDemoAuditLog(draft, {
+          action: 'opportunity_updated',
+          targetTable: 'opportunities',
+          targetId: existing.id,
+          beforeData: prev,
+          afterData: { title: existing.title, organization: existing.organization },
+        });
         return draft;
       }
 
-      draft.opportunities.unshift({
+      const newOpp = {
         id: `opp-${Date.now()}`,
         ...enriched,
+      };
+      draft.opportunities.unshift(newOpp);
+      appendDemoAuditLog(draft, {
+        action: 'opportunity_created',
+        targetTable: 'opportunities',
+        targetId: newOpp.id,
+        beforeData: null,
+        afterData: { title: newOpp.title, organization: newOpp.organization },
       });
       return draft;
     });
@@ -384,7 +401,17 @@ export async function adminDeleteOpportunity(id) {
       return;
     }
     updateDemoState((draft) => {
+      const existing = draft.opportunities.find((o) => o.id === id);
       draft.opportunities = draft.opportunities.filter((o) => o.id !== id);
+      if (existing) {
+        appendDemoAuditLog(draft, {
+          action: 'opportunity_deleted',
+          targetTable: 'opportunities',
+          targetId: id,
+          beforeData: { title: existing.title, organization: existing.organization },
+          afterData: null,
+        });
+      }
       return draft;
     });
   });

@@ -3,7 +3,12 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildGraphicDesignCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-graphic-design-foundations';
   const skillId = 'skill-graphic-design';
-  const associatedSkillIds = ['skill-graphic-design'];
+  const associatedSkillIds = [
+    'skill-graphic-design',
+    'skill-visual-communication',
+    'skill-brand-identity-design',
+    'skill-canva-design',
+  ];
   const now = '2026-10-02T09:00:00.000Z';
 
   const phases = [

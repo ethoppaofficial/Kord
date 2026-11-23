@@ -1,5 +1,6 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
+import { appendDemoAuditLog } from '../demo/demoAudit.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
 import { recomputeCourseAndSkillStatus, recomputeDemoSkillLevel } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
@@ -113,7 +114,9 @@ export async function getQuizForLearner(quizId, { userId = null, includeDrafts =
   if (!isDemoMode && supabase) {
     const { data: quiz, error } = await supabase
       .from('quizzes')
-      .select('id, skill_id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts, shuffle_questions, requires_manual_review, skills(id, slug, title, publication_status), courses(id, slug, title, publication_status)')
+      .select(
+        'id, skill_id, course_id, phase_id, lesson_id, quiz_type, title, description, pass_percent, time_limit_minutes, max_attempts, shuffle_questions, requires_manual_review, skills!quizzes_skill_id_fkey(id, slug, title, publication_status), courses!quizzes_course_id_fkey(id, slug, title, publication_status)'
+      )
       .eq('id', quizId)
       .single();
     if (error || !quiz) return null;
@@ -251,6 +254,136 @@ export async function getQuizAttempts(userId, quizId) {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
+export async function startQuizSession(userId, quizId, { restartExpired = false } = {}) {
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase.rpc('start_quiz_session', {
+      p_quiz_id: quizId,
+      p_restart_expired: Boolean(restartExpired),
+    });
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  const state = getDemoState();
+  const actor = (state.users || []).find((u) => u.id === userId);
+  if (!actor || actor.role === 'admin') {
+    throw new Error('Learner authentication required to start an assessment.');
+  }
+  if ((actor.accountStatus || 'active') !== 'active') {
+    throw new Error('Account is suspended or inactive.');
+  }
+
+  const quiz = (state.quizzes || []).find((q) => q.id === quizId);
+  if (!quiz) throw new Error('Assessment not found');
+
+  if (quiz.courseId) {
+    const course = (state.courses || []).find((c) => c.id === quiz.courseId);
+    if (!course || course.publicationStatus !== 'published') {
+      throw new Error('Course assessment is not currently published.');
+    }
+    if (quiz.phaseId) {
+      const phase = (course.phases || []).find((p) => p.id === quiz.phaseId);
+      if (!phase || phase.publicationStatus === 'draft' || phase.publicationStatus === 'archived') {
+        throw new Error('Module assessment is not currently published.');
+      }
+      if (quiz.lessonId) {
+        const lesson = (phase.lessons || []).find((l) => l.id === quiz.lessonId);
+        if (!lesson || lesson.publicationStatus === 'draft' || lesson.publicationStatus === 'archived') {
+          throw new Error('Lesson assessment is not currently published.');
+        }
+      }
+    }
+    const enrolled = (state.courseEnrollments || []).some(
+      (e) => e.userId === userId && e.courseId === quiz.courseId && (e.status === 'active' || e.status === 'completed')
+    );
+    if (!enrolled) {
+      throw new Error('Active course enrollment required to start this assessment.');
+    }
+  } else {
+    const skill = (state.skills || []).find((s) => s.id === quiz.skillId);
+    if (skill && skill.publicationStatus !== 'published') {
+      throw new Error('Assessment skill is not currently published.');
+    }
+  }
+
+  const attemptsUsed = (state.quizAttempts || []).filter(
+    (a) => a.userId === userId && a.quizId === quizId
+  ).length;
+  if (quiz.maxAttempts && attemptsUsed >= quiz.maxAttempts) {
+    throw new Error(`Maximum allowed attempts (${quiz.maxAttempts}) reached for this assessment.`);
+  }
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const existingSessions = (state.quizSessions || [])
+    .filter(
+      (s) =>
+        s.userId === userId &&
+        s.quizId === quizId &&
+        s.status === 'active' &&
+        !s.completedAttemptId
+    )
+    .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+
+  const latestActive = existingSessions[0] || null;
+  if (latestActive) {
+    const expMs = latestActive.expiresAt ? new Date(latestActive.expiresAt).getTime() : null;
+    if (expMs === null || expMs >= nowMs) {
+      return {
+        sessionId: latestActive.id,
+        quizId,
+        startedAt: latestActive.startedAt,
+        expiresAt: latestActive.expiresAt,
+        serverNow: nowIso,
+        expired: false,
+      };
+    }
+    if (!restartExpired) {
+      return {
+        sessionId: latestActive.id,
+        quizId,
+        startedAt: latestActive.startedAt,
+        expiresAt: latestActive.expiresAt,
+        serverNow: nowIso,
+        expired: true,
+      };
+    }
+  }
+
+  const limitMins = Number(quiz.timeLimitMinutes || 0);
+  const expiresAt = limitMins > 0 ? new Date(nowMs + limitMins * 60000).toISOString() : null;
+  let createdSession = null;
+
+  updateDemoState((draft) => {
+    draft.quizSessions = draft.quizSessions || [];
+    if (latestActive && restartExpired) {
+      const target = draft.quizSessions.find((s) => s.id === latestActive.id);
+      if (target) target.status = 'expired';
+    }
+    createdSession = {
+      id: `qs-${nowMs}-${Math.random().toString(36).slice(2, 6)}`,
+      userId,
+      quizId,
+      status: 'active',
+      startedAt: nowIso,
+      expiresAt,
+      completedAttemptId: null,
+      createdAt: nowIso,
+    };
+    draft.quizSessions.push(createdSession);
+    return draft;
+  });
+
+  return {
+    sessionId: createdSession.id,
+    quizId,
+    startedAt: createdSession.startedAt,
+    expiresAt: createdSession.expiresAt,
+    serverNow: nowIso,
+    expired: false,
+  };
+}
+
 export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = null) {
   const effectiveKey =
     idempotencyKey || buildIdempotencyKey('quiz-submit', userId, quizId, JSON.stringify(answersMap));
@@ -274,6 +407,9 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
       const actor = (state.users || []).find((u) => u.id === userId);
       if (!actor || actor.role === 'admin') {
         throw new Error('Learner authentication required to submit an assessment.');
+      }
+      if ((actor.accountStatus || 'active') !== 'active') {
+        throw new Error('Account is suspended or inactive.');
       }
 
       const quiz = (state.quizzes || []).find((q) => q.id === quizId);
@@ -344,6 +480,29 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
         throw new Error(`Maximum allowed attempts (${quiz.maxAttempts}) reached for this assessment.`);
       }
 
+      let activeSessionId = null;
+      if (quiz.timeLimitMinutes && Number(quiz.timeLimitMinutes) > 0) {
+        const activeSession = (state.quizSessions || [])
+          .filter(
+            (s) =>
+              s.userId === userId &&
+              s.quizId === quizId &&
+              s.status === 'active' &&
+              !s.completedAttemptId
+          )
+          .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0];
+        if (!activeSession) {
+          throw new Error('Active assessment session required before submitting a timed assessment.');
+        }
+        if (
+          activeSession.expiresAt &&
+          Date.now() > new Date(activeSession.expiresAt).getTime() + 30000
+        ) {
+          throw new Error('Assessment time limit exceeded for this session.');
+        }
+        activeSessionId = activeSession.id;
+      }
+
       const graded = gradeAssessmentAttempt({
         quiz,
         questions: quiz.questions || [],
@@ -379,6 +538,13 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
           idempotencyKey: effectiveKey,
           createdAt: new Date().toISOString(),
         });
+        if (activeSessionId) {
+          const sess = (draft.quizSessions || []).find((s) => s.id === activeSessionId);
+          if (sess) {
+            sess.status = 'completed';
+            sess.completedAttemptId = attemptId;
+          }
+        }
         return draft;
       });
 
@@ -414,7 +580,7 @@ export async function adminListAllQuizzes() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('quizzes')
-      .select('*, skills(title, slug), courses(title, slug)')
+      .select('*, skills!quizzes_skill_id_fkey(title, slug), courses!quizzes_course_id_fkey(title, slug)')
       .order('title');
     if (error) throw error;
     return (data || []).map((q) => ({
@@ -491,12 +657,28 @@ export async function adminUpsertAssessment(payload) {
         requiresManualReview: Boolean(payload.requiresManualReview),
       };
       if (existing) {
+        const prev = { title: existing.title, passPercent: existing.passPercent };
         Object.assign(existing, fields);
+        appendDemoAuditLog(draft, {
+          action: 'quiz_updated',
+          targetTable: 'quizzes',
+          targetId: existing.id,
+          beforeData: prev,
+          afterData: { title: existing.title, passPercent: existing.passPercent },
+        });
       } else {
+        const newQuizId = `quiz-${Date.now()}`;
         draft.quizzes.push({
-          id: `quiz-${Date.now()}`,
+          id: newQuizId,
           ...fields,
           questions: [],
+        });
+        appendDemoAuditLog(draft, {
+          action: 'quiz_created',
+          targetTable: 'quizzes',
+          targetId: newQuizId,
+          beforeData: null,
+          afterData: { title: fields.title, passPercent: fields.passPercent },
         });
       }
       return draft;
@@ -623,6 +805,13 @@ export async function adminUpsertQuestion({
         correctOrder: correctOrder || null,
         explanation: String(explanation || '').trim(),
       };
+      appendDemoAuditLog(draft, {
+        action: existing ? 'question_updated' : 'question_created',
+        targetTable: 'questions',
+        targetId: questionId,
+        beforeData: null,
+        afterData: { quizId, questionType, marks: questionFields.marks },
+      });
       return draft;
     });
   });
@@ -645,6 +834,13 @@ export async function adminDeleteQuestion(quizId, questionId) {
       if (!quiz) return draft;
       quiz.questions = (quiz.questions || []).filter((q) => q.id !== questionId);
       if (draft.privateQuizAnswers) delete draft.privateQuizAnswers[questionId];
+      appendDemoAuditLog(draft, {
+        action: 'question_deleted',
+        targetTable: 'questions',
+        targetId: questionId,
+        beforeData: { quizId },
+        afterData: null,
+      });
       return draft;
     });
   });
@@ -654,7 +850,7 @@ export async function adminListPendingAssessmentAttempts() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('quiz_attempts')
-      .select('*, profiles!quiz_attempts_user_id_fkey(full_name, email), quizzes(title, pass_percent, course_id, skill_id)')
+      .select('*, profiles!quiz_attempts_user_id_fkey(full_name, email), quizzes!quiz_attempts_quiz_id_fkey(title, pass_percent, course_id, skill_id)')
       .order('created_at', { ascending: false });
     if (error) throw error;
     const filtered = (data || []).filter(
@@ -737,7 +933,7 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
 
     updateDemoState((draft) => {
       const reviewer = (draft.users || []).find((u) => u.id === reviewerId);
-      if (!reviewer || reviewer.role !== 'admin') {
+      if (!reviewer || reviewer.role !== 'admin' || (reviewer.accountStatus || 'active') !== 'active') {
         throw new Error('Administrator authorization required to grade assessments.');
       }
       const attempt = (draft.quizAttempts || []).find((a) => a.id === attemptId);
@@ -787,6 +983,15 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       attempt.manualFeedback = cleanFeedback;
       attempt.reviewedBy = reviewerId;
       attempt.reviewedAt = new Date().toISOString();
+
+      appendDemoAuditLog(draft, {
+        actorId: reviewerId,
+        action: 'quiz_attempt_graded',
+        targetTable: 'quiz_attempts',
+        targetId: attempt.id,
+        beforeData: { reviewStatus: 'pending_review' },
+        afterData: { reviewStatus: 'reviewed', score: finalScore, total: baseGraded.total, passed },
+      });
 
       targetUserId = attempt.userId;
       targetCourseId = quiz.courseId || null;

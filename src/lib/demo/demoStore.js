@@ -109,13 +109,13 @@ function mergeUsers(seedUsers = [], storedUsers = []) {
   const seenEmails = new Set();
   storedUsers.forEach((u) => {
     if (!u?.id) return;
-    byId.set(u.id, u);
+    byId.set(u.id, { ...u, accountStatus: u.accountStatus || 'active' });
     if (u.email) seenEmails.add(String(u.email).toLowerCase());
   });
   seedUsers.forEach((u) => {
     const email = String(u.email || '').toLowerCase();
     if (!byId.has(u.id) && (!email || !seenEmails.has(email))) {
-      byId.set(u.id, u);
+      byId.set(u.id, { ...u, accountStatus: u.accountStatus || 'active' });
     }
   });
   return Array.from(byId.values());
@@ -152,8 +152,10 @@ function migrateDemoState(parsed) {
     lessonProgress: Array.isArray(cleanParsed.lessonProgress) ? cleanParsed.lessonProgress : [],
     activityProgress: Array.isArray(cleanParsed.activityProgress) ? cleanParsed.activityProgress : [],
     quizAttempts: Array.isArray(cleanParsed.quizAttempts) ? cleanParsed.quizAttempts : [],
+    quizSessions: Array.isArray(cleanParsed.quizSessions) ? cleanParsed.quizSessions : [],
     submissions: Array.isArray(cleanParsed.submissions) ? cleanParsed.submissions : [],
     courseCompletions: Array.isArray(cleanParsed.courseCompletions) ? cleanParsed.courseCompletions : [],
+    adminAuditLogs: Array.isArray(cleanParsed.adminAuditLogs) ? cleanParsed.adminAuditLogs : [],
   };
   return stripSessionFields(merged);
 }
@@ -199,6 +201,12 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
     parsed.activityProgress = parsed.activityProgress || [];
     parsed.courseVersions = parsed.courseVersions || [];
     parsed.courseCompletions = parsed.courseCompletions || [];
+    parsed.quizSessions = parsed.quizSessions || [];
+    parsed.adminAuditLogs = parsed.adminAuditLogs || [];
+    parsed.users = (parsed.users || []).map((u) => ({
+      ...u,
+      accountStatus: u.accountStatus || 'active',
+    }));
     lastSerializedState = raw;
     return stripSessionFields(parsed);
   } catch {

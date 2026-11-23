@@ -1,8 +1,8 @@
-import { ADMIN_EMAIL, DEFAULT_CATEGORIES } from '../constants.js';
+import { DEFAULT_CATEGORIES } from '../constants.js';
 import { createCatalogSkills } from './catalogSkillsSeed.js';
 import { createFlagshipCurriculumSeed } from './flagshipCoursesSeed.js';
 
-export const CURRENT_SEED_VERSION = 7;
+export const CURRENT_SEED_VERSION = 8;
 
 export function createInitialSeed() {
   const now = Date.now();
@@ -20,17 +20,20 @@ export function createInitialSeed() {
       lastName: 'Lin',
       fullName: 'Maya Lin',
       role: 'learner',
+      accountStatus: 'active',
       password: 'password123',
       createdAt: daysAgo(30),
     },
     {
-      id: 'user-admin-ethoppa',
-      email: ADMIN_EMAIL,
-      firstName: 'Ethoppa',
+      id: 'user-admin-demo',
+      // Strictly local development/test Demo Mode fixture; never provisioned or honored in Supabase production
+      email: 'demo.admin@kord.local',
+      firstName: 'Demo',
       lastName: 'Admin',
-      fullName: 'Ethoppa Admin',
+      fullName: 'Demo Admin',
       role: 'admin',
-      password: 'admin@2026',
+      accountStatus: 'active',
+      password: 'demo-local-preview',
       createdAt: daysAgo(60),
     },
   ];
@@ -288,8 +291,10 @@ export function createInitialSeed() {
     courseEnrollments: [],
     lessonProgress: [],
     quizAttempts: [],
+    quizSessions: [],
     submissions: [],
     courseCompletions: [],
+    adminAuditLogs: [],
     // Keep legacy empty arrays so older references degrade safely if touched
     enrollments: [],
     activityProgress: [],

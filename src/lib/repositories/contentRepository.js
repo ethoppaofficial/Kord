@@ -1,5 +1,6 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
+import { appendDemoAuditLog } from '../demo/demoAudit.js';
 import { slugify } from '../formatters.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import { normalizeVideoEntry } from '../videoProvider.js';
@@ -118,17 +119,33 @@ export async function adminUpsertCategory({ id, name, slug, description = '', po
         ? draft.categories.find((c) => c.id === id)
         : draft.categories.find((c) => c.slug === cleanSlug || c.name.toLowerCase() === cleanName.toLowerCase());
       if (existing) {
+        const prev = { name: existing.name, slug: existing.slug };
         existing.name = cleanName;
         existing.slug = cleanSlug;
         existing.description = String(description || '').trim();
         if (position) existing.position = Number(position);
+        appendDemoAuditLog(draft, {
+          action: 'category_updated',
+          targetTable: 'categories',
+          targetId: existing.id,
+          beforeData: prev,
+          afterData: { name: existing.name, slug: existing.slug },
+        });
       } else {
+        const newCatId = `cat-${cleanSlug}`;
         draft.categories.push({
-          id: `cat-${cleanSlug}`,
+          id: newCatId,
           slug: cleanSlug,
           name: cleanName,
           description: String(description || '').trim(),
           position: Number(position || draft.categories.length + 1),
+        });
+        appendDemoAuditLog(draft, {
+          action: 'category_created',
+          targetTable: 'categories',
+          targetId: newCatId,
+          beforeData: null,
+          afterData: { name: cleanName, slug: cleanSlug },
         });
       }
       return draft;
@@ -213,7 +230,7 @@ export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
       supabase.from('course_skills').select('course_id').eq('skill_id', skill.id),
       supabase
         .from('courses')
-        .select('*, course_skills(skill_id), phases(*, lessons(*), activities(*))')
+        .select('*, course_skills!course_skills_course_id_fkey(skill_id), phases(*, lessons(*), activities(*))')
         .eq('skill_id', skill.id)
         .order('position'),
       supabase.from('quizzes').select('id, course_id, phase_id, quiz_type, title').eq('skill_id', skill.id),
@@ -225,7 +242,7 @@ export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
     if (extraCourseIds.length > 0) {
       const { data: ec } = await supabase
         .from('courses')
-        .select('*, course_skills(skill_id), phases(*, lessons(*), activities(*))')
+        .select('*, course_skills!course_skills_course_id_fkey(skill_id), phases(*, lessons(*), activities(*))')
         .in('id', extraCourseIds)
         .order('position');
       extraCourses = ec || [];
@@ -274,16 +291,29 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('courses')
-      .select('*, skills(id, slug, title, category, category_id), course_skills(skill_id), phases(*, lessons(*), activities(*))')
+      .select(
+        '*, skills!courses_skill_id_fkey(id, slug, title, category, category_id, level), course_skills!course_skills_course_id_fkey(skill_id, is_primary, skills!course_skills_skill_id_fkey(id, slug, title, category, category_id, level)), phases(*, lessons(*), activities(*))'
+      )
       .order('title');
     if (error) throw error;
     return (data || [])
-      .map((c) => ({
-        ...mapFullCourse(c, { includeDrafts }),
-        categoryId: c.skills?.category_id || null,
-        categoryName: c.skills?.category || '',
-        skill: c.skills || null,
-      }))
+      .map((c) => {
+        const primarySkill = c.skills || null;
+        const secondaryMap = new Map();
+        if (primarySkill?.id) secondaryMap.set(primarySkill.id, primarySkill);
+        (c.course_skills || []).forEach((cs) => {
+          if (cs?.skills?.id && !secondaryMap.has(cs.skills.id)) {
+            secondaryMap.set(cs.skills.id, cs.skills);
+          }
+        });
+        return {
+          ...mapFullCourse(c, { includeDrafts }),
+          categoryId: primarySkill?.category_id || null,
+          categoryName: primarySkill?.category || '',
+          skill: primarySkill,
+          associatedSkills: Array.from(secondaryMap.values()),
+        };
+      })
       .filter((c) => includeDrafts || c.publicationStatus === 'published');
   }
 
@@ -292,12 +322,17 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
   return (state.courses || [])
     .filter((c) => includeDrafts || c.publicationStatus === 'published')
     .map((c) => {
+      const normalized = normalizeCourseForRead(c, { includeDrafts });
       const skill = skillById.get(c.skillId) || null;
+      const associatedSkills = (normalized.associatedSkillIds || [])
+        .map((sid) => skillById.get(sid))
+        .filter(Boolean);
       return {
-        ...normalizeCourseForRead(c, { includeDrafts }),
+        ...normalized,
         categoryId: skill?.categoryId || c.categoryId || null,
         categoryName: skill?.category || '',
         skill,
+        associatedSkills,
       };
     });
 }
@@ -315,12 +350,23 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('courses')
-      .select('*, skills(*), course_skills(skill_id), course_versions(*), phases(*, lessons(*), activities(*))')
+      .select(
+        '*, skills!courses_skill_id_fkey(*), course_skills!course_skills_course_id_fkey(skill_id, is_primary, skills!course_skills_skill_id_fkey(id, slug, title, level, category, category_id, publication_status)), course_versions(*), phases(*, lessons(*), activities(*))'
+      )
       .eq('slug', slug)
       .single();
     if (error || !data) return null;
     if (!includeDrafts && data.publication_status !== 'published') return null;
     const course = mapFullCourse(data, { includeDrafts });
+    const primarySkill = data.skills || null;
+    const associatedSkillMap = new Map();
+    if (primarySkill?.id) associatedSkillMap.set(primarySkill.id, primarySkill);
+    (data.course_skills || []).forEach((cs) => {
+      const sk = cs?.skills;
+      if (sk?.id && (includeDrafts || (sk.publication_status || 'published') === 'published')) {
+        if (!associatedSkillMap.has(sk.id)) associatedSkillMap.set(sk.id, sk);
+      }
+    });
     const [{ data: assessments }, { data: challenges }] = await Promise.all([
       supabase
         .from('quizzes')
@@ -330,9 +376,10 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
     ]);
     return {
       ...course,
-      categoryId: data.skills?.category_id || null,
-      categoryName: data.skills?.category || '',
-      skill: data.skills || null,
+      categoryId: primarySkill?.category_id || null,
+      categoryName: primarySkill?.category || '',
+      skill: primarySkill,
+      associatedSkills: Array.from(associatedSkillMap.values()),
       versions: (data.course_versions || [])
         .slice()
         .sort((a, b) => Number(b.version_number || 0) - Number(a.version_number || 0))
@@ -405,7 +452,7 @@ export async function getChallengeById(challengeId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('challenges')
-      .select('*, skills(id, slug, title), courses(id, slug, title)')
+      .select('*, skills!challenges_skill_id_fkey(id, slug, title), courses!challenges_course_id_fkey(id, slug, title)')
       .eq('id', challengeId)
       .single();
     if (error || !data) return null;
@@ -507,13 +554,29 @@ export async function adminUpsertSkill(payload) {
       };
 
       if (existing) {
+        const prev = { title: existing.title, publicationStatus: existing.publicationStatus };
         Object.assign(existing, enriched);
+        appendDemoAuditLog(draft, {
+          action: 'skill_updated',
+          targetTable: 'skills',
+          targetId: existing.id,
+          beforeData: prev,
+          afterData: { title: existing.title, publicationStatus: existing.publicationStatus },
+        });
         return draft;
       }
 
+      const newSkillId = `skill-${cleanSlug}-${Date.now().toString(36).slice(-4)}`;
       draft.skills.push({
-        id: `skill-${cleanSlug}-${Date.now().toString(36).slice(-4)}`,
+        id: newSkillId,
         ...enriched,
+      });
+      appendDemoAuditLog(draft, {
+        action: 'skill_created',
+        targetTable: 'skills',
+        targetId: newSkillId,
+        beforeData: null,
+        afterData: { title: enriched.title, publicationStatus: enriched.publicationStatus },
       });
       return draft;
     });
@@ -670,7 +733,15 @@ export async function adminUpsertCourse(payload) {
       };
 
       if (existing) {
+        const prev = { title: existing.title, publicationStatus: existing.publicationStatus };
         Object.assign(existing, fields);
+        appendDemoAuditLog(draft, {
+          action: 'course_updated',
+          targetTable: 'courses',
+          targetId: existing.id,
+          beforeData: prev,
+          afterData: { title: existing.title, publicationStatus: existing.publicationStatus },
+        });
         savedCourse = existing;
         return draft;
       }
@@ -703,6 +774,13 @@ export async function adminUpsertCourse(payload) {
         changeNotes: 'Initial course draft created.',
         snapshot: { title: fields.title, difficulty: fields.difficulty, phaseCount: 1, lessonCount: 0 },
         createdAt: nowIso,
+      });
+      appendDemoAuditLog(draft, {
+        action: 'course_created',
+        targetTable: 'courses',
+        targetId: newCourseId,
+        beforeData: null,
+        afterData: { title: newCourse.title, publicationStatus: newCourse.publicationStatus },
       });
       savedCourse = newCourse;
       return draft;
@@ -744,8 +822,16 @@ export async function adminSetCourseStatus(courseId, status) {
     return updateDemoState((draft) => {
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course) throw new Error('Course not found');
+      const prevStatus = course.publicationStatus;
       course.publicationStatus = status;
       course.updatedAt = nowIso;
+      appendDemoAuditLog(draft, {
+        action: status === 'published' ? 'course_published' : 'course_status_changed',
+        targetTable: 'courses',
+        targetId: course.id,
+        beforeData: { publicationStatus: prevStatus },
+        afterData: { publicationStatus: status },
+      });
       return draft;
     });
   });
@@ -850,9 +936,17 @@ export async function adminUpsertPhase({
         existing.estHours = Number(estHours || 3);
         existing.publicationStatus = publicationStatus;
         if (position) existing.position = Number(position);
+        appendDemoAuditLog(draft, {
+          action: 'phase_updated',
+          targetTable: 'phases',
+          targetId: existing.id,
+          beforeData: null,
+          afterData: { courseId, title: existing.title, publicationStatus },
+        });
       } else {
+        const newPhaseId = `ph-${Date.now()}`;
         course.phases.push({
-          id: `ph-${Date.now()}`,
+          id: newPhaseId,
           position: Number(position || course.phases.length + 1),
           title: String(title || '').trim(),
           summary: String(summary || '').trim(),
@@ -862,6 +956,13 @@ export async function adminUpsertPhase({
           publicationStatus,
           activities: [],
           lessons: [],
+        });
+        appendDemoAuditLog(draft, {
+          action: 'phase_created',
+          targetTable: 'phases',
+          targetId: newPhaseId,
+          beforeData: null,
+          afterData: { courseId, title: String(title || '').trim(), publicationStatus },
         });
       }
       course.updatedAt = new Date().toISOString();
@@ -1083,11 +1184,26 @@ export async function adminUpsertLesson({
 
       if (existing) {
         Object.assign(existing, lessonData);
+        appendDemoAuditLog(draft, {
+          action: 'lesson_updated',
+          targetTable: 'lessons',
+          targetId: existing.id,
+          beforeData: null,
+          afterData: { courseId, phaseId, title: lessonData.title, publicationStatus },
+        });
       } else {
+        const newLessonId = `les-${Date.now()}`;
         phase.lessons.push({
-          id: `les-${Date.now()}`,
+          id: newLessonId,
           position: Number(position || phase.lessons.length + 1),
           ...lessonData,
+        });
+        appendDemoAuditLog(draft, {
+          action: 'lesson_created',
+          targetTable: 'lessons',
+          targetId: newLessonId,
+          beforeData: null,
+          afterData: { courseId, phaseId, title: lessonData.title, publicationStatus },
         });
       }
       course.updatedAt = new Date().toISOString();
@@ -1198,7 +1314,17 @@ export async function adminDeleteLesson(courseId, phaseId, lessonId) {
       const course = (draft.courses || []).find((c) => c.id === courseId);
       const phase = course?.phases?.find((p) => p.id === phaseId);
       if (phase) {
+        const targetLesson = (phase.lessons || []).find((l) => l.id === lessonId);
         phase.lessons = (phase.lessons || []).filter((l) => l.id !== lessonId);
+        if (targetLesson) {
+          appendDemoAuditLog(draft, {
+            action: 'lesson_deleted',
+            targetTable: 'lessons',
+            targetId: lessonId,
+            beforeData: { courseId, phaseId, title: targetLesson.title },
+            afterData: null,
+          });
+        }
       }
       return draft;
     });
@@ -1299,12 +1425,26 @@ export async function adminUpsertChallenge(payload) {
       if (existing) {
         Object.assign(existing, fields);
         savedChallenge = existing;
+        appendDemoAuditLog(draft, {
+          action: 'challenge_updated',
+          targetTable: 'challenges',
+          targetId: existing.id,
+          beforeData: null,
+          afterData: { title: fields.title, courseId: fields.courseId },
+        });
       } else {
         savedChallenge = {
           id: `ch-${payload.courseId || Date.now()}`,
           ...fields,
         };
         draft.challenges.push(savedChallenge);
+        appendDemoAuditLog(draft, {
+          action: 'challenge_created',
+          targetTable: 'challenges',
+          targetId: savedChallenge.id,
+          beforeData: null,
+          afterData: { title: fields.title, courseId: fields.courseId },
+        });
       }
       return draft;
     });

@@ -1,4 +1,4 @@
-import { getQuizForLearner, getQuizAttempts, submitQuiz } from '../../lib/repositories/quizRepository.js';
+import { getQuizForLearner, getQuizAttempts, startQuizSession, submitQuiz } from '../../lib/repositories/quizRepository.js';
 import { resolveCourseHierarchy, renderHierarchyGuard } from '../../lib/courseNavigation.js';
 import { isManualQuestionType } from '../../lib/assessmentEngine.js';
 import { buildIdempotencyKey } from '../../lib/idempotency.js';
@@ -11,10 +11,12 @@ import { showToast } from '../../components/Toast.js';
 
 let lastResultByQuiz = {};
 let activeOrderByQuizQuestion = {};
+let restartRequestedByQuiz = {};
 
 registerSessionCleanup(() => {
   lastResultByQuiz = {};
   activeOrderByQuizQuestion = {};
+  restartRequestedByQuiz = {};
 });
 
 function renderQuestionInput(q, idx, res, quizId) {
@@ -221,6 +223,29 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
   const isLocked = quiz.maxAttempts !== null && quiz.maxAttempts !== undefined && attemptsLeft <= 0;
   const initialAnswered = latestResult ? displayQuestions.length : 0;
 
+  let quizSession = null;
+  if (!isLocked && quiz.timeLimitMinutes && Number(quiz.timeLimitMinutes) > 0) {
+    const shouldRestart = Boolean(restartRequestedByQuiz[quiz.id]);
+    delete restartRequestedByQuiz[quiz.id];
+    quizSession = await startQuizSession(userId, quiz.id, { restartExpired: shouldRestart });
+  }
+  const isSessionExpired = Boolean(quizSession?.expired);
+  const remainingSeconds =
+    quizSession?.expiresAt && !isSessionExpired
+      ? Math.max(
+          0,
+          Math.floor(
+            (new Date(quizSession.expiresAt).getTime() -
+              new Date(quizSession.serverNow || Date.now()).getTime()) /
+              1000
+          )
+        )
+      : quiz.timeLimitMinutes
+        ? Number(quiz.timeLimitMinutes) * 60
+        : 0;
+  const initialTimerMins = Math.floor(remainingSeconds / 60);
+  const initialTimerSecs = String(remainingSeconds % 60).padStart(2, '0');
+
   const breadcrumbItems = activeCourse
     ? [
         { label: 'Explore', href: '/explore' },
@@ -264,7 +289,7 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
               <span class="mono-num">Pass: ${quiz.passPercent}%</span>
               <span class="meta-sep" aria-hidden="true">·</span>
               <span class="mono-num">${displayQuestions.length} questions</span>
-              ${quiz.timeLimitMinutes ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num" id="quiz-timer-badge">Timer: ${quiz.timeLimitMinutes}:00</span>` : ''}
+              ${quiz.timeLimitMinutes ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num" id="quiz-timer-badge" style="${isSessionExpired ? 'color:var(--color-red);' : ''}">${isSessionExpired ? 'Session expired' : `Timer: ${initialTimerMins}:${initialTimerSecs}`}</span>` : ''}
               ${attemptsLeft !== null ? `<span class="meta-sep" aria-hidden="true">·</span><span class="mono-num">${attemptsLeft} attempts remaining</span>` : ''}
             </div>
             <h1 class="page-title">${escapeHtml(quiz.title)}</h1>
@@ -278,6 +303,20 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
               detail: `${initialAnswered}/${displayQuestions.length}`,
             })}
           </section>
+
+          ${
+            isSessionExpired
+              ? `
+            <section class="card" style="background:var(--color-amber-bg); border-color:var(--color-amber-border); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+              <div>
+                <strong style="color:var(--color-navy); display:block;">Previous timed session expired</strong>
+                <span style="font-size:13.5px; color:var(--color-text-secondary);">Start a fresh server-timed session to submit this assessment.</span>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="restart-quiz-session-btn">Start New Timed Session</button>
+            </section>
+          `
+              : ''
+          }
 
           ${
             latestResult
@@ -323,13 +362,15 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
             <div class="field-error" id="quiz-error" role="alert"></div>
 
             <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-              <button type="submit" class="btn btn-primary" id="quiz-submit-btn" ${isLocked ? 'disabled' : ''}>
+              <button type="submit" class="btn btn-primary" id="quiz-submit-btn" ${isLocked || isSessionExpired ? 'disabled' : ''}>
                 ${
                   isLocked
                     ? `Attempt limit reached (${quiz.maxAttempts})`
-                    : latestResult
-                      ? 'Retake & submit assessment'
-                      : 'Submit assessment'
+                    : isSessionExpired
+                      ? 'Timed session expired — start new session above'
+                      : latestResult
+                        ? 'Retake & submit assessment'
+                        : 'Submit assessment'
                 }
               </button>
             </div>
@@ -377,10 +418,15 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
       const rail = root.querySelector('#quiz-completion-rail');
       const timerEl = root.querySelector('#quiz-timer-badge');
 
-      // Optional countdown timer for timed assessments
+      root.querySelector('#restart-quiz-session-btn')?.addEventListener('click', () => {
+        restartRequestedByQuiz[quiz.id] = true;
+        rerender({ silent: true });
+      });
+
+      // Server/session-synchronized countdown timer for timed assessments
       let timerId = null;
-      if (quiz.timeLimitMinutes && timerEl && !isLocked) {
-        let secondsLeft = Number(quiz.timeLimitMinutes) * 60;
+      if (quiz.timeLimitMinutes && timerEl && !isLocked && !isSessionExpired) {
+        let secondsLeft = remainingSeconds;
         timerId = window.setInterval(() => {
           if (!document.body.contains(timerEl)) {
             window.clearInterval(timerId);
@@ -498,7 +544,7 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        if (isLocked) return;
+        if (isLocked || isSessionExpired) return;
         errEl.textContent = '';
 
         const { answersMap, missingPrompts } = collectAnswers();

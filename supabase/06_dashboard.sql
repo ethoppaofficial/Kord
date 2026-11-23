@@ -1,4 +1,4 @@
--- 06_dashboard.sql (Synchronized with migrations 000008 and 20261122000010)
+-- 06_dashboard.sql (Synchronized with migrations 000008, 20261122000010, and 20261123000011)
 
 -- Hardened unified dashboard RPC returning full learner metrics, enrolled courses, and real study time series.
 
@@ -10,6 +10,7 @@ set search_path = public
 as $$
 declare
   v_uid uuid := auth.uid();
+  v_account_status text;
   v_completed_lessons integer := 0;
   v_completed_activities integer := 0;
   v_total_minutes integer := 0;
@@ -30,6 +31,11 @@ declare
 begin
   if v_uid is null then
     raise exception 'Authentication required';
+  end if;
+
+  select account_status into v_account_status from public.profiles where id = v_uid;
+  if v_account_status is distinct from 'active' then
+    raise exception 'Account is suspended or inactive';
   end if;
 
   select count(*), coalesce(sum(coalesce(lp.minutes_spent, l.est_minutes)), 0)::int

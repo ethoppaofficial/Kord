@@ -8,6 +8,66 @@ import {
 import { isValidEmail, validateLoginForm, validateSignupForm } from '../../lib/validators.js';
 import { showToast } from '../../components/Toast.js';
 
+const EYE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>`;
+
+function renderPasswordField({
+  id,
+  name,
+  label,
+  autocomplete,
+  placeholder = 'At least 6 characters',
+  errorKey,
+}) {
+  return `
+    <div class="field">
+      <label class="field-label" for="${id}">${label}</label>
+      <div class="password-input-wrap">
+        <input class="input password-input" id="${id}" name="${name}" type="password" autocomplete="${autocomplete}" placeholder="${placeholder}" required />
+        <button
+          type="button"
+          class="password-toggle-btn"
+          data-password-toggle="${id}"
+          aria-label="Show password"
+          aria-pressed="false"
+          aria-controls="${id}"
+          title="Show password"
+        >
+          <span class="password-toggle-icon" aria-hidden="true">${EYE_ICON}</span>
+          <span class="password-toggle-text">Show</span>
+        </button>
+      </div>
+      <div class="field-error" data-error-for="${errorKey}"></div>
+    </div>
+  `;
+}
+
+function bindPasswordToggles(root) {
+  const buttons = root.querySelectorAll('[data-password-toggle]');
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.getAttribute('data-password-toggle');
+      const input = targetId ? root.querySelector(`#${targetId}`) : null;
+      if (!input) return;
+
+      const currentType = input.getAttribute('type') || input.type || 'password';
+      const isHidden = currentType === 'password';
+      const nextType = isHidden ? 'text' : 'password';
+
+      input.type = nextType;
+      input.setAttribute('type', nextType);
+      btn.setAttribute('aria-pressed', isHidden ? 'true' : 'false');
+      btn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+      btn.setAttribute('title', isHidden ? 'Hide password' : 'Show password');
+
+      const iconEl = btn.querySelector('.password-toggle-icon');
+      const textEl = btn.querySelector('.password-toggle-text');
+      if (iconEl) iconEl.innerHTML = isHidden ? EYE_OFF_ICON : EYE_ICON;
+      if (textEl) textEl.textContent = isHidden ? 'Hide' : 'Show';
+    });
+  });
+}
+
 export function renderLoginPage({ navigate, auth = null }) {
   const doSignIn = auth?.signIn || signIn;
   return {
@@ -24,11 +84,14 @@ export function renderLoginPage({ navigate, auth = null }) {
               <div class="field-error" data-error-for="email"></div>
             </div>
 
-            <div class="field">
-              <label class="field-label" for="login-password">Password</label>
-              <input class="input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="At least 6 characters" required />
-              <div class="field-error" data-error-for="password"></div>
-            </div>
+            ${renderPasswordField({
+              id: 'login-password',
+              name: 'password',
+              label: 'Password',
+              autocomplete: 'current-password',
+              placeholder: 'At least 6 characters',
+              errorKey: 'password',
+            })}
 
             <div class="field-error" id="login-form-error" role="alert"></div>
 
@@ -43,6 +106,7 @@ export function renderLoginPage({ navigate, auth = null }) {
       </div>
     `,
     bind(root) {
+      bindPasswordToggles(root);
       const form = root.querySelector('#login-form');
       const submitBtn = root.querySelector('#login-submit');
       const formErr = root.querySelector('#login-form-error');
@@ -106,17 +170,23 @@ export function renderSignupPage({ navigate }) {
               <div class="field-error" data-error-for="email"></div>
             </div>
 
-            <div class="field">
-              <label class="field-label" for="signup-password">Password</label>
-              <input class="input" id="signup-password" name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" required />
-              <div class="field-error" data-error-for="password"></div>
-            </div>
+            ${renderPasswordField({
+              id: 'signup-password',
+              name: 'password',
+              label: 'Password',
+              autocomplete: 'new-password',
+              placeholder: 'At least 6 characters',
+              errorKey: 'password',
+            })}
 
-            <div class="field">
-              <label class="field-label" for="signup-confirm">Confirm password</label>
-              <input class="input" id="signup-confirm" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat password" required />
-              <div class="field-error" data-error-for="confirmPassword"></div>
-            </div>
+            ${renderPasswordField({
+              id: 'signup-confirm',
+              name: 'confirmPassword',
+              label: 'Confirm password',
+              autocomplete: 'new-password',
+              placeholder: 'Repeat password',
+              errorKey: 'confirmPassword',
+            })}
 
             <div class="field-error" id="signup-form-error" role="alert"></div>
 
@@ -130,6 +200,7 @@ export function renderSignupPage({ navigate }) {
       </div>
     `,
     bind(root) {
+      bindPasswordToggles(root);
       const form = root.querySelector('#signup-form');
       const submitBtn = root.querySelector('#signup-submit');
       const formErr = root.querySelector('#signup-form-error');
@@ -256,17 +327,23 @@ export function renderResetPasswordPage({ navigate, session, auth = null }) {
           <p class="page-subtitle" style="margin-bottom:20px;">Choose a new password for your Kord account.</p>
 
           <form id="update-password-form" class="form-stack" novalidate>
-            <div class="field">
-              <label class="field-label" for="new-password">New password</label>
-              <input class="input" id="new-password" name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" required />
-              <div class="field-error" data-error-for="password"></div>
-            </div>
+            ${renderPasswordField({
+              id: 'new-password',
+              name: 'password',
+              label: 'New password',
+              autocomplete: 'new-password',
+              placeholder: 'At least 6 characters',
+              errorKey: 'password',
+            })}
 
-            <div class="field">
-              <label class="field-label" for="confirm-new-password">Confirm new password</label>
-              <input class="input" id="confirm-new-password" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat new password" required />
-              <div class="field-error" data-error-for="confirmPassword"></div>
-            </div>
+            ${renderPasswordField({
+              id: 'confirm-new-password',
+              name: 'confirmPassword',
+              label: 'Confirm new password',
+              autocomplete: 'new-password',
+              placeholder: 'Repeat new password',
+              errorKey: 'confirmPassword',
+            })}
 
             <div class="field-error" id="update-password-error" role="alert"></div>
 
@@ -276,6 +353,7 @@ export function renderResetPasswordPage({ navigate, session, auth = null }) {
       </div>
     `,
     bind(root) {
+      bindPasswordToggles(root);
       const form = root.querySelector('#update-password-form');
       const submitBtn = root.querySelector('#update-password-submit');
       const formErr = root.querySelector('#update-password-error');

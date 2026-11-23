@@ -779,6 +779,64 @@ textarea {
   border-color: var(--color-red);
 }
 
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-input-wrap .password-input {
+  padding-right: 88px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.password-toggle-btn:hover {
+  color: var(--color-navy);
+  background: var(--color-surface-subtle, #f1f5f9);
+  border-color: var(--color-border);
+}
+
+.password-toggle-btn:focus-visible {
+  outline: none;
+  color: var(--color-blue);
+  border-color: var(--color-blue);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.14);
+}
+
+.password-toggle-btn[aria-pressed="true"] {
+  color: var(--color-blue);
+  background: var(--color-blue-soft);
+  border-color: rgba(29, 78, 216, 0.22);
+}
+
+.password-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .textarea {
   min-height: 110px;
   resize: vertical;

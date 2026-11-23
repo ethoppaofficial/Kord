@@ -3,7 +3,7 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildFrontendCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-frontend-foundations';
   const skillId = 'skill-frontend-development';
-  const associatedSkillIds = ['skill-frontend-development'];
+  const associatedSkillIds = ['skill-frontend-development', 'skill-web-development'];
   const now = '2026-10-01T09:00:00.000Z';
 
   const phases = [

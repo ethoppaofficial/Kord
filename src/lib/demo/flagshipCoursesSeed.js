@@ -14,6 +14,13 @@ import { buildFrontendCourse } from './courses/frontendCourse.js';
 import { buildGraphicDesignCourse } from './courses/graphicDesignCourse.js';
 import { buildDigitalMarketingCourse } from './courses/digitalMarketingCourse.js';
 import { buildCommunicationCourse } from './courses/communicationCourse.js';
+import { COMMUNICATION_COURSE_BUILDERS } from './catalog/communicationCourses.js';
+import { WRITING_COURSE_BUILDERS } from './catalog/writingCourses.js';
+import { BUSINESS_COURSE_BUILDERS } from './catalog/businessCourses.js';
+import { MARKETING_COURSE_BUILDERS } from './catalog/marketingCourses.js';
+import { CREATIVE_COURSE_BUILDERS } from './catalog/creativeCourses.js';
+import { TECH_COURSE_BUILDERS } from './catalog/techCourses.js';
+import { CAREER_COURSE_BUILDERS } from './catalog/careerCourses.js';
 
 function buildLesson({
   id,
@@ -142,6 +149,13 @@ export function createFlagshipCurriculumSeed() {
     buildGraphicDesignCourse,
     buildDigitalMarketingCourse,
     buildCommunicationCourse,
+    ...COMMUNICATION_COURSE_BUILDERS,
+    ...WRITING_COURSE_BUILDERS,
+    ...BUSINESS_COURSE_BUILDERS,
+    ...MARKETING_COURSE_BUILDERS,
+    ...CREATIVE_COURSE_BUILDERS,
+    ...TECH_COURSE_BUILDERS,
+    ...CAREER_COURSE_BUILDERS,
   ];
 
   builders.forEach((buildFn) => {
@@ -154,7 +168,7 @@ export function createFlagshipCurriculumSeed() {
     id: `cv-${c.id}-v${c.version || 1}`,
     courseId: c.id,
     versionNumber: c.version || 1,
-    changeNotes: 'Initial published release of structured 8-module course pathway.',
+    changeNotes: `Initial published release of structured ${(c.phases || []).length}-module course pathway.`,
     snapshot: {
       title: c.title,
       difficulty: c.difficulty,

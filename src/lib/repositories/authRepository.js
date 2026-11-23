@@ -6,6 +6,7 @@ import {
   getDemoCurrentUserId,
   setDemoCurrentUserId,
 } from '../demo/demoStore.js';
+import { appendDemoAuditLog } from '../demo/demoAudit.js';
 import { extractFirstName } from '../greeting.js';
 import { runSessionCleanup } from '../sessionLifecycle.js';
 
@@ -43,6 +44,10 @@ export function createAuthService({
     if (!currentUserId) return null;
     const user = (state?.users || []).find((u) => u.id === currentUserId);
     if (!user) return null;
+    if ((user.accountStatus || 'active') !== 'active') {
+      demoStore.setDemoCurrentUserId(null);
+      return null;
+    }
     const firstName =
       user.firstName || extractFirstName(user.fullName, user.email.split('@')[0]);
     return {
@@ -52,21 +57,35 @@ export function createAuthService({
         firstName,
         fullName: user.fullName,
         role: user.role === 'admin' ? 'admin' : 'learner',
+        accountStatus: user.accountStatus || 'active',
       },
     };
   }
 
-  async function buildSupabaseSession(authUser) {
+  async function buildSupabaseSession(authUser, { throwOnSuspended = false } = {}) {
     if (!authUser) return null;
     const { data: profile, error: profileError } = await supabaseClient
       .from('profiles')
-      .select('id, email, first_name, full_name, role')
+      .select('id, email, first_name, full_name, role, account_status')
       .eq('id', authUser.id)
       .single();
 
     if (profileError || !profile || !['learner', 'admin'].includes(profile.role)) {
       if (profileError) {
         console.warn('Unable to load user profile:', profileError.message);
+      }
+      return null;
+    }
+
+    const accountStatus = profile.account_status || 'active';
+    if (accountStatus !== 'active') {
+      try {
+        await supabaseClient.auth.signOut();
+      } catch {
+        // Ignore secondary signOut failure
+      }
+      if (throwOnSuspended) {
+        throw new Error('This account has been suspended. Contact an administrator.');
       }
       return null;
     }
@@ -88,6 +107,7 @@ export function createAuthService({
         firstName,
         fullName,
         role: profile.role,
+        accountStatus,
       },
     };
   }
@@ -123,7 +143,7 @@ export function createAuthService({
         if (error) throw new Error(error.message);
         const authUser = data?.user || data?.session?.user;
         if (authUser) {
-          return await buildSupabaseSession(authUser);
+          return await buildSupabaseSession(authUser, { throwOnSuspended: true });
         }
         return await getCurrentSession();
       } finally {
@@ -135,6 +155,9 @@ export function createAuthService({
     const user = (state.users || []).find((u) => u.email.toLowerCase() === cleanEmail);
     if (!user || user.password !== password) {
       throw new Error('Invalid email or password.');
+    }
+    if ((user.accountStatus || 'active') !== 'active') {
+      throw new Error('This account has been suspended. Contact an administrator.');
     }
 
     demoStore.setDemoCurrentUserId(user.id);
@@ -189,6 +212,7 @@ export function createAuthService({
       lastName: cleanLast,
       fullName: cleanFull,
       role: assignedRole,
+      accountStatus: 'active',
       password,
       createdAt: new Date().toISOString(),
     };
@@ -449,3 +473,154 @@ export const updateOwnProfile = defaultAuthService.updateOwnProfile;
 export const signOut = defaultAuthService.signOut;
 export const isPasswordRecoveryMode = defaultAuthService.isPasswordRecoveryMode;
 export const subscribeAuthChanges = defaultAuthService.subscribeAuthChanges;
+
+// =========================================================================
+// Protected Admin User Governance & Audit History APIs
+// =========================================================================
+export async function adminListUsers() {
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase.rpc('admin_list_users');
+    if (error) throw new Error(error.message);
+    return (data || []).map((u) => ({
+      id: u.id,
+      email: u.email,
+      firstName: u.first_name || '',
+      fullName: u.full_name || '',
+      role: u.role === 'admin' ? 'admin' : 'learner',
+      accountStatus: u.account_status || 'active',
+      createdAt: u.created_at,
+    }));
+  }
+
+  const state = getDemoState();
+  const actorId = getDemoCurrentUserId();
+  const actor = (state.users || []).find((u) => u.id === actorId);
+  if (!actor || actor.role !== 'admin' || (actor.accountStatus || 'active') !== 'active') {
+    throw new Error('Administrator access required.');
+  }
+
+  return (state.users || [])
+    .slice()
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    .map((u) => ({
+      id: u.id,
+      email: u.email,
+      firstName: u.firstName || '',
+      fullName: u.fullName || '',
+      role: u.role === 'admin' ? 'admin' : 'learner',
+      accountStatus: u.accountStatus || 'active',
+      createdAt: u.createdAt,
+    }));
+}
+
+export async function adminSetAccountStatus({
+  targetUserId,
+  newStatus,
+  reason = '',
+  actorId = null,
+}) {
+  if (!['active', 'suspended'].includes(newStatus)) {
+    throw new Error('Invalid account status: must be active or suspended.');
+  }
+  const cleanReason = String(reason || '').trim();
+
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase.rpc('admin_set_account_status', {
+      p_target_user_id: targetUserId,
+      p_new_status: newStatus,
+      p_reason: cleanReason,
+    });
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  let updatedUser = null;
+  updateDemoState((draft) => {
+    const resolvedActorId = actorId || getDemoCurrentUserId();
+    const actor = (draft.users || []).find((u) => u.id === resolvedActorId);
+    if (!actor || actor.role !== 'admin' || (actor.accountStatus || 'active') !== 'active') {
+      throw new Error('Administrator access required.');
+    }
+
+    const target = (draft.users || []).find((u) => u.id === targetUserId);
+    if (!target) {
+      throw new Error('Target user profile not found.');
+    }
+    if (target.id === actor.id) {
+      throw new Error('Administrators cannot suspend or modify their own account status.');
+    }
+    if (target.role === 'admin') {
+      throw new Error('Service role authorization required to modify another administrator account status.');
+    }
+
+    const prevStatus = target.accountStatus || 'active';
+    target.accountStatus = newStatus;
+
+    appendDemoAuditLog(draft, {
+      actorId: actor.id,
+      action: 'profile_status_changed',
+      targetTable: 'profiles',
+      targetId: target.id,
+      beforeData: { role: target.role, accountStatus: prevStatus },
+      afterData: { role: target.role, accountStatus: newStatus },
+    });
+
+    if (cleanReason) {
+      appendDemoAuditLog(draft, {
+        actorId: actor.id,
+        action: 'account_status_reason_noted',
+        targetTable: 'profiles',
+        targetId: target.id,
+        beforeData: null,
+        afterData: { accountStatus: newStatus, reason: cleanReason.slice(0, 300) },
+      });
+    }
+
+    updatedUser = {
+      id: target.id,
+      email: target.email,
+      firstName: target.firstName || '',
+      fullName: target.fullName || '',
+      role: target.role,
+      accountStatus: target.accountStatus,
+      createdAt: target.createdAt,
+    };
+    return draft;
+  });
+
+  return updatedUser;
+}
+
+export async function adminListAuditLogs({ limit = 100 } = {}) {
+  const safeLimit = Math.max(1, Math.min(250, Number(limit || 100)));
+
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase
+      .from('admin_audit_logs')
+      .select('id, actor_id, actor_role, action, target_table, target_id, before_data, after_data, created_at')
+      .order('created_at', { ascending: false })
+      .limit(safeLimit);
+    if (error) throw new Error(error.message);
+    return (data || []).map((row) => ({
+      id: row.id,
+      actorId: row.actor_id,
+      actorRole: row.actor_role,
+      action: row.action,
+      targetTable: row.target_table,
+      targetId: row.target_id,
+      beforeData: row.before_data,
+      afterData: row.after_data,
+      createdAt: row.created_at,
+    }));
+  }
+
+  const state = getDemoState();
+  const actorId = getDemoCurrentUserId();
+  const actor = (state.users || []).find((u) => u.id === actorId);
+  if (!actor || actor.role !== 'admin' || (actor.accountStatus || 'active') !== 'active') {
+    throw new Error('Administrator access required.');
+  }
+
+  return (state.adminAuditLogs || []).slice(0, safeLimit);
+}
+

@@ -1,5 +1,6 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
+import { appendDemoAuditLog } from '../demo/demoAudit.js';
 import { upgradeSkillLevel } from './skillsRepository.js';
 import { recomputeCourseAndSkillStatus, recomputeDemoSkillLevel } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
@@ -140,6 +141,9 @@ export async function submitChallengeEvidence({
       if (!actor || actor.role === 'admin') {
         throw new Error('Learner account required to submit practical evidence.');
       }
+      if ((actor.accountStatus || 'active') !== 'active') {
+        throw new Error('Account is suspended or inactive.');
+      }
 
       const existing = (state.submissions || []).find(
         (s) => s.userId === userId && s.idempotencyKey === effectiveKey
@@ -250,7 +254,7 @@ export async function adminListSubmissions() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
       .from('submissions')
-      .select('*, profiles!submissions_user_id_fkey(full_name, email), challenges(title, rubric, skill_id, course_id)')
+      .select('*, profiles!submissions_user_id_fkey(full_name, email), challenges!submissions_challenge_id_fkey(title, rubric, skill_id, course_id)')
       .order('created_at', { ascending: false });
     if (error) throw error;
     return (data || []).map((row) => ({
@@ -322,7 +326,7 @@ export async function adminReviewSubmission({
         throw new Error('Invalid review status. Must be approved or needs_revision.');
       }
       const reviewer = (draft.users || []).find((u) => u.id === reviewerId);
-      if (!reviewer || reviewer.role !== 'admin') {
+      if (!reviewer || reviewer.role !== 'admin' || (reviewer.accountStatus || 'active') !== 'active') {
         throw new Error('Administrator authorization required to review practical submissions.');
       }
 
@@ -364,6 +368,10 @@ export async function adminReviewSubmission({
         throw new Error(`Approved submissions must meet or exceed the passing score (${passingScore}).`);
       }
 
+      const prevSub = {
+        status: sub.status,
+        rubricTotal: sub.rubricTotal,
+      };
       sub.status = status;
       sub.rubricScores = cleanScores;
       sub.rubricTotal = validatedTotal;
@@ -371,6 +379,19 @@ export async function adminReviewSubmission({
       sub.feedback = cleanFeedback;
       sub.reviewedBy = reviewerId;
       sub.reviewedAt = new Date().toISOString();
+
+      appendDemoAuditLog(draft, {
+        actorId: reviewerId,
+        action: 'submission_reviewed',
+        targetTable: 'submissions',
+        targetId: sub.id,
+        beforeData: prevSub,
+        afterData: {
+          status: sub.status,
+          rubricTotal: sub.rubricTotal,
+          rubricMax: sub.rubricMax,
+        },
+      });
 
       targetUserId = sub.userId;
       targetSkillId = challenge?.skillId || null;

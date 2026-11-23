@@ -3,7 +3,13 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildDigitalMarketingCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-digital-marketing-foundations';
   const skillId = 'skill-digital-marketing-fundamentals';
-  const associatedSkillIds = ['skill-digital-marketing-fundamentals'];
+  const associatedSkillIds = [
+    'skill-digital-marketing-fundamentals',
+    'skill-content-marketing',
+    'skill-social-media-management',
+    'skill-copywriting',
+    'skill-marketing-analytics',
+  ];
   const now = '2026-10-03T09:00:00.000Z';
 
   const phases = [

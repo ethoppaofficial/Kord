@@ -13,6 +13,7 @@ import {
   adminUpsertActivity,
   adminUpsertLesson,
   adminDeleteLesson,
+  validateCourseForPublish,
 } from '../../lib/repositories/contentRepository.js';
 import { DIFFICULTY_LEVELS } from '../../lib/constants.js';
 import { BLOCK_TYPE_CATALOG, createEmptyBlock, renderLessonBlocks } from '../../lib/lessonBlocks.js';
@@ -228,6 +229,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
   const activeCourse = activeCourseSummary
     ? (await getCourseById(activeCourseSummary.id, { includeDrafts: true })) || activeCourseSummary
     : null;
+  const publishCheck = activeCourse ? validateCourseForPublish(activeCourse) : null;
   const phases = activeCourse?.phases || [];
   if (!selectedPhaseId || !phases.some((p) => p.id === selectedPhaseId)) {
     selectedPhaseId = phases[0]?.id || null;
@@ -368,6 +370,23 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                   : ''
               }
             </div>
+
+            ${
+              publishCheck
+                ? `<div style="padding:12px 14px; border-radius:var(--radius-sm); border:1px solid ${publishCheck.valid ? 'var(--color-green-border, #bbf7d0)' : 'var(--color-amber-border)'}; background:${publishCheck.valid ? 'var(--color-green-bg)' : 'var(--color-amber-bg)'}; font-size:13px;">
+                    <strong style="color:var(--color-navy); display:block; margin-bottom:${publishCheck.valid ? '0' : '4px'};">
+                      ${publishCheck.valid ? 'Publish readiness check passed — course meets curriculum requirements.' : 'Publish readiness requirements remaining:'}
+                    </strong>
+                    ${
+                      publishCheck.valid
+                        ? ''
+                        : `<ul style="margin:0; padding-left:18px; color:var(--color-text-secondary);">
+                            ${publishCheck.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join('')}
+                          </ul>`
+                    }
+                  </div>`
+                : ''
+            }
           `
               : ''
           }

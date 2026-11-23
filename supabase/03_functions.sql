@@ -1,4 +1,4 @@
--- 03_functions.sql (Synchronized with migrations 000005-000006 and 20261122000010)
+-- 03_functions.sql (Synchronized with migrations 000005-000006, 20261122000010, and 20261123000011)
 
 -- 20261121000005_progression_functions.sql
 -- Internal progression engine and authenticated learner progression RPCs.
@@ -529,8 +529,8 @@ declare
   v_skill public.skills;
   row_out public.user_skills;
 begin
-  if auth.uid() is null or public.is_admin() then
-    raise exception 'Learner authentication required';
+  if auth.uid() is null or not public.is_active_learner() then
+    raise exception 'Active learner authentication required';
   end if;
 
   select * into v_skill from public.skills where id = p_skill_id;
@@ -560,8 +560,8 @@ declare
   v_projected timestamptz;
   v_enrollment public.course_enrollments;
 begin
-  if auth.uid() is null or public.is_admin() then
-    raise exception 'Learner authentication required';
+  if auth.uid() is null or not public.is_active_learner() then
+    raise exception 'Active learner authentication required';
   end if;
 
   select * into v_course
@@ -623,8 +623,8 @@ declare
   v_existing public.course_enrollments;
   v_updated public.course_enrollments;
 begin
-  if auth.uid() is null or public.is_admin() then
-    raise exception 'Learner authentication required';
+  if auth.uid() is null or not public.is_active_learner() then
+    raise exception 'Active learner authentication required';
   end if;
 
   if p_status not in ('active', 'paused') then
@@ -685,8 +685,8 @@ declare
   v_clean_notes text := coalesce(p_notes, '');
   v_row public.lesson_progress;
 begin
-  if auth.uid() is null or public.is_admin() then
-    raise exception 'Learner authentication required';
+  if auth.uid() is null or not public.is_active_learner() then
+    raise exception 'Active learner authentication required';
   end if;
 
   if length(v_clean_notes) > 20000 then
@@ -744,8 +744,8 @@ declare
   v_completed boolean := coalesce(p_completed, true);
   v_row public.lesson_progress;
 begin
-  if auth.uid() is null or public.is_admin() then
-    raise exception 'Learner authentication required';
+  if auth.uid() is null or not public.is_active_learner() then
+    raise exception 'Active learner authentication required';
   end if;
 
   select c.id, greatest(1, coalesce(l.est_minutes, 25))
@@ -814,8 +814,8 @@ declare
   v_completed boolean := coalesce(p_completed, true);
   v_row public.activity_progress;
 begin
-  if auth.uid() is null or public.is_admin() then
-    raise exception 'Learner authentication required';
+  if auth.uid() is null or not public.is_active_learner() then
+    raise exception 'Active learner authentication required';
   end if;
 
   if p_notes is not null and length(p_notes) > 20000 then
@@ -875,6 +875,269 @@ grant execute on function public.set_activity_completion(uuid, boolean, text) to
 -- 20261121000006_assessment_and_submission_functions.sql
 -- Hardened quiz grading, answer-key protection, practical submissions, admin grading, and curriculum management RPCs.
 
+-- Server-side course publish readiness validation trigger
+create or replace function public.trg_validate_course_publish_readiness()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_has_phase boolean := false;
+  v_has_lesson boolean := false;
+  v_empty_lesson text;
+  v_require_quiz boolean := false;
+  v_require_challenge boolean := false;
+  v_has_quiz boolean := false;
+  v_has_challenge boolean := false;
+begin
+  if new.publication_status <> 'published' then
+    return new;
+  end if;
+
+  if tg_op = 'INSERT' then
+    if not exists (
+      select 1 from public.courses c
+      where c.id = new.id or c.slug = new.slug
+    ) then
+      raise exception 'New courses must be saved as draft with published modules and lessons before publishing';
+    end if;
+    return new;
+  end if;
+
+  if length(trim(coalesce(new.title, ''))) < 3 then
+    raise exception 'Course title must be at least 3 characters before publishing';
+  end if;
+
+  if length(trim(coalesce(new.description, ''))) < 15 then
+    raise exception 'Course description must be at least 15 characters before publishing';
+  end if;
+
+  if new.skill_id is null then
+    raise exception 'Course must have a primary skill before publishing';
+  end if;
+
+  if jsonb_typeof(coalesce(new.outcomes, '[]'::jsonb)) <> 'array'
+     or jsonb_array_length(coalesce(new.outcomes, '[]'::jsonb)) < 1 then
+    raise exception 'Course must have at least 1 learning objective before publishing';
+  end if;
+
+  select exists (
+    select 1 from public.phases p
+    where p.course_id = new.id
+      and p.publication_status = 'published'
+  ) into v_has_phase;
+
+  if not v_has_phase then
+    raise exception 'Course must contain at least 1 published module before publishing';
+  end if;
+
+  select exists (
+    select 1
+    from public.lessons l
+    join public.phases p on p.id = l.phase_id
+    where p.course_id = new.id
+      and p.publication_status = 'published'
+      and l.publication_status = 'published'
+  ) into v_has_lesson;
+
+  if not v_has_lesson then
+    raise exception 'Course must contain at least 1 published lesson before publishing';
+  end if;
+
+  select l.title into v_empty_lesson
+  from public.lessons l
+  join public.phases p on p.id = l.phase_id
+  where p.course_id = new.id
+    and p.publication_status = 'published'
+    and l.publication_status = 'published'
+    and (
+      length(trim(coalesce(l.title, ''))) = 0
+      or jsonb_typeof(coalesce(l.blocks, '[]'::jsonb)) <> 'array'
+      or jsonb_array_length(coalesce(l.blocks, '[]'::jsonb)) < 1
+    )
+  limit 1;
+
+  if v_empty_lesson is not null then
+    raise exception 'Published lesson "%" must contain structured content blocks before publishing course', v_empty_lesson;
+  end if;
+
+  v_require_quiz := coalesce((new.completion_rules ->> 'requireAllAssessments')::boolean, false);
+  if v_require_quiz then
+    select exists (
+      select 1
+      from public.quizzes q
+      where q.course_id = new.id
+        and exists (select 1 from public.questions qs where qs.quiz_id = q.id)
+    ) into v_has_quiz;
+    if not v_has_quiz then
+      raise exception 'Course requires at least 1 configured assessment with questions before publishing';
+    end if;
+  end if;
+
+  v_require_challenge := coalesce((new.completion_rules ->> 'requireChallengeSubmission')::boolean, false)
+    or coalesce((new.completion_rules ->> 'requireChallengeApproval')::boolean, false);
+  if v_require_challenge then
+    select exists (
+      select 1
+      from public.challenges ch
+      where ch.course_id = new.id
+        and jsonb_typeof(coalesce(ch.rubric, '[]'::jsonb)) = 'array'
+        and jsonb_array_length(coalesce(ch.rubric, '[]'::jsonb)) >= 1
+    ) into v_has_challenge;
+    if not v_has_challenge then
+      raise exception 'Course requires a practical challenge with a valid rubric before publishing';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.trg_validate_course_publish_readiness() from public, anon, authenticated;
+
+drop trigger if exists trg_validate_course_publish_readiness on public.courses;
+create trigger trg_validate_course_publish_readiness
+  before insert or update on public.courses
+  for each row execute function public.trg_validate_course_publish_readiness();
+
+create or replace function public.start_quiz_session(
+  p_quiz_id uuid,
+  p_restart_expired boolean default false
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_profile public.profiles;
+  v_quiz public.quizzes;
+  v_session public.quiz_sessions;
+  v_attempts_used integer := 0;
+  v_now timestamptz := now();
+  v_expires timestamptz := null;
+begin
+  if auth.uid() is null then
+    raise exception 'Learner authentication required';
+  end if;
+
+  select * into v_profile from public.profiles where id = auth.uid();
+  if not found or v_profile.account_status <> 'active' then
+    raise exception 'Account is suspended or inactive';
+  end if;
+  if v_profile.role = 'admin' then
+    raise exception 'Learner authentication required';
+  end if;
+
+  select * into v_quiz from public.quizzes where id = p_quiz_id;
+  if not found then
+    raise exception 'Assessment not found';
+  end if;
+
+  if v_quiz.course_id is not null then
+    if not exists (
+      select 1 from public.courses
+      where id = v_quiz.course_id and publication_status = 'published'
+    ) then
+      raise exception 'Course assessment is not currently published';
+    end if;
+    if v_quiz.phase_id is not null and not exists (
+      select 1 from public.phases
+      where id = v_quiz.phase_id and publication_status = 'published'
+    ) then
+      raise exception 'Module assessment is not currently published';
+    end if;
+    if v_quiz.lesson_id is not null and not exists (
+      select 1 from public.lessons
+      where id = v_quiz.lesson_id and publication_status = 'published'
+    ) then
+      raise exception 'Lesson assessment is not currently published';
+    end if;
+    if not exists (
+      select 1 from public.course_enrollments
+      where user_id = auth.uid()
+        and course_id = v_quiz.course_id
+        and status in ('active', 'completed')
+    ) then
+      raise exception 'Active course enrollment required to start this assessment';
+    end if;
+  else
+    if not exists (
+      select 1 from public.skills
+      where id = v_quiz.skill_id and publication_status = 'published'
+    ) then
+      raise exception 'Assessment skill is not currently published';
+    end if;
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('quiz_session:' || auth.uid()::text || ':' || p_quiz_id::text));
+
+  select count(*) into v_attempts_used
+  from public.quiz_attempts
+  where user_id = auth.uid() and quiz_id = p_quiz_id;
+
+  if v_quiz.max_attempts is not null and v_attempts_used >= v_quiz.max_attempts then
+    raise exception 'Maximum number of attempts reached for this assessment';
+  end if;
+
+  select * into v_session
+  from public.quiz_sessions
+  where user_id = auth.uid()
+    and quiz_id = p_quiz_id
+    and status = 'active'
+    and completed_attempt_id is null
+  order by started_at desc
+  limit 1;
+
+  if found then
+    if v_session.expires_at is null or v_session.expires_at >= v_now then
+      return jsonb_build_object(
+        'sessionId', v_session.id,
+        'quizId', v_session.quiz_id,
+        'startedAt', v_session.started_at,
+        'expiresAt', v_session.expires_at,
+        'serverNow', v_now,
+        'expired', false
+      );
+    elsif not coalesce(p_restart_expired, false) then
+      return jsonb_build_object(
+        'sessionId', v_session.id,
+        'quizId', v_session.quiz_id,
+        'startedAt', v_session.started_at,
+        'expiresAt', v_session.expires_at,
+        'serverNow', v_now,
+        'expired', true
+      );
+    else
+      update public.quiz_sessions
+      set status = 'expired'
+      where id = v_session.id;
+    end if;
+  end if;
+
+  if v_quiz.time_limit_minutes is not null and v_quiz.time_limit_minutes > 0 then
+    v_expires := v_now + make_interval(mins => v_quiz.time_limit_minutes);
+  end if;
+
+  insert into public.quiz_sessions (user_id, quiz_id, status, started_at, expires_at)
+  values (auth.uid(), p_quiz_id, 'active', v_now, v_expires)
+  returning * into v_session;
+
+  return jsonb_build_object(
+    'sessionId', v_session.id,
+    'quizId', v_session.quiz_id,
+    'startedAt', v_session.started_at,
+    'expiresAt', v_session.expires_at,
+    'serverNow', v_now,
+    'expired', false
+  );
+end;
+$$;
+
+revoke all on function public.start_quiz_session(uuid, boolean) from public, anon;
+grant execute on function public.start_quiz_session(uuid, boolean) to authenticated;
+
 create or replace function public.submit_quiz(
   p_quiz_id uuid,
   p_answers jsonb,
@@ -886,7 +1149,9 @@ security definer
 set search_path = public
 as $$
 declare
+  v_profile public.profiles;
   v_quiz public.quizzes;
+  v_session public.quiz_sessions;
   v_q record;
   v_raw jsonb;
   v_raw_text text;
@@ -911,7 +1176,15 @@ declare
   v_idem text := nullif(trim(coalesce(p_idempotency_key, '')), '');
   v_replay boolean := false;
 begin
-  if auth.uid() is null or public.is_admin() then
+  if auth.uid() is null then
+    raise exception 'Learner authentication required';
+  end if;
+
+  select * into v_profile from public.profiles where id = auth.uid();
+  if not found or v_profile.account_status <> 'active' then
+    raise exception 'Account is suspended or inactive';
+  end if;
+  if v_profile.role = 'admin' then
     raise exception 'Learner authentication required';
   end if;
 
@@ -984,6 +1257,25 @@ begin
 
     if v_quiz.max_attempts is not null and (v_attempt_num - 1) >= v_quiz.max_attempts then
       raise exception 'Maximum number of attempts reached for this assessment';
+    end if;
+
+    if v_quiz.time_limit_minutes is not null and v_quiz.time_limit_minutes > 0 then
+      select * into v_session
+      from public.quiz_sessions
+      where user_id = auth.uid()
+        and quiz_id = p_quiz_id
+        and status = 'active'
+        and completed_attempt_id is null
+      order by started_at desc
+      limit 1;
+
+      if not found then
+        raise exception 'Active assessment session required before submitting a timed assessment';
+      end if;
+
+      if v_session.expires_at is not null and now() > (v_session.expires_at + interval '30 seconds') then
+        raise exception 'Assessment time limit exceeded for this session';
+      end if;
     end if;
   end if;
 
@@ -1146,6 +1438,13 @@ begin
     where user_id = auth.uid() and idempotency_key = v_idem;
   end if;
 
+  if v_session.id is not null and v_attempt_id is not null then
+    update public.quiz_sessions
+    set status = 'completed',
+        completed_attempt_id = v_attempt_id
+    where id = v_session.id;
+  end if;
+
   if v_passed then
     perform public.recompute_user_skill_level(auth.uid(), v_quiz.skill_id);
     if v_quiz.course_id is not null then
@@ -1208,8 +1507,8 @@ declare
   v_crit jsonb;
   v_has_file_evidence boolean := false;
 begin
-  if auth.uid() is null or public.is_admin() then
-    raise exception 'Learner authentication required';
+  if auth.uid() is null or not public.is_active_learner() then
+    raise exception 'Active learner authentication required';
   end if;
 
   select * into v_challenge from public.challenges where id = p_challenge_id;

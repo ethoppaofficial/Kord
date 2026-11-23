@@ -1,4 +1,4 @@
--- 01_schema.sql (Synchronized with migrations 000001-000002)
+-- 01_schema.sql (Synchronized with migrations 000001-000002 and 20261123000011)
 
 -- 20261121000001_extensions_and_schema.sql
 -- Ordered base schema migration for Kord (idempotent, non-destructive).
@@ -11,9 +11,14 @@ create table if not exists public.profiles (
   first_name text not null default '',
   full_name text not null default '',
   role text not null default 'learner' check (role in ('learner', 'admin')),
+  account_status text not null default 'active' check (account_status in ('active', 'suspended')),
   created_at timestamptz not null default now()
 );
 alter table public.profiles add column if not exists first_name text not null default '';
+alter table public.profiles add column if not exists account_status text not null default 'active';
+alter table public.profiles drop constraint if exists profiles_account_status_check;
+alter table public.profiles add constraint profiles_account_status_check
+  check (account_status in ('active', 'suspended'));
 
 create table if not exists public.categories (
   id uuid primary key default gen_random_uuid(),
@@ -391,6 +396,29 @@ create table if not exists public.opportunities (
   unique (title, organization)
 );
 
+create table if not exists public.quiz_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  quiz_id uuid not null references public.quizzes(id) on delete cascade,
+  status text not null default 'active' check (status in ('active', 'completed', 'expired')),
+  started_at timestamptz not null default now(),
+  expires_at timestamptz,
+  completed_attempt_id uuid references public.quiz_attempts(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.admin_audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  actor_id uuid references public.profiles(id) on delete set null,
+  actor_role text not null default 'system',
+  action text not null,
+  target_table text not null,
+  target_id text not null,
+  before_data jsonb,
+  after_data jsonb,
+  created_at timestamptz not null default now()
+);
+
 -- 20261121000002_constraints_and_indexes.sql
 -- Hardened check constraints and query performance indexes (idempotent, non-destructive).
 
@@ -465,3 +493,30 @@ create index if not exists idx_submissions_status on public.submissions(status, 
 create index if not exists idx_submissions_user_challenge on public.submissions(user_id, challenge_id);
 create index if not exists idx_submissions_file_path on public.submissions(file_path) where file_path is not null;
 create index if not exists idx_user_skills_user on public.user_skills(user_id);
+
+-- Foreign-key and operational query indexes (20261123000011)
+create index if not exists idx_phases_skill on public.phases(skill_id);
+create index if not exists idx_course_versions_created_by on public.course_versions(created_by);
+create index if not exists idx_activities_lesson on public.activities(lesson_id);
+create index if not exists idx_quizzes_phase on public.quizzes(phase_id);
+create index if not exists idx_quizzes_lesson on public.quizzes(lesson_id);
+create index if not exists idx_challenges_phase on public.challenges(phase_id);
+create index if not exists idx_course_enrollments_course on public.course_enrollments(course_id);
+create index if not exists idx_course_enrollments_skill on public.course_enrollments(skill_id);
+create index if not exists idx_course_completions_course on public.course_completions(course_id);
+create index if not exists idx_lesson_progress_lesson on public.lesson_progress(lesson_id);
+create index if not exists idx_lesson_progress_course on public.lesson_progress(course_id);
+create index if not exists idx_enrollments_skill on public.enrollments(skill_id);
+create index if not exists idx_activity_progress_activity on public.activity_progress(activity_id);
+create index if not exists idx_quiz_attempts_quiz on public.quiz_attempts(quiz_id);
+create index if not exists idx_quiz_attempts_course on public.quiz_attempts(course_id);
+create index if not exists idx_quiz_attempts_reviewed_by on public.quiz_attempts(reviewed_by);
+create index if not exists idx_submissions_challenge on public.submissions(challenge_id);
+create index if not exists idx_submissions_course on public.submissions(course_id);
+create index if not exists idx_submissions_reviewed_by on public.submissions(reviewed_by);
+create index if not exists idx_user_skills_skill on public.user_skills(skill_id);
+create index if not exists idx_quiz_sessions_user_quiz on public.quiz_sessions(user_id, quiz_id, started_at desc);
+create index if not exists idx_quiz_sessions_attempt on public.quiz_sessions(completed_attempt_id);
+create index if not exists idx_admin_audit_logs_created on public.admin_audit_logs(created_at desc);
+create index if not exists idx_admin_audit_logs_actor on public.admin_audit_logs(actor_id, created_at desc);
+create index if not exists idx_admin_audit_logs_target on public.admin_audit_logs(target_table, target_id, created_at desc);

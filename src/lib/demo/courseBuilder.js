@@ -172,10 +172,15 @@ export function buildCoursePackage(spec, { buildLesson, buildActivity, addAssess
     rubric,
   };
 
+  const associatedSkillIds = Array.from(
+    new Set([skillId, ...(spec.associatedSkillIds || [])].filter(Boolean))
+  );
+
   const course = {
     id: courseId,
     skillId,
-    associatedSkillIds: [skillId],
+    associatedSkillIds,
+    categoryId: spec.categoryId || null,
     slug: spec.slug,
     title: spec.title,
     description: spec.description,
@@ -186,7 +191,7 @@ export function buildCoursePackage(spec, { buildLesson, buildActivity, addAssess
     recommendedWeeklyHours: spec.recommendedWeeklyHours || 4,
     recommendedSchedule: spec.recommendedSchedule || '2 lessons + 1 practical activity per week plus capstone project',
     prerequisites: spec.prerequisites || ['No prior specialist certification required; willingness to complete practical exercises'],
-    thumbnailUrl: '',
+    thumbnailUrl: spec.thumbnailUrl || '',
     authorName: spec.authorName || 'Kord Curriculum Faculty',
     completionRules: {
       requireAllRequiredLessons: true,
@@ -253,6 +258,8 @@ export function buildDomainCourse(cfg, helpers) {
     {
       code: cfg.code,
       skillId: cfg.skillId,
+      associatedSkillIds: cfg.associatedSkillIds || [],
+      categoryId: cfg.categoryId || null,
       slug: cfg.slug,
       title: cfg.title,
       description: cfg.description,

@@ -7,6 +7,7 @@ export function renderAdminLayout({ currentPath, innerHtml }) {
     { path: '/admin/content', label: 'Content & Roadmaps' },
     { path: '/admin/quizzes', label: 'Quiz Questions' },
     { path: '/admin/opportunities', label: 'Opportunities' },
+    { path: '/admin/governance', label: 'Governance & Audit' },
   ];
 
   return `

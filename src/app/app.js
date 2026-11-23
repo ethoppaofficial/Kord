@@ -1,4 +1,5 @@
 import { matchRoute } from './router.js';
+import { supabaseConfigError } from '../lib/supabase.js';
 import * as defaultAuthRepository from '../lib/repositories/authRepository.js';
 import { runSessionCleanup } from '../lib/sessionLifecycle.js';
 import { renderAppLayout } from '../components/AppLayout.js';
@@ -30,6 +31,7 @@ import { renderAdminSubmissionsPage } from '../pages/admin/AdminSubmissionsPage.
 import { renderAdminContentPage } from '../pages/admin/AdminContentPage.js';
 import { renderAdminQuizzesPage } from '../pages/admin/AdminQuizzesPage.js';
 import { renderAdminOpportunitiesPage } from '../pages/admin/AdminOpportunitiesPage.js';
+import { renderAdminGovernancePage } from '../pages/admin/AdminGovernancePage.js';
 
 // Strict Access Policies:
 // - 'public': '/' landing page (authenticated admins automatically stay in /admin)
@@ -64,6 +66,7 @@ const ROUTES = [
   { pattern: '/admin/content', access: 'admin', render: renderAdminContentPage },
   { pattern: '/admin/quizzes', access: 'admin', render: renderAdminQuizzesPage },
   { pattern: '/admin/opportunities', access: 'admin', render: renderAdminOpportunitiesPage },
+  { pattern: '/admin/governance', access: 'admin', render: renderAdminGovernancePage },
 ];
 
 export function mountApp(rootEl, options = {}) {
@@ -205,6 +208,18 @@ export function mountApp(rootEl, options = {}) {
     if (destroyed) return;
     const seq = ++renderSeq;
     const pathname = window.location.pathname || '/';
+    const configErr = options.configError !== undefined ? options.configError : supabaseConfigError;
+    if (configErr && !options.auth) {
+      rootEl.innerHTML = renderAppLayout({
+        session: null,
+        currentPath: pathname,
+        contentHtml: renderErrorState({
+          title: 'Supabase Configuration Required',
+          message: configErr,
+        }),
+      });
+      return;
+    }
     const matched = matchRoute(ROUTES, pathname);
 
     let session = null;

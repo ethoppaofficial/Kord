@@ -450,3 +450,63 @@ test('Dashboard Cleanup: Unenrolled learner sees no Available Flagship Courses c
   );
   assert.ok(enrolledMount.rootEl.innerHTML.includes(course.title));
 });
+
+test('Auth Pages: Password fields allow users to view and hide passwords across login, signup, and reset forms', async () => {
+  // 1. Login page
+  resetLocation('/login');
+  const loginMount = mountTestApp();
+  await loginMount.ctrl.ready;
+
+  const loginInput = loginMount.rootEl.querySelector('#login-password');
+  const loginToggle = loginMount.rootEl.querySelector('[data-password-toggle="login-password"]');
+  assert.ok(loginInput && loginToggle, 'Login password input and toggle exist');
+  assert.equal(loginInput.getAttribute('type'), 'password');
+  assert.equal(loginToggle.getAttribute('aria-pressed'), 'false');
+
+  await loginToggle.click();
+  assert.equal(loginInput.getAttribute('type'), 'text');
+  assert.equal(loginToggle.getAttribute('aria-pressed'), 'true');
+  assert.equal(loginToggle.getAttribute('aria-label'), 'Hide password');
+
+  await loginToggle.click();
+  assert.equal(loginInput.getAttribute('type'), 'password');
+  assert.equal(loginToggle.getAttribute('aria-pressed'), 'false');
+  assert.equal(loginToggle.getAttribute('aria-label'), 'Show password');
+  loginMount.ctrl.destroy();
+
+  // 2. Sign up page (both password and confirm password)
+  resetLocation('/signup');
+  const signupMount = mountTestApp();
+  await signupMount.ctrl.ready;
+
+  for (const fieldId of ['signup-password', 'signup-confirm']) {
+    const input = signupMount.rootEl.querySelector(`#${fieldId}`);
+    const toggle = signupMount.rootEl.querySelector(`[data-password-toggle="${fieldId}"]`);
+    assert.ok(input && toggle, `Signup toggle exists for ${fieldId}`);
+    assert.equal(input.getAttribute('type'), 'password');
+    await toggle.click();
+    assert.equal(input.getAttribute('type'), 'text');
+    await toggle.click();
+    assert.equal(input.getAttribute('type'), 'password');
+  }
+  signupMount.ctrl.destroy();
+
+  // 3. Reset password page (new password and confirm new password)
+  await signIn({ email: ADMIN_EMAIL, password: ADMIN_PASS });
+  resetLocation('/reset-password');
+  const resetMount = mountTestApp();
+  await resetMount.ctrl.ready;
+
+  for (const fieldId of ['new-password', 'confirm-new-password']) {
+    const input = resetMount.rootEl.querySelector(`#${fieldId}`);
+    const toggle = resetMount.rootEl.querySelector(`[data-password-toggle="${fieldId}"]`);
+    assert.ok(input && toggle, `Reset password toggle exists for ${fieldId}`);
+    assert.equal(input.getAttribute('type'), 'password');
+    await toggle.click();
+    assert.equal(input.getAttribute('type'), 'text');
+    await toggle.click();
+    assert.equal(input.getAttribute('type'), 'password');
+  }
+  resetMount.ctrl.destroy();
+});
+

@@ -1,5 +1,3 @@
-export const ADMIN_EMAIL = 'ethoppaofficial@gmail.com';
-
 export const DEFAULT_CATEGORIES = [
   {
     id: 'cat-communication',

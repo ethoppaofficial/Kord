@@ -47,6 +47,7 @@ export function renderStatusBadge(status) {
     draft: { cls: 'status-neutral', ic: 'clock', text: 'Draft' },
     archived: { cls: 'status-neutral', ic: 'clock', text: 'Archived' },
     failed: { cls: 'status-red', ic: 'alert', text: 'Not passed' },
+    suspended: { cls: 'status-red', ic: 'alert', text: 'Suspended' },
     coming_soon: { cls: 'status-neutral', ic: 'clock', text: 'No courses yet' },
     in_progress: { cls: 'status-blue', ic: 'play', text: 'In progress' },
     not_started: { cls: 'status-neutral', ic: 'clock', text: 'Not started' },

@@ -17,6 +17,7 @@ export function renderAppLayout({ session, currentPath, contentHtml }) {
         { path: '/admin/content', label: 'Content', icon: 'book' },
         { path: '/admin/quizzes', label: 'Quizzes', icon: 'award' },
         { path: '/admin/opportunities', label: 'Opportunities', icon: 'briefcase' },
+        { path: '/admin/governance', label: 'Governance', icon: 'shield' },
       ]
     : isLearner
       ? [

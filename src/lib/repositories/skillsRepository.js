@@ -27,6 +27,11 @@ export async function declareUserSkill(userId, skillId) {
     if (error) throw error;
     return data;
   }
+  const state = getDemoState();
+  const actor = (state.users || []).find((u) => u.id === userId);
+  if (actor && (actor.accountStatus || 'active') !== 'active') {
+    throw new Error('Account is suspended or inactive.');
+  }
   return upgradeSkillLevel(userId, skillId, 'declared');
 }
 

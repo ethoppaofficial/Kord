@@ -3,7 +3,13 @@ import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 export function buildCommunicationCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-communication-public-speaking';
   const skillId = 'skill-public-speaking';
-  const associatedSkillIds = ['skill-public-speaking'];
+  const associatedSkillIds = [
+    'skill-public-speaking',
+    'skill-effective-communication',
+    'skill-presentation-skills',
+    'skill-persuasion-and-influence',
+    'skill-active-listening',
+  ];
   const now = '2026-10-04T09:00:00.000Z';
 
   const phases = [

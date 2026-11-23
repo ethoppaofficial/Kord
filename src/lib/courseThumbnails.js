@@ -104,15 +104,17 @@ function getThemeForCourse(course) {
   if (CATEGORY_THEMES[catId]) return CATEGORY_THEMES[catId];
   const slug = String(course?.slug || '').toLowerCase();
   if (/write|writing|blog|script|seo-w|copy|edit/.test(slug)) return CATEGORY_THEMES['cat-writing'];
-  if (/market|ads|social|email-m|analytics|lead|cro|brand/.test(slug)) return CATEGORY_THEMES['cat-marketing'];
-  if (/design|ui-ux|photo|video|motion|art|canva/.test(slug)) return CATEGORY_THEMES['cat-creative'];
-  if (/dev|data|cyber|ai|machine|cloud|test|devops|version|database|support|productivity-tools/.test(slug)) {
+  if (/market|ads|social|email-c|email-m|analytics|lead|cro|seo|sem|search-m|paid-social|community-g/.test(slug)) {
+    return CATEGORY_THEMES['cat-marketing'];
+  }
+  if (/design|ui-ux|photo|video|motion|art|canva|brand-identity/.test(slug)) return CATEGORY_THEMES['cat-creative'];
+  if (/dev|data|cyber|ai|machine|cloud|test|devops|version|database|support|productivity-tools|backend|mobile-apps|web-dev|git/.test(slug)) {
     return CATEGORY_THEMES['cat-tech'];
   }
-  if (/business|startup|finance|sales|crm|product|project|strateg|negotiation/.test(slug)) {
+  if (/business|startup|finance|sales|crm|product|project|strateg|negotiation/.test(slug) && !/personal-finance/.test(slug)) {
     return CATEGORY_THEMES['cat-business'];
   }
-  if (/resume|interview|career|freelanc|remote|workplace|time|networking|portfolio|client/.test(slug)) {
+  if (/resume|cv|interview|career|freelanc|remote|workplace|time|networking|portfolio|client|personal-finance/.test(slug)) {
     return CATEGORY_THEMES['cat-career'];
   }
   return { c1: '#0f172a', c2: '#1e3a8a', accent: '#93c5fd', label: course?.difficulty || 'Course' };

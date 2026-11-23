@@ -3,7 +3,7 @@ import { adminListSubmissions } from '../../lib/repositories/submissionRepositor
 import { listOpportunities } from '../../lib/repositories/opportunityRepository.js';
 import { adminListAllQuizzes, adminListPendingAssessmentAttempts } from '../../lib/repositories/quizRepository.js';
 import { getDemoState } from '../../lib/demo/demoStore.js';
-import { hasSupabaseEnv, supabase } from '../../lib/supabase.js';
+import { isDemoMode, supabase } from '../../lib/supabase.js';
 import { escapeHtml } from '../../lib/formatters.js';
 import { buildUserGreeting } from '../../lib/greeting.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
@@ -22,7 +22,7 @@ export async function renderAdminOverviewPage({ session, currentPath }) {
     ]);
 
   let learnerCount = 0;
-  if (hasSupabaseEnv && supabase) {
+  if (!isDemoMode && supabase) {
     const { count } = await supabase
       .from('profiles')
       .select('id', { count: 'exact', head: true })
@@ -87,6 +87,7 @@ export async function renderAdminOverviewPage({ session, currentPath }) {
           <a href="/admin/content" data-link class="btn btn-secondary btn-sm">Courses &amp; Lessons</a>
           <a href="/admin/quizzes" data-link class="btn btn-secondary btn-sm">Assessments</a>
           <a href="/admin/opportunities" data-link class="btn btn-secondary btn-sm">Opportunities</a>
+          <a href="/admin/governance" data-link class="btn btn-secondary btn-sm">Governance &amp; Audit</a>
         </div>
       </div>
     </div>

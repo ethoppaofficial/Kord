@@ -55,6 +55,9 @@ export async function enrollInCourse(userId, courseId) {
       if (actor?.role === 'admin') {
         throw new Error('Learner authentication required.');
       }
+      if (actor && (actor.accountStatus || 'active') !== 'active') {
+        throw new Error('Account is suspended or inactive.');
+      }
       draft.courseEnrollments = draft.courseEnrollments || [];
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course || course.publicationStatus !== 'published') {
@@ -111,6 +114,10 @@ export async function setCourseEnrollmentStatus(userId, courseId, status) {
       const activeUserId = getDemoCurrentUserId();
       if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot alter another learner’s enrollment.');
+      }
+      const actor = (draft.users || []).find((u) => u.id === userId);
+      if (actor && (actor.accountStatus || 'active') !== 'active') {
+        throw new Error('Account is suspended or inactive.');
       }
       const existing = (draft.courseEnrollments || []).find(
         (e) => e.userId === userId && e.courseId === courseId
@@ -198,6 +205,10 @@ export async function saveLessonNotes(userId, lessonId, courseId, notes) {
       if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot edit another learner’s notes.');
       }
+      const actor = (draft.users || []).find((u) => u.id === userId);
+      if (actor && (actor.accountStatus || 'active') !== 'active') {
+        throw new Error('Account is suspended or inactive.');
+      }
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course || course.publicationStatus !== 'published') {
         throw new Error('Published course not found.');
@@ -253,6 +264,10 @@ export async function toggleLessonComplete(userId, courseId, lessonId, estMinute
       const activeUserId = getDemoCurrentUserId();
       if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot modify another learner’s progress.');
+      }
+      const actor = (draft.users || []).find((u) => u.id === userId);
+      if (actor && (actor.accountStatus || 'active') !== 'active') {
+        throw new Error('Account is suspended or inactive.');
       }
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course || course.publicationStatus !== 'published') {
@@ -333,6 +348,10 @@ export async function togglePhaseActivityComplete(
       const activeUserId = getDemoCurrentUserId();
       if (activeUserId && activeUserId !== userId) {
         throw new Error('You cannot modify another learner’s activity progress.');
+      }
+      const actor = (draft.users || []).find((u) => u.id === userId);
+      if (actor && (actor.accountStatus || 'active') !== 'active') {
+        throw new Error('Account is suspended or inactive.');
       }
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course || course.publicationStatus !== 'published') {
