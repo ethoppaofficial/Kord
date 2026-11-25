@@ -116,7 +116,7 @@ function loadLessonIntoBuilder(lesson) {
 }
 
 function renderDraftBlockEditor(blk, idx, total) {
-  let fieldsHtml = '';
+  let fieldsHtml;
   if (blk.type === 'heading' || blk.type === 'paragraph') {
     fieldsHtml = `
       <textarea class="textarea" data-blk-field="text" data-blk-idx="${idx}" style="min-height:${blk.type === 'heading' ? '44px' : '74px'};" placeholder="Enter ${blk.type} text…">${escapeHtml(blk.text || '')}</textarea>

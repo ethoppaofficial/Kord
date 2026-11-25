@@ -51,7 +51,7 @@ export function gradeAssessmentAttempt({ quiz, questions, answerKeysByQuestionId
       };
     }
 
-    let isCorrect = false;
+    let isCorrect;
     const optCount = Array.isArray(q.options) ? q.options.length : 0;
     if (qType === 'multiple_select') {
       const validElems =

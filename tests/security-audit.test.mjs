@@ -249,6 +249,16 @@ test('Scenario 5 & 6: Learner cannot access answer keys early or manipulate quiz
     assert.equal(r.explanation, null);
     assert.deepEqual(r.answerConfig, {});
   }
+  await assert.rejects(
+    () =>
+      adminGradeAttempt({
+        attemptId: failedRes.attemptId,
+        reviewerId: learner.user.id,
+        manualScores: {},
+        feedback: 'Unauthorized learner self-grading attempt',
+      }),
+    /Administrator authorization required/i
+  );
 
   // Pass attempt: unlocks solutions & awards at most 'practising' (never 'demonstrated' or 'verified')
   const rightAnswers = {};

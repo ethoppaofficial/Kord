@@ -186,7 +186,7 @@ export function mountApp(rootEl, options = {}) {
 
   async function verifyActiveSession() {
     if (destroyed || localSignOutInProgress || !lastKnownAuth.initialized) return;
-    let freshSession = null;
+    let freshSession;
     try {
       freshSession = await auth.getCurrentSession();
     } catch {
@@ -222,7 +222,7 @@ export function mountApp(rootEl, options = {}) {
     }
     const matched = matchRoute(ROUTES, pathname);
 
-    let session = null;
+    let session;
     try {
       session = await auth.getCurrentSession();
     } catch {

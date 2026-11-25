@@ -87,7 +87,7 @@ const SPECS = [
             'Expected Output & Recovery Paths',
             'Running a complex command followed by silence—or cryptic success logs—leaves users unsure whether step two worked.',
             'Verification Output & Edge Troubleshooting',
-            'Pair critical setup or CLI commands with concrete sample output ("You should see `{ status: \"ok\", port: 3000 }`"). Document top 2–3 frequent failure messages (`401 Unauthorized`, `Port 3000 busy`) right beneath the workflow so readers resolve hiccups independently.',
+            'Pair critical setup or CLI commands with concrete sample output ("You should see `{ status: "ok", port: 3000 }`"). Document top 2–3 frequent failure messages (`401 Unauthorized`, `Port 3000 busy`) right beneath the workflow so readers resolve hiccups independently.',
             ['Expected State Confirmation', 'A concise line or truncated output sample demonstrating what success looks like before advancing further.'],
             ['Command + Verified Output', 'Run `npm run db:check` -> Expected output: `Connected cleanly to PostgreSQL (migrations current).`'],
             ['Show exact representative success response snippets (masking secrets cleanly).', 'Document real error messages word-for-word so users can Ctrl+F them.', 'Point cleanly to safe rollback steps if a migration fails.'],

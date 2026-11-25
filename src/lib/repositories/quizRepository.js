@@ -1,7 +1,6 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { appendDemoAuditLog } from '../demo/demoAudit.js';
-import { upgradeSkillLevel } from './skillsRepository.js';
 import { recomputeCourseAndSkillStatus, recomputeDemoSkillLevel } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import { gradeAssessmentAttempt, isManualQuestionType } from '../assessmentEngine.js';
@@ -929,7 +928,6 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
     let targetUserId = null;
     let targetCourseId = null;
     let targetSkillId = null;
-    let didPass = false;
 
     updateDemoState((draft) => {
       const reviewer = (draft.users || []).find((u) => u.id === reviewerId);
@@ -996,7 +994,6 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       targetUserId = attempt.userId;
       targetCourseId = quiz.courseId || null;
       targetSkillId = quiz.skillId;
-      didPass = passed;
       return draft;
     });
 

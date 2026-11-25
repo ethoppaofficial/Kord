@@ -228,7 +228,7 @@ function loadState() {
 let state = loadState();
 
 export function syncDemoStateFromStorage({ emit = true, forceEmit = false } = {}) {
-  let raw = null;
+  let raw;
   try {
     raw = localStorage.getItem(STORAGE_KEY);
   } catch {

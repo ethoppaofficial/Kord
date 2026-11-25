@@ -136,7 +136,7 @@ export function getTimePeriodForTimezone(timezone, date = new Date()) {
     // fallback to local Date hour
   }
 
-  let localTime = '';
+  let localTime;
   try {
     localTime = new Intl.DateTimeFormat('en-US', {
       timeZone: safeTz,

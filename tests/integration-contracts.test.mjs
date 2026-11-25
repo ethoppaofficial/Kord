@@ -160,13 +160,26 @@ test('validateSubmissionForm and submitChallengeEvidence enforce allowedEvidence
     return draft;
   });
 
-  await submitChallengeEvidence({
+  const firstSub = await submitChallengeEvidence({
     userId: learner.user.id,
     challengeId: cA.id,
     evidenceUrl: 'https://example.com/a',
     explanation: 'Submitting first deliverable with unique idempotency key.',
     idempotencyKey: 'shared-sub-key',
   });
+  await assert.rejects(
+    () =>
+      adminReviewSubmission({
+        submissionId: firstSub.id,
+        reviewerId: learner.user.id,
+        status: 'approved',
+        rubricScores: {},
+        rubricTotal: 20,
+        rubricMax: 20,
+        feedback: 'Unauthorized learner review attempt',
+      }),
+    /Administrator authorization required/i
+  );
   await assert.rejects(
     () =>
       submitChallengeEvidence({
@@ -271,6 +284,10 @@ test('Demo progression prevents false demonstrated on 0-challenge courses and re
   });
   const course = await getCourseBySlug('frontend-development-foundations');
   await enrollInCourse(learner.user.id, course.id);
+  const enrollments = await getCourseEnrollments(learner.user.id);
+  assert.equal(enrollments.length, 1);
+  assert.equal(enrollments[0].courseId, course.id);
+  assert.equal(enrollments[0].status, 'active');
   const firstLesson = course.phases[0].lessons[0];
 
   await toggleLessonComplete(learner.user.id, course.id, firstLesson.id, firstLesson.estMinutes, true);

@@ -27,7 +27,7 @@ function renderQuestionInput(q, idx, res, quizId) {
       </div>`
     : '';
 
-  let controlHtml = '';
+  let controlHtml;
 
   if (type === 'multiple_select') {
     const selectedArr = Array.isArray(res?.submittedAnswer) ? res.submittedAnswer.map(Number) : [];

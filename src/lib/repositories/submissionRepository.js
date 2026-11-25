@@ -1,7 +1,6 @@
 import { supabase, isDemoMode } from '../supabase.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 import { appendDemoAuditLog } from '../demo/demoAudit.js';
-import { upgradeSkillLevel } from './skillsRepository.js';
 import { recomputeCourseAndSkillStatus, recomputeDemoSkillLevel } from './progressRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import {
@@ -319,7 +318,6 @@ export async function adminReviewSubmission({
     let targetUserId = null;
     let targetSkillId = null;
     let targetCourseId = null;
-    let hasPublishedCoursesForSkill = false;
 
     updateDemoState((draft) => {
       if (!['approved', 'needs_revision'].includes(status)) {
@@ -396,13 +394,6 @@ export async function adminReviewSubmission({
       targetUserId = sub.userId;
       targetSkillId = challenge?.skillId || null;
       targetCourseId = sub.courseId || challenge?.courseId || null;
-      if (targetSkillId) {
-        hasPublishedCoursesForSkill = (draft.courses || []).some(
-          (c) =>
-            c.publicationStatus === 'published' &&
-            (c.skillId === targetSkillId || (c.associatedSkillIds || []).includes(targetSkillId))
-        );
-      }
       return draft;
     });
 

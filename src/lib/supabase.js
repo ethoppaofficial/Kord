@@ -2,10 +2,13 @@ import { createClient } from '@supabase/supabase-js';
 
 function detectNodeTestRuntime() {
   try {
+    if (import.meta.env?.MODE === 'test') {
+      return true;
+    }
+    const nodeProcess = typeof globalThis !== 'undefined' ? globalThis.process : undefined;
     return Boolean(
-      typeof process !== 'undefined' &&
-        process?.env &&
-        (process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === 'test')
+      nodeProcess?.env &&
+        (nodeProcess.env.NODE_TEST_CONTEXT || nodeProcess.env.NODE_ENV === 'test')
     );
   } catch {
     return false;

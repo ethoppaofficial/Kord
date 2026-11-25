@@ -20,7 +20,7 @@ export function getSavedOpportunityIds(userId) {
 
 export function toggleSavedOpportunity(userId, oppId) {
   const set = getSavedOpportunityIds(userId);
-  let saved = false;
+  let saved;
   if (set.has(oppId)) {
     set.delete(oppId);
     saved = false;
