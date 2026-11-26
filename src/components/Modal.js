@@ -2,15 +2,21 @@ import { escapeHtml } from '../lib/formatters.js';
 import { icon } from '../lib/icons.js';
 
 let activeBackdrop = null;
+let activeCleanup = null;
 
 export function closeModal() {
+  const cleanup = activeCleanup;
+  activeCleanup = null;
+  if (typeof cleanup === 'function') {
+    cleanup();
+  }
   if (activeBackdrop && activeBackdrop.parentNode) {
     activeBackdrop.parentNode.removeChild(activeBackdrop);
   }
   activeBackdrop = null;
 }
 
-export function openModal({ title, bodyHtml, onMount }) {
+export function openModal({ title, bodyHtml, onMount, onClose }) {
   closeModal();
 
   const backdrop = document.createElement('div');
@@ -29,14 +35,19 @@ export function openModal({ title, bodyHtml, onMount }) {
 
   const onKeyDown = (e) => {
     if (e.key === 'Escape') {
-      document.removeEventListener('keydown', onKeyDown);
       closeModal();
     }
   };
 
+  activeCleanup = () => {
+    document.removeEventListener('keydown', onKeyDown);
+    if (typeof onClose === 'function') {
+      onClose();
+    }
+  };
+
   backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop || e.target.closest('[data-modal-close]')) {
-      document.removeEventListener('keydown', onKeyDown);
+    if (e.target === backdrop || e.target.closest?.('[data-modal-close]')) {
       closeModal();
     }
   });

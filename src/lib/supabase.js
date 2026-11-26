@@ -63,6 +63,7 @@ export const supabase = hasSupabaseEnv
       auth: {
         storage: typeof window !== 'undefined' ? window.sessionStorage : undefined,
         storageKey: 'kord-auth',
+        flowType: 'pkce',
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,

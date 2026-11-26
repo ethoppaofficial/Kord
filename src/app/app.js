@@ -223,10 +223,26 @@ export function mountApp(rootEl, options = {}) {
     const matched = matchRoute(ROUTES, pathname);
 
     let session;
+    let recoveryState = null;
     try {
-      session = await auth.getCurrentSession();
+      if (
+        matched?.route.access === 'recovery' &&
+        typeof auth.resolvePasswordRecoverySession === 'function'
+      ) {
+        recoveryState = await auth.resolvePasswordRecoverySession();
+        session = recoveryState?.session || null;
+      } else {
+        session = await auth.getCurrentSession();
+      }
     } catch {
       session = null;
+      if (matched?.route.access === 'recovery') {
+        recoveryState = {
+          status: 'invalid_link',
+          session: null,
+          error: 'Unable to verify password recovery link. Please request a new reset link.',
+        };
+      }
     }
 
     if (seq !== renderSeq || destroyed) return;
@@ -361,6 +377,8 @@ export function mountApp(rootEl, options = {}) {
           params: matched.params,
           session,
           auth,
+          recoveryState,
+          signOut: performSignOut,
           currentPath: matched.path,
           navigate,
           rerender: (opts = { silent: true }) => renderCurrentRoute(opts),
@@ -399,22 +417,31 @@ export function mountApp(rootEl, options = {}) {
     }
   }
 
-  function bindShellEvents() {
-    rootEl.querySelector('[data-sign-out]')?.addEventListener('click', async () => {
-      if (localSignOutInProgress || destroyed) return;
-      localSignOutInProgress = true;
-      try {
-        closeModal();
-        rootEl.innerHTML = '';
-        runSessionCleanup();
-        await auth.signOut();
-        lastKnownAuth = { initialized: true, userId: null, role: null };
-        showToast('Signed out.', 'info');
-        window.history.replaceState({}, '', '/login');
-        await renderCurrentRoute({ animateRoute: true });
-      } finally {
-        localSignOutInProgress = false;
+  async function performSignOut({
+    redirectTo = '/login',
+    toastMessage = 'Signed out.',
+  } = {}) {
+    if (localSignOutInProgress || destroyed) return;
+    localSignOutInProgress = true;
+    try {
+      closeModal();
+      rootEl.innerHTML = '';
+      runSessionCleanup();
+      await auth.signOut();
+      lastKnownAuth = { initialized: true, userId: null, role: null };
+      if (toastMessage) {
+        showToast(toastMessage, 'info');
       }
+      window.history.replaceState({}, '', redirectTo);
+      await renderCurrentRoute({ animateRoute: true });
+    } finally {
+      localSignOutInProgress = false;
+    }
+  }
+
+  function bindShellEvents() {
+    rootEl.querySelector('[data-sign-out]')?.addEventListener('click', () => {
+      performSignOut();
     });
   }
 

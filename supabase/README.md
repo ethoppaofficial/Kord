@@ -80,3 +80,28 @@ npx supabase db push
 - PostgREST queries joining `courses` and `skills` qualify exact FK constraint names (`!courses_skill_id_fkey`, `!course_skills_course_id_fkey`, `!course_skills_skill_id_fkey`).
 - Quizzes and theory-only courses max out skill levels at `practising`; `demonstrated` and `verified` strictly require approved practical deliverables.
 - All client progress, timed quiz sessions, submission reviews, and dashboard queries rely on database-enforced `auth.uid()`, active `account_status`, and RPC validation.
+
+## Password Recovery & Auth URL Configuration
+
+To run the full password reset flow against a real Supabase project (**Authentication → URL Configuration** and **Authentication → Email Templates**), configure these settings without committing or exposing secret keys:
+
+- **Site URL**
+  - Local development (`supabase/config.toml`): `http://localhost:3000`
+  - Production: `https://<your-production-domain>`
+- **Redirect URL Allowlist (`additional_redirect_urls`)**
+  - Development callback URL: `http://localhost:3000/reset-password`
+  - Production callback URL: `https://<your-production-domain>/reset-password`
+  - Preview / staging callback URL (if applicable): `https://<your-preview-domain>/reset-password`
+- **Reset Password Email Template Requirements**
+  - The Supabase client in `src/lib/supabase.js` uses `flowType: 'pkce'` and tab-scoped `window.sessionStorage` (`storageKey: 'kord-auth'`), and `recoverPassword()` sends `redirectTo: '<origin>/reset-password'`.
+  - Default PKCE link (`{{ .ConfirmationURL }}`) redirects to `/reset-password?code=...` and requires completing recovery in the same browser tab where the reset email was requested (because the PKCE code verifier lives in `sessionStorage`).
+  - **Recommended cross-tab / cross-browser email template**: Use `token_hash` verification so users clicking the email link in a new tab or separate mail app verify cleanly via `supabase.auth.verifyOtp({ token_hash, type: 'recovery' })`:
+
+```html
+<h2>Reset your Kord password</h2>
+<p>Follow the link below to set a new password:</p>
+<p><a href="{{ .SiteURL }}/reset-password?token_hash={{ .TokenHash }}&type=recovery">Reset Password</a></p>
+```
+
+- **Local Email Testing**: When running `npx supabase start`, Supabase CLI captures outgoing recovery emails in local Inbucket/Mailpit (`http://localhost:54324`). Production email delivery and real token exchange must be verified manually against your target Supabase project's SMTP/email provider.
+

@@ -23,6 +23,39 @@ export function validateLoginForm({ email, password }) {
   return errors;
 }
 
+export function validateForgotPasswordForm({ email }) {
+  const errors = {};
+  const cleanEmail = String(email || '').trim();
+  if (!cleanEmail) {
+    errors.email = 'Enter your email address.';
+  } else if (cleanEmail.length > 254) {
+    errors.email = 'Email address must be 254 characters or fewer.';
+  } else if (!isValidEmail(cleanEmail)) {
+    errors.email = 'Enter a valid email address.';
+  }
+  return errors;
+}
+
+export function validateResetPasswordForm({ password, confirmPassword }) {
+  const errors = {};
+  const rawPassword = String(password || '');
+  const rawConfirm = String(confirmPassword || '');
+
+  if (!rawPassword || rawPassword.length < 6) {
+    errors.password = 'Password must be at least 6 characters.';
+  } else if (rawPassword.length > 128) {
+    errors.password = 'Password must be 128 characters or fewer.';
+  }
+
+  if (!rawConfirm) {
+    errors.confirmPassword = 'Confirm your new password.';
+  } else if (rawPassword !== rawConfirm) {
+    errors.confirmPassword = 'Passwords do not match.';
+  }
+
+  return errors;
+}
+
 export function validateSignupForm({ firstName, lastName, email, password, confirmPassword }) {
   const errors = {};
   if (!firstName || String(firstName).trim().length < 2) {

@@ -1715,3 +1715,62 @@ textarea {
   border-color: var(--color-green-border);
   background: var(--color-green-bg);
 }
+
+.link-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--color-blue);
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.modal-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.modal-feedback-success {
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--color-green-bg);
+  border: 1px solid var(--color-green-border);
+  color: var(--color-ink);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modal-feedback-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-green);
+}
+
+.modal-feedback-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.modal-feedback-title {
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.modal-feedback-copy {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+

@@ -1,12 +1,19 @@
 import {
   signIn,
   signUp,
-  requestPasswordReset,
+  recoverPassword,
   updatePassword,
   isPasswordRecoveryMode,
 } from '../../lib/repositories/authRepository.js';
-import { isValidEmail, validateLoginForm, validateSignupForm } from '../../lib/validators.js';
+import {
+  validateForgotPasswordForm,
+  validateLoginForm,
+  validateResetPasswordForm,
+  validateSignupForm,
+} from '../../lib/validators.js';
 import { showToast } from '../../components/Toast.js';
+import { openForgotPasswordModal } from '../../components/ForgotPasswordModal.js';
+import { escapeHtml } from '../../lib/formatters.js';
 
 const EYE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_OFF_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>`;
@@ -99,7 +106,7 @@ export function renderLoginPage({ navigate, auth = null }) {
           </form>
 
           <div style="display:flex; justify-content:space-between; align-items:center; margin-top:18px; font-size:14px;">
-            <a href="/forgot-password" data-link>Forgot password?</a>
+            <button type="button" class="link-btn" id="open-forgot-password-btn">Forgot password?</button>
             <a href="/signup" data-link>Create account</a>
           </div>
         </div>
@@ -110,6 +117,15 @@ export function renderLoginPage({ navigate, auth = null }) {
       const form = root.querySelector('#login-form');
       const submitBtn = root.querySelector('#login-submit');
       const formErr = root.querySelector('#login-form-error');
+      const forgotBtn = root.querySelector('#open-forgot-password-btn');
+
+      forgotBtn?.addEventListener('click', () => {
+        const emailInput = root.querySelector('#login-email');
+        openForgotPasswordModal({
+          initialEmail: String(emailInput?.value || '').trim(),
+          auth,
+        });
+      });
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -239,7 +255,10 @@ export function renderSignupPage({ navigate }) {
   };
 }
 
-export function renderForgotPasswordPage() {
+export function renderForgotPasswordPage({ auth = null } = {}) {
+  const doRecover =
+    auth?.recoverPassword || auth?.requestPasswordReset || recoverPassword;
+
   return {
     html: `
       <div class="auth-wrap">
@@ -254,7 +273,7 @@ export function renderForgotPasswordPage() {
               <div class="field-error" data-error-for="email"></div>
             </div>
 
-            <div id="reset-feedback" style="font-size:14px;"></div>
+            <div id="reset-feedback" style="font-size:14px;" role="status" aria-live="polite"></div>
 
             <button type="submit" class="btn btn-primary" id="reset-submit">Send reset link</button>
           </form>
@@ -274,13 +293,14 @@ export function renderForgotPasswordPage() {
         e.preventDefault();
         const email = String(new FormData(form).get('email') || '').trim();
         const errEl = root.querySelector('[data-error-for="email"]');
-        errEl.textContent = isValidEmail(email) ? '' : 'Enter a valid email address.';
-        if (!isValidEmail(email)) return;
+        const errors = validateForgotPasswordForm({ email });
+        errEl.textContent = errors.email || '';
+        if (errors.email) return;
 
         submitBtn.disabled = true;
         submitBtn.textContent = 'Sending…';
         try {
-          const res = await requestPasswordReset(email);
+          const res = await doRecover(email);
           feedback.style.color = 'var(--color-green)';
           feedback.textContent = res.note || 'Reset instructions sent. Check your inbox.';
           showToast('Reset request processed.', 'success');
@@ -296,33 +316,85 @@ export function renderForgotPasswordPage() {
   };
 }
 
-export function renderResetPasswordPage({ navigate, session, auth = null }) {
+export function renderResetPasswordPage({
+  navigate,
+  session,
+  auth = null,
+  recoveryState = null,
+  signOut = null,
+}) {
   const checkRecovery = auth?.isPasswordRecoveryMode || isPasswordRecoveryMode;
   const doUpdatePassword = auth?.updatePassword || updatePassword;
-  const canUpdate = Boolean(session || checkRecovery());
+  const doSignOut = signOut || auth?.signOut;
+  const status = recoveryState?.status;
 
-  if (!canUpdate) {
+  if (status === 'invalid_link') {
+    const errorMsg =
+      recoveryState?.error ||
+      'This password reset link is invalid, expired, or has already been used.';
+    const workspaceHref = session?.user?.role === 'admin' ? '/admin' : '/dashboard';
+
     return {
       html: `
         <div class="auth-wrap">
-          <div class="card">
+          <div class="card" id="reset-invalid-state" role="alert">
+            <h1 class="page-title">Reset link invalid or expired</h1>
+            <p class="page-subtitle" style="margin-bottom:16px;">${escapeHtml(errorMsg)}</p>
+            ${
+              session
+                ? `<p style="font-size:13.5px; color:var(--color-text-secondary); margin-bottom:18px;">Your existing signed-in session was preserved.</p>`
+                : ''
+            }
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-primary" id="reset-request-new-link">Request new reset link</button>
+              ${
+                session
+                  ? `<a href="${workspaceHref}" data-link class="btn btn-secondary" id="reset-existing-workspace">Return to workspace</a>`
+                  : `<a href="/login" data-link class="btn btn-secondary">Back to sign in</a>`
+              }
+            </div>
+          </div>
+        </div>
+      `,
+      bind(root) {
+        root.querySelector('#reset-request-new-link')?.addEventListener('click', () => {
+          openForgotPasswordModal({ auth });
+        });
+      },
+    };
+  }
+
+  const canUpdate =
+    status === 'ready'
+      ? Boolean(session)
+      : Boolean(session || checkRecovery());
+
+  if (!canUpdate || status === 'missing_session') {
+    return {
+      html: `
+        <div class="auth-wrap">
+          <div class="card" id="reset-missing-state">
             <h1 class="page-title">Reset password link required</h1>
             <p class="page-subtitle" style="margin-bottom:20px;">Open this page from a valid password recovery link or request a new reset email.</p>
             <div style="display:flex; gap:10px; flex-wrap:wrap;">
-              <a href="/forgot-password" data-link class="btn btn-primary">Request reset link</a>
+              <button type="button" class="btn btn-primary" id="reset-request-link-btn">Request reset link</button>
               <a href="/login" data-link class="btn btn-secondary">Back to sign in</a>
             </div>
           </div>
         </div>
       `,
-      bind() {},
+      bind(root) {
+        root.querySelector('#reset-request-link-btn')?.addEventListener('click', () => {
+          openForgotPasswordModal({ auth });
+        });
+      },
     };
   }
 
   return {
     html: `
       <div class="auth-wrap">
-        <div class="card">
+        <div class="card" id="reset-password-card">
           <h1 class="page-title">Set a new password</h1>
           <p class="page-subtitle" style="margin-bottom:20px;">Choose a new password for your Kord account.</p>
 
@@ -354,39 +426,107 @@ export function renderResetPasswordPage({ navigate, session, auth = null }) {
     `,
     bind(root) {
       bindPasswordToggles(root);
+      const card = root.querySelector('#reset-password-card');
       const form = root.querySelector('#update-password-form');
       const submitBtn = root.querySelector('#update-password-submit');
       const formErr = root.querySelector('#update-password-error');
+      const passwordInput = root.querySelector('#new-password');
+      const confirmInput = root.querySelector('#confirm-new-password');
+      let submitting = false;
+
+      passwordInput?.addEventListener('input', () => {
+        const errEl = root.querySelector('[data-error-for="password"]');
+        if (errEl) errEl.textContent = '';
+        if (formErr) formErr.textContent = '';
+      });
+      confirmInput?.addEventListener('input', () => {
+        const errEl = root.querySelector('[data-error-for="confirmPassword"]');
+        if (errEl) errEl.textContent = '';
+        if (formErr) formErr.textContent = '';
+      });
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (submitting) return;
+
         formErr.textContent = '';
         const fd = new FormData(form);
-        const password = String(fd.get('password') || '');
-        const confirmPassword = String(fd.get('confirmPassword') || '');
+        const password = String(fd.get('password') ?? passwordInput?.value ?? '');
+        const confirmPassword = String(
+          fd.get('confirmPassword') ?? confirmInput?.value ?? ''
+        );
 
-        const passErr = password.length < 6 ? 'Password must be at least 6 characters.' : '';
-        const confirmErr = password !== confirmPassword ? 'Passwords do not match.' : '';
-        root.querySelector('[data-error-for="password"]').textContent = passErr;
-        root.querySelector('[data-error-for="confirmPassword"]').textContent = confirmErr;
-        if (passErr || confirmErr) return;
+        const errors = validateResetPasswordForm({ password, confirmPassword });
+        root.querySelector('[data-error-for="password"]').textContent = errors.password || '';
+        root.querySelector('[data-error-for="confirmPassword"]').textContent =
+          errors.confirmPassword || '';
+        if (Object.keys(errors).length > 0) return;
 
+        submitting = true;
         submitBtn.disabled = true;
-        submitBtn.textContent = 'Updating…';
+        submitBtn.textContent = 'Updating password…';
+        if (passwordInput) passwordInput.disabled = true;
+        if (confirmInput) confirmInput.disabled = true;
+
         try {
           const updatedSession = await doUpdatePassword(password);
           showToast('Password updated.', 'success');
-          navigate(
-            updatedSession?.user?.role === 'admin'
+
+          const activeSession = updatedSession || session;
+          const workspaceDest =
+            activeSession?.user?.role === 'admin'
               ? '/admin'
-              : updatedSession
+              : activeSession
                 ? '/dashboard'
-                : '/login'
-          );
+                : null;
+
+          if (card) {
+            card.innerHTML = `
+              <h1 class="page-title">Password updated</h1>
+              <p class="page-subtitle" style="margin-bottom:18px;">Your Kord password has been changed.</p>
+              <div class="modal-feedback-success" id="reset-password-success" role="status" aria-live="polite">
+                <div class="modal-feedback-header">
+                  <strong class="modal-feedback-title">Password reset complete</strong>
+                </div>
+                <p class="modal-feedback-copy">
+                  Your new password is active. You can return to sign in with your updated credentials${workspaceDest ? ' or continue into your workspace' : ''}.
+                </p>
+              </div>
+              <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:20px;">
+                <button type="button" class="btn btn-primary" id="reset-return-login">Return to sign in</button>
+                ${
+                  workspaceDest
+                    ? `<button type="button" class="btn btn-secondary" id="reset-continue-workspace">Continue to workspace</button>`
+                    : ''
+                }
+              </div>
+            `;
+
+            card.querySelector('#reset-return-login')?.addEventListener('click', async () => {
+              if (typeof doSignOut === 'function' && activeSession) {
+                await doSignOut({
+                  redirectTo: '/login',
+                  toastMessage: 'Signed out. Sign in with your new password.',
+                });
+              } else {
+                navigate('/login');
+              }
+            });
+
+            if (workspaceDest) {
+              card.querySelector('#reset-continue-workspace')?.addEventListener('click', () => {
+                navigate(workspaceDest);
+              });
+            }
+          }
         } catch (err) {
-          formErr.textContent = err.message || 'Unable to update password.';
+          formErr.textContent = err?.message || 'Unable to update password.';
           submitBtn.disabled = false;
           submitBtn.textContent = 'Update password';
+          if (passwordInput) passwordInput.disabled = false;
+          if (confirmInput) confirmInput.disabled = false;
+        } finally {
+          submitting = false;
         }
       });
     },

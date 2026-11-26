@@ -409,6 +409,11 @@ test('Password reset request and PASSWORD_RECOVERY update flow continue working 
   await flushMicrotasks();
 
   assert.equal(currentPassUpdatedTo, 'newSecurePass99');
+  assert.ok(rootEl.querySelector('#reset-password-success'));
+  const continueBtn = rootEl.querySelector('#reset-continue-workspace');
+  assert.ok(continueBtn);
+  await continueBtn.click();
+  await flushMicrotasks();
   assert.equal(window.location.pathname, '/dashboard');
 
   ctrl.destroy();

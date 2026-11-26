@@ -9,16 +9,104 @@ import {
 import { appendDemoAuditLog } from '../demo/demoAudit.js';
 import { extractFirstName } from '../greeting.js';
 import { runSessionCleanup } from '../sessionLifecycle.js';
+import { isValidEmail } from '../validators.js';
 
-function detectRecoveryInUrl() {
+function parseRecoveryCallbackFromUrl() {
   try {
-    if (typeof window === 'undefined' || !window.location) return false;
-    const hash = String(window.location.hash || '');
-    const search = String(window.location.search || '');
-    return hash.includes('type=recovery') || search.includes('type=recovery');
+    if (typeof window === 'undefined' || !window.location) {
+      return {
+        error: null,
+        errorCode: null,
+        errorDescription: null,
+        code: null,
+        flowId: null,
+        tokenHash: null,
+        type: null,
+        hasAccessToken: false,
+      };
+    }
+    const searchParams = new URLSearchParams(String(window.location.search || ''));
+    const rawHash = String(window.location.hash || '').replace(/^#/, '');
+    const hashParams = new URLSearchParams(rawHash);
+    return {
+      error: searchParams.get('error') || hashParams.get('error') || null,
+      errorCode: searchParams.get('error_code') || hashParams.get('error_code') || null,
+      errorDescription:
+        searchParams.get('error_description') || hashParams.get('error_description') || null,
+      code: searchParams.get('code') || null,
+      flowId: searchParams.get('flow_id') || null,
+      tokenHash: searchParams.get('token_hash') || null,
+      type: searchParams.get('type') || hashParams.get('type') || null,
+      hasAccessToken: Boolean(hashParams.get('access_token')),
+    };
   } catch {
-    return false;
+    return {
+      error: null,
+      errorCode: null,
+      errorDescription: null,
+      code: null,
+      flowId: null,
+      tokenHash: null,
+      type: null,
+      hasAccessToken: false,
+    };
   }
+}
+
+function stripRecoveryParamsFromUrl() {
+  try {
+    if (typeof window === 'undefined' || !window.location || !window.history?.replaceState) {
+      return;
+    }
+    const searchParams = new URLSearchParams(String(window.location.search || ''));
+    const keysToStrip = [
+      'code',
+      'flow_id',
+      'token_hash',
+      'type',
+      'error',
+      'error_code',
+      'error_description',
+    ];
+    let changed = false;
+    for (const key of keysToStrip) {
+      if (searchParams.has(key)) {
+        searchParams.delete(key);
+        changed = true;
+      }
+    }
+    const rawHash = String(window.location.hash || '');
+    const hasAuthHash =
+      rawHash.includes('access_token=') ||
+      rawHash.includes('refresh_token=') ||
+      rawHash.includes('type=recovery') ||
+      rawHash.includes('error=');
+    if (hasAuthHash) changed = true;
+    if (!changed) return;
+
+    const remainingQuery = searchParams.toString();
+    const cleanUrl = `${window.location.pathname || '/reset-password'}${remainingQuery ? `?${remainingQuery}` : ''}`;
+    window.history.replaceState(window.history.state || {}, '', cleanUrl);
+  } catch {
+    // Ignore history cleanup failures in constrained environments
+  }
+}
+
+function mapRecoveryErrorMessage({ errorCode = null, errorDescription = null, rawMessage = null } = {}) {
+  const combined = [errorCode, errorDescription, rawMessage].filter(Boolean).join(' ');
+  if (errorCode === 'otp_expired' || /expired/i.test(combined)) {
+    return 'This password reset link has expired. Request a new reset link to continue.';
+  }
+  if (/code verifier/i.test(combined)) {
+    return 'This recovery link could not be verified in this browser tab. Open it in the same tab where you requested it, or request a new reset link.';
+  }
+  if (/invalid|already|used|not found|pkce|exchange/i.test(combined)) {
+    return 'This password reset link is invalid or has already been used. Request a new reset link to continue.';
+  }
+  if (errorDescription || rawMessage) {
+    return String(errorDescription || rawMessage).trim().slice(0, 220);
+  }
+  return 'This password reset link is invalid or has expired. Request a new reset link to continue.';
 }
 
 export function createAuthService({
@@ -32,8 +120,9 @@ export function createAuthService({
     setDemoCurrentUserId,
   },
 } = {}) {
-  let recoveryMode = detectRecoveryInUrl();
+  let recoveryMode = false;
   let localAuthPendingCount = 0;
+  const processedRecoveryCallbacks = new Map();
 
   function useSupabase() {
     return !isDemo && Boolean(supabaseClient);
@@ -119,7 +208,8 @@ export function createAuthService({
         recoveryMode = false;
         return null;
       }
-      if (detectRecoveryInUrl()) {
+      const cb = parseRecoveryCallbackFromUrl();
+      if (cb.hasAccessToken && cb.type === 'recovery') {
         recoveryMode = true;
       }
       return buildSupabaseSession(sessionData.session.user);
@@ -226,27 +316,189 @@ export function createAuthService({
     return getCurrentSession();
   }
 
-  async function requestPasswordReset(email) {
+  async function recoverPassword(email) {
     const cleanEmail = String(email || '').trim().toLowerCase();
+    if (!isValidEmail(cleanEmail)) {
+      throw new Error('Enter a valid email address.');
+    }
+
     if (useSupabase()) {
-      const origin = typeof window !== 'undefined' && window.location?.origin
-        ? window.location.origin
-        : '';
-      const { error } = await supabaseClient.auth.resetPasswordForEmail(cleanEmail, {
-        redirectTo: origin ? `${origin}/reset-password` : undefined,
-      });
-      if (error) throw new Error(error.message);
-      return { sent: true };
+      const origin =
+        typeof window !== 'undefined' && window.location?.origin
+          ? window.location.origin
+          : '';
+      const redirectTo = origin ? `${origin}/reset-password` : undefined;
+      const authApi = supabaseClient.auth;
+      const result =
+        typeof authApi?.recoverPassword === 'function'
+          ? await authApi.recoverPassword(cleanEmail, { redirectTo })
+          : await authApi.resetPasswordForEmail(cleanEmail, { redirectTo });
+      if (result?.error) throw new Error(result.error.message);
+      return { sent: true, email: cleanEmail };
     }
 
     const state = demoStore.getDemoState();
     const exists = (state.users || []).some((u) => u.email.toLowerCase() === cleanEmail);
     return {
       sent: true,
+      email: cleanEmail,
       note: exists
         ? 'Password reset instructions prepared for your account.'
         : 'If an account exists for that email, reset instructions have been sent.',
     };
+  }
+
+  async function requestPasswordReset(email) {
+    return recoverPassword(email);
+  }
+
+  async function resolvePasswordRecoverySession() {
+    const cb = parseRecoveryCallbackFromUrl();
+
+    if (cb.error || cb.errorCode || cb.errorDescription) {
+      stripRecoveryParamsFromUrl();
+      const existingSession = await getCurrentSession();
+      return {
+        status: 'invalid_link',
+        session: existingSession,
+        error: mapRecoveryErrorMessage(cb),
+      };
+    }
+
+    if (cb.tokenHash) {
+      const cacheKey = `token_hash:${cb.tokenHash}`;
+      stripRecoveryParamsFromUrl();
+
+      if (processedRecoveryCallbacks.has(cacheKey)) {
+        const cached = processedRecoveryCallbacks.get(cacheKey);
+        const session = await getCurrentSession();
+        if (cached.status === 'ready' && session) {
+          return { status: 'ready', session, error: null };
+        }
+        return {
+          status: 'invalid_link',
+          session,
+          error: cached.error || mapRecoveryErrorMessage(),
+        };
+      }
+
+      if (cb.type && cb.type !== 'recovery') {
+        const msg = 'This link is not a valid password recovery link.';
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: await getCurrentSession(), error: msg };
+      }
+
+      if (!useSupabase() || typeof supabaseClient.auth?.verifyOtp !== 'function') {
+        const msg = 'This password reset link is invalid or cannot be verified in this environment.';
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: await getCurrentSession(), error: msg };
+      }
+
+      const existingSession = await getCurrentSession();
+      const { data, error } = await supabaseClient.auth.verifyOtp({
+        token_hash: cb.tokenHash,
+        type: 'recovery',
+      });
+      if (error || !data?.session?.user) {
+        const msg = mapRecoveryErrorMessage({ rawMessage: error?.message });
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: existingSession, error: msg };
+      }
+
+      recoveryMode = true;
+      const hydrated = await buildSupabaseSession(data.session.user);
+      if (!hydrated) {
+        const msg = 'This account is unavailable or suspended. Contact an administrator.';
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: null, error: msg };
+      }
+      processedRecoveryCallbacks.set(cacheKey, { status: 'ready', error: null });
+      return { status: 'ready', session: hydrated, error: null };
+    }
+
+    if (cb.code) {
+      const cacheKey = `code:${cb.code}`;
+      if (processedRecoveryCallbacks.has(cacheKey)) {
+        stripRecoveryParamsFromUrl();
+        const cached = processedRecoveryCallbacks.get(cacheKey);
+        const session = await getCurrentSession();
+        if (cached.status === 'ready' && session) {
+          return { status: 'ready', session, error: null };
+        }
+        return {
+          status: 'invalid_link',
+          session,
+          error: cached.error || mapRecoveryErrorMessage(),
+        };
+      }
+
+      if (!useSupabase()) {
+        stripRecoveryParamsFromUrl();
+        const msg = 'This password reset link is invalid or cannot be verified in demo mode.';
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: await getCurrentSession(), error: msg };
+      }
+
+      const preSession = await getCurrentSession();
+      const stillHasCode = Boolean(parseRecoveryCallbackFromUrl().code);
+
+      if (!stillHasCode && preSession) {
+        recoveryMode = true;
+        processedRecoveryCallbacks.set(cacheKey, { status: 'ready', error: null });
+        return { status: 'ready', session: preSession, error: null };
+      }
+
+      if (typeof supabaseClient.auth?.exchangeCodeForSession !== 'function') {
+        stripRecoveryParamsFromUrl();
+        const msg = 'Password recovery code exchange is unavailable.';
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: preSession, error: msg };
+      }
+
+      const { data, error } = cb.flowId
+        ? await supabaseClient.auth.exchangeCodeForSession(cb.code, { flowId: cb.flowId })
+        : await supabaseClient.auth.exchangeCodeForSession(cb.code);
+      stripRecoveryParamsFromUrl();
+
+      if (error || !data?.session?.user) {
+        const msg = mapRecoveryErrorMessage({
+          rawMessage: error?.message || 'Invalid or expired recovery code.',
+        });
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: preSession, error: msg };
+      }
+
+      recoveryMode = true;
+      const hydrated = await buildSupabaseSession(data.session.user);
+      if (!hydrated) {
+        const msg = 'This account is unavailable or suspended. Contact an administrator.';
+        processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
+        return { status: 'invalid_link', session: null, error: msg };
+      }
+
+      processedRecoveryCallbacks.set(cacheKey, { status: 'ready', error: null });
+      return { status: 'ready', session: hydrated, error: null };
+    }
+
+    const session = await getCurrentSession();
+    if (cb.type === 'recovery') {
+      stripRecoveryParamsFromUrl();
+      if (session) {
+        recoveryMode = true;
+        return { status: 'ready', session, error: null };
+      }
+      return {
+        status: 'invalid_link',
+        session: null,
+        error: 'This password reset link is invalid, expired, or incomplete. Request a new reset link.',
+      };
+    }
+
+    if (session) {
+      return { status: 'ready', session, error: null };
+    }
+
+    return { status: 'missing_session', session: null, error: null };
   }
 
   async function updatePassword(newPassword) {
@@ -254,11 +506,19 @@ export function createAuthService({
     if (cleanPassword.length < 6) {
       throw new Error('Password must be at least 6 characters.');
     }
+    if (cleanPassword.length > 128) {
+      throw new Error('Password must be 128 characters or fewer.');
+    }
 
     if (useSupabase()) {
+      const { data: sessionData, error: sessionErr } = await supabaseClient.auth.getSession();
+      if (sessionErr || !sessionData?.session?.user) {
+        throw new Error('Active password recovery or authenticated session required.');
+      }
       const { error } = await supabaseClient.auth.updateUser({ password: cleanPassword });
       if (error) throw new Error(error.message);
       recoveryMode = false;
+      stripRecoveryParamsFromUrl();
       return getCurrentSession();
     }
 
@@ -351,7 +611,7 @@ export function createAuthService({
   }
 
   function isPasswordRecoveryMode() {
-    return recoveryMode || detectRecoveryInUrl();
+    return recoveryMode;
   }
 
   function subscribeAuthChanges(listener) {
@@ -385,7 +645,8 @@ export function createAuthService({
           if (event === 'PASSWORD_RECOVERY') {
             recoveryMode = true;
           } else if (event === 'SIGNED_IN') {
-            if (!detectRecoveryInUrl()) {
+            const cb = parseRecoveryCallbackFromUrl();
+            if (!(cb.hasAccessToken && cb.type === 'recovery')) {
               recoveryMode = false;
             }
           }
@@ -453,7 +714,9 @@ export function createAuthService({
     getCurrentSession,
     signIn,
     signUp,
+    recoverPassword,
     requestPasswordReset,
+    resolvePasswordRecoverySession,
     updatePassword,
     updateOwnProfile,
     signOut,
@@ -467,7 +730,9 @@ const defaultAuthService = createAuthService();
 export const getCurrentSession = defaultAuthService.getCurrentSession;
 export const signIn = defaultAuthService.signIn;
 export const signUp = defaultAuthService.signUp;
+export const recoverPassword = defaultAuthService.recoverPassword;
 export const requestPasswordReset = defaultAuthService.requestPasswordReset;
+export const resolvePasswordRecoverySession = defaultAuthService.resolvePasswordRecoverySession;
 export const updatePassword = defaultAuthService.updatePassword;
 export const updateOwnProfile = defaultAuthService.updateOwnProfile;
 export const signOut = defaultAuthService.signOut;
