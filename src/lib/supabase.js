@@ -68,8 +68,7 @@ const APPROVED_AISTUDIO_ORIGINS = [
   'https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app',
 ];
 
-const DEFAULT_PRODUCTION_ORIGIN =
-  'https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app';
+const DEFAULT_PRODUCTION_ORIGIN = 'https://kord-lcec.vercel.app';
 
 const APPROVED_AUTH_CALLBACK_PATHS = new Set(['/reset-password', '/auth/callback']);
 
@@ -95,7 +94,11 @@ export function normalizeApprovedOrigin(rawOrigin) {
 }
 
 export function getAllowedAuthOrigins({ env = import.meta.env || {} } = {}) {
-  const allowed = new Set([...APPROVED_LOCAL_ORIGINS, ...APPROVED_AISTUDIO_ORIGINS]);
+  const allowed = new Set([
+    ...APPROVED_LOCAL_ORIGINS,
+    ...APPROVED_AISTUDIO_ORIGINS,
+    DEFAULT_PRODUCTION_ORIGIN,
+  ]);
   const nodeEnv = typeof globalThis !== 'undefined' ? globalThis.process?.env : undefined;
   const configuredSiteUrl = normalizeApprovedOrigin(
     env?.VITE_SITE_URL || nodeEnv?.VITE_SITE_URL || ''
@@ -115,6 +118,7 @@ export function resolveAuthRedirectUrl(
     throw new Error('Unsupported authentication redirect path.');
   }
 
+  const devOrigins = new Set([...APPROVED_LOCAL_ORIGINS, ...APPROVED_AISTUDIO_ORIGINS]);
   const allowedOrigins = getAllowedAuthOrigins({ env });
   const nodeEnv = typeof globalThis !== 'undefined' ? globalThis.process?.env : undefined;
   const configuredProdOrigin = normalizeApprovedOrigin(
@@ -130,10 +134,12 @@ export function resolveAuthRedirectUrl(
   const normalizedCurrentOrigin = normalizeApprovedOrigin(rawCurrentOrigin);
 
   let resolvedOrigin;
-  if (normalizedCurrentOrigin && allowedOrigins.has(normalizedCurrentOrigin)) {
+  if (normalizedCurrentOrigin && devOrigins.has(normalizedCurrentOrigin)) {
     resolvedOrigin = normalizedCurrentOrigin;
   } else if (configuredProdOrigin) {
     resolvedOrigin = configuredProdOrigin;
+  } else if (normalizedCurrentOrigin && allowedOrigins.has(normalizedCurrentOrigin)) {
+    resolvedOrigin = normalizedCurrentOrigin;
   } else if (env?.PROD) {
     resolvedOrigin = DEFAULT_PRODUCTION_ORIGIN;
   } else {

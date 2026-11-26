@@ -143,10 +143,12 @@ test('Explicit environment-aware redirect resolver allows approved origins and r
   assert.equal(normalizeApprovedOrigin('https://user:pass@example.com'), null);
   assert.equal(normalizeApprovedOrigin('https://example.com/extra-path'), null);
 
+  // Local development origin
   assert.equal(
     resolveAuthRedirectUrl('/reset-password', { currentOrigin: 'http://localhost:3000', env: {} }),
     'http://localhost:3000/reset-password'
   );
+  // Approved AI Studio preview origin
   assert.equal(
     resolveAuthRedirectUrl('/auth/callback', {
       currentOrigin: 'https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app',
@@ -154,15 +156,45 @@ test('Explicit environment-aware redirect resolver allows approved origins and r
     }),
     'https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/auth/callback'
   );
+
+  // Confirmed production origin (https://kord-lcec.vercel.app) without explicit VITE_SITE_URL
   assert.equal(
     resolveAuthRedirectUrl('/auth/callback', {
-      currentOrigin: 'https://kord.example.org',
+      currentOrigin: 'https://kord-lcec.vercel.app',
+      env: { PROD: true },
+    }),
+    'https://kord-lcec.vercel.app/auth/callback'
+  );
+  assert.equal(
+    resolveAuthRedirectUrl('/reset-password', {
+      currentOrigin: 'https://kord-lcec.vercel.app',
+      env: { PROD: true },
+    }),
+    'https://kord-lcec.vercel.app/reset-password'
+  );
+  assert.equal(
+    resolveAuthRedirectUrl('/auth/callback', {
+      currentOrigin: '',
+      env: { PROD: true },
+    }),
+    'https://kord-lcec.vercel.app/auth/callback'
+  );
+  assert.equal(
+    resolveAuthRedirectUrl('/reset-password', {
+      currentOrigin: 'https://attacker.example.com',
+      env: { PROD: true },
+    }),
+    'https://kord-lcec.vercel.app/reset-password'
+  );
+
+  // Explicitly configured VITE_SITE_URL takes precedence over DEFAULT_PRODUCTION_ORIGIN
+  assert.equal(
+    resolveAuthRedirectUrl('/auth/callback', {
+      currentOrigin: 'https://kord-lcec.vercel.app',
       env: { VITE_SITE_URL: 'https://kord.example.org', PROD: true },
     }),
     'https://kord.example.org/auth/callback'
   );
-
-  // Untrusted origin falls back strictly to configured production origin or approved default
   assert.equal(
     resolveAuthRedirectUrl('/reset-password', {
       currentOrigin: 'https://attacker.example.com',
@@ -170,6 +202,8 @@ test('Explicit environment-aware redirect resolver allows approved origins and r
     }),
     'https://kord.example.org/reset-password'
   );
+
+  // Untrusted origin in non-prod without VITE_SITE_URL falls back to localhost
   assert.equal(
     resolveAuthRedirectUrl('/reset-password', {
       currentOrigin: 'https://attacker.example.com',

@@ -19,6 +19,8 @@ port = 54323
 
 [auth]
 enabled = true
+# Local CLI URLs only. Deployed production URLs (https://kord-lcec.vercel.app/reset-password and
+# https://kord-lcec.vercel.app/auth/callback) must be configured separately in the Supabase Dashboard.
 site_url = "http://localhost:3000"
 additional_redirect_urls = ["http://localhost:3000/reset-password", "http://localhost:3000/auth/callback"]
 jwt_expiry = 3600

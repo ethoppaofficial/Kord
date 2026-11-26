@@ -86,21 +86,22 @@ npx supabase db push
 To run password reset and Google Sign-In against a real Supabase project (**Authentication → URL Configuration**, **Authentication → Sign In / Providers**, and **Authentication → Email Templates**), configure these settings without committing or exposing secret keys:
 
 - **Site URL**
+  - Production: `https://kord-lcec.vercel.app` (or set `VITE_SITE_URL` if deploying to a custom production origin)
   - Local development (`supabase/config.toml`): `http://localhost:3000`
-  - AI Studio Dev / Shared preview: `https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app` or `https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app`
-  - Production: `https://<your-production-domain>` (and optionally set `VITE_SITE_URL=https://<your-production-domain>` in your build environment)
+  - AI Studio development / preview environments: `https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app` and `https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app`
 - **Redirect URL Allowlist (`additional_redirect_urls`)**
+  - Note: `supabase/config.toml` only stores local Supabase CLI redirects (`http://localhost:3000/*`). Deployed production and preview redirect allowlist URLs must be configured separately in the **Supabase Dashboard → Authentication → URL Configuration**.
+  - Production (`https://kord-lcec.vercel.app`):
+    - `https://kord-lcec.vercel.app/reset-password`
+    - `https://kord-lcec.vercel.app/auth/callback`
   - Local development:
     - `http://localhost:3000/reset-password`
     - `http://localhost:3000/auth/callback`
-  - AI Studio Dev / Shared preview:
+  - AI Studio development / preview environments:
     - `https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/reset-password`
     - `https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/auth/callback`
     - `https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/reset-password`
     - `https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/auth/callback`
-  - Production deployment:
-    - `https://<your-production-domain>/reset-password`
-    - `https://<your-production-domain>/auth/callback`
 - **Google OAuth Provider Setup**
   - In Google Cloud Console (**APIs & Services → Credentials → OAuth 2.0 Client IDs**), add your Supabase project's OAuth callback URI as an **Authorized redirect URI**:
     - `https://<your-supabase-project-ref>.supabase.co/auth/v1/callback`
