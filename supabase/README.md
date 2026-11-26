@@ -81,19 +81,33 @@ npx supabase db push
 - Quizzes and theory-only courses max out skill levels at `practising`; `demonstrated` and `verified` strictly require approved practical deliverables.
 - All client progress, timed quiz sessions, submission reviews, and dashboard queries rely on database-enforced `auth.uid()`, active `account_status`, and RPC validation.
 
-## Password Recovery & Auth URL Configuration
+## Password Recovery, Google Sign-In & Auth URL Configuration
 
-To run the full password reset flow against a real Supabase project (**Authentication → URL Configuration** and **Authentication → Email Templates**), configure these settings without committing or exposing secret keys:
+To run password reset and Google Sign-In against a real Supabase project (**Authentication → URL Configuration**, **Authentication → Sign In / Providers**, and **Authentication → Email Templates**), configure these settings without committing or exposing secret keys:
 
 - **Site URL**
   - Local development (`supabase/config.toml`): `http://localhost:3000`
-  - Production: `https://<your-production-domain>`
+  - AI Studio Dev / Shared preview: `https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app` or `https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app`
+  - Production: `https://<your-production-domain>` (and optionally set `VITE_SITE_URL=https://<your-production-domain>` in your build environment)
 - **Redirect URL Allowlist (`additional_redirect_urls`)**
-  - Development callback URL: `http://localhost:3000/reset-password`
-  - Production callback URL: `https://<your-production-domain>/reset-password`
-  - Preview / staging callback URL (if applicable): `https://<your-preview-domain>/reset-password`
+  - Local development:
+    - `http://localhost:3000/reset-password`
+    - `http://localhost:3000/auth/callback`
+  - AI Studio Dev / Shared preview:
+    - `https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/reset-password`
+    - `https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/auth/callback`
+    - `https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/reset-password`
+    - `https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app/auth/callback`
+  - Production deployment:
+    - `https://<your-production-domain>/reset-password`
+    - `https://<your-production-domain>/auth/callback`
+- **Google OAuth Provider Setup**
+  - In Google Cloud Console (**APIs & Services → Credentials → OAuth 2.0 Client IDs**), add your Supabase project's OAuth callback URI as an **Authorized redirect URI**:
+    - `https://<your-supabase-project-ref>.supabase.co/auth/v1/callback`
+  - In **Supabase Dashboard → Authentication → Sign In / Providers → Google**, enable Google and paste your Google Client ID and Client Secret (never commit client secrets to the repository).
+  - First-time Google sign-ins create a `public.profiles` row via `handle_new_user()` unconditionally as `role = 'learner'` and `account_status = 'active'`. Existing administrator roles promoted via `admin_assign_profile_role` are preserved on sign-in.
 - **Reset Password Email Template Requirements**
-  - The Supabase client in `src/lib/supabase.js` uses `flowType: 'pkce'` and tab-scoped `window.sessionStorage` (`storageKey: 'kord-auth'`), and `recoverPassword()` sends `redirectTo: '<origin>/reset-password'`.
+  - The Supabase client in `src/lib/supabase.js` uses `flowType: 'pkce'` and tab-scoped `window.sessionStorage` (`storageKey: 'kord-auth'`), and `recoverPassword()` sends an allowlisted `redirectTo` ending in `/reset-password`.
   - Default PKCE link (`{{ .ConfirmationURL }}`) redirects to `/reset-password?code=...` and requires completing recovery in the same browser tab where the reset email was requested (because the PKCE code verifier lives in `sessionStorage`).
   - **Recommended cross-tab / cross-browser email template**: Use `token_hash` verification so users clicking the email link in a new tab or separate mail app verify cleanly via `supabase.auth.verifyOtp({ token_hash, type: 'recovery' })`:
 
@@ -103,5 +117,5 @@ To run the full password reset flow against a real Supabase project (**Authentic
 <p><a href="{{ .SiteURL }}/reset-password?token_hash={{ .TokenHash }}&type=recovery">Reset Password</a></p>
 ```
 
-- **Local Email Testing**: When running `npx supabase start`, Supabase CLI captures outgoing recovery emails in local Inbucket/Mailpit (`http://localhost:54324`). Production email delivery and real token exchange must be verified manually against your target Supabase project's SMTP/email provider.
+- **Local Email Testing**: When running `npx supabase start`, Supabase CLI captures outgoing recovery emails in local Inbucket/Mailpit (`http://localhost:54324`). Production email delivery, live Google OAuth consent, and real token exchange must be verified manually against your target Supabase project.
 

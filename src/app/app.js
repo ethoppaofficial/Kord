@@ -13,6 +13,7 @@ import {
   renderSignupPage,
   renderForgotPasswordPage,
   renderResetPasswordPage,
+  renderAuthCallbackPage,
 } from '../pages/public/AuthPages.js';
 import { renderDashboardPage } from '../pages/learner/DashboardPage.js';
 import { renderExplorePage } from '../pages/learner/ExplorePage.js';
@@ -37,6 +38,7 @@ import { renderAdminGovernancePage } from '../pages/admin/AdminGovernancePage.js
 // - 'public': '/' landing page (authenticated admins automatically stay in /admin)
 // - 'auth_page': '/login', '/signup', '/forgot-password'
 // - 'recovery': '/reset-password' (accessible during PASSWORD_RECOVERY or active session)
+// - 'oauth_callback': '/auth/callback' (handles Google OAuth PKCE code exchange & errors)
 // - 'learner': strictly authenticated learner only (guests redirected to /login; admins isolated)
 // - 'admin': strictly authenticated admin only (guests redirected to /login; learners blocked)
 const ROUTES = [
@@ -45,6 +47,7 @@ const ROUTES = [
   { pattern: '/signup', access: 'auth_page', render: renderSignupPage },
   { pattern: '/forgot-password', access: 'auth_page', render: renderForgotPasswordPage },
   { pattern: '/reset-password', access: 'recovery', render: renderResetPasswordPage },
+  { pattern: '/auth/callback', access: 'oauth_callback', render: renderAuthCallbackPage },
 
   { pattern: '/explore', access: 'learner', render: renderExplorePage },
   { pattern: '/skills/:slug', access: 'learner', render: renderSkillDetailPage },
@@ -224,6 +227,7 @@ export function mountApp(rootEl, options = {}) {
 
     let session;
     let recoveryState = null;
+    let oauthCallbackState = null;
     try {
       if (
         matched?.route.access === 'recovery' &&
@@ -231,6 +235,12 @@ export function mountApp(rootEl, options = {}) {
       ) {
         recoveryState = await auth.resolvePasswordRecoverySession();
         session = recoveryState?.session || null;
+      } else if (
+        matched?.route.access === 'oauth_callback' &&
+        typeof auth.resolveOAuthCallback === 'function'
+      ) {
+        oauthCallbackState = await auth.resolveOAuthCallback();
+        session = oauthCallbackState?.session || null;
       } else {
         session = await auth.getCurrentSession();
       }
@@ -241,6 +251,12 @@ export function mountApp(rootEl, options = {}) {
           status: 'invalid_link',
           session: null,
           error: 'Unable to verify password recovery link. Please request a new reset link.',
+        };
+      } else if (matched?.route.access === 'oauth_callback') {
+        oauthCallbackState = {
+          status: 'error',
+          session: null,
+          error: 'Unable to verify Google sign-in callback. Please try again.',
         };
       }
     }
@@ -291,6 +307,14 @@ export function mountApp(rootEl, options = {}) {
     const role = resolvedRole;
 
     if (matched) {
+      if (matched.route.access === 'oauth_callback') {
+        if (oauthCallbackState?.status === 'authenticated' && session) {
+          const dest = getHomePathForRole(role);
+          window.history.replaceState({}, '', dest);
+          return renderCurrentRoute({ animateRoute: true });
+        }
+      }
+
       if (matched.route.access === 'auth_page' && session) {
         if (auth.isPasswordRecoveryMode?.()) {
           window.history.replaceState({}, '', '/reset-password');
@@ -378,6 +402,7 @@ export function mountApp(rootEl, options = {}) {
           session,
           auth,
           recoveryState,
+          oauthCallbackState,
           signOut: performSignOut,
           currentPath: matched.path,
           navigate,

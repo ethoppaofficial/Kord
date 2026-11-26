@@ -1,4 +1,4 @@
-import { supabase, isDemoMode } from '../supabase.js';
+import { supabase, isDemoMode, resolveAuthRedirectUrl } from '../supabase.js';
 import {
   getDemoState,
   updateDemoState,
@@ -61,6 +61,7 @@ function stripRecoveryParamsFromUrl() {
     const searchParams = new URLSearchParams(String(window.location.search || ''));
     const keysToStrip = [
       'code',
+      'state',
       'flow_id',
       'token_hash',
       'type',
@@ -109,6 +110,29 @@ function mapRecoveryErrorMessage({ errorCode = null, errorDescription = null, ra
   return 'This password reset link is invalid or has expired. Request a new reset link to continue.';
 }
 
+function mapOAuthErrorMessage({ error = null, errorCode = null, errorDescription = null, rawMessage = null } = {}) {
+  const combined = [error, errorCode, errorDescription, rawMessage].filter(Boolean).join(' ');
+  if (error === 'access_denied' || errorCode === 'access_denied' || /denied|cancel/i.test(combined)) {
+    return 'Google sign-in was cancelled. You can try again whenever you are ready.';
+  }
+  if (errorCode === 'bad_oauth_callback' || /state parameter missing|oauth state/i.test(combined)) {
+    return 'Google sign-in could not be verified because the session state expired or was missing. Please try signing in again.';
+  }
+  if (/code verifier/i.test(combined)) {
+    return 'Google sign-in could not be verified in this browser tab. Please start Google sign-in again from this tab.';
+  }
+  if (/suspended/i.test(combined)) {
+    return 'This account has been suspended. Contact an administrator.';
+  }
+  if (/invalid|expired|already|used|exchange/i.test(combined)) {
+    return 'This Google sign-in callback is invalid or has expired. Please try signing in again.';
+  }
+  if (errorDescription || rawMessage) {
+    return String(errorDescription || rawMessage).trim().slice(0, 220);
+  }
+  return 'Unable to complete Google sign-in. Please try again.';
+}
+
 export function createAuthService({
   supabaseClient = supabase,
   isDemo = isDemoMode,
@@ -123,6 +147,7 @@ export function createAuthService({
   let recoveryMode = false;
   let localAuthPendingCount = 0;
   const processedRecoveryCallbacks = new Map();
+  const processedOAuthCallbacks = new Map();
 
   function useSupabase() {
     return !isDemo && Boolean(supabaseClient);
@@ -183,10 +208,12 @@ export function createAuthService({
     const fullName =
       profile.full_name ||
       authUser.user_metadata?.full_name ||
+      authUser.user_metadata?.name ||
       emailPrefix;
     const firstName =
       profile.first_name ||
       authUser.user_metadata?.first_name ||
+      authUser.user_metadata?.given_name ||
       extractFirstName(fullName, emailPrefix);
 
     return {
@@ -322,34 +349,180 @@ export function createAuthService({
       throw new Error('Enter a valid email address.');
     }
 
+    const neutralNote =
+      'If an account exists for that email, reset instructions have been sent.';
+
     if (useSupabase()) {
-      const origin =
-        typeof window !== 'undefined' && window.location?.origin
-          ? window.location.origin
-          : '';
-      const redirectTo = origin ? `${origin}/reset-password` : undefined;
+      const redirectTo = resolveAuthRedirectUrl('/reset-password');
       const authApi = supabaseClient.auth;
       const result =
-        typeof authApi?.recoverPassword === 'function'
-          ? await authApi.recoverPassword(cleanEmail, { redirectTo })
-          : await authApi.resetPasswordForEmail(cleanEmail, { redirectTo });
+        typeof authApi?.resetPasswordForEmail === 'function'
+          ? await authApi.resetPasswordForEmail(cleanEmail, { redirectTo })
+          : await authApi.recoverPassword(cleanEmail, { redirectTo });
       if (result?.error) throw new Error(result.error.message);
-      return { sent: true, email: cleanEmail };
+      return { sent: true, email: cleanEmail, note: neutralNote };
     }
 
-    const state = demoStore.getDemoState();
-    const exists = (state.users || []).some((u) => u.email.toLowerCase() === cleanEmail);
     return {
       sent: true,
       email: cleanEmail,
-      note: exists
-        ? 'Password reset instructions prepared for your account.'
-        : 'If an account exists for that email, reset instructions have been sent.',
+      note: neutralNote,
     };
   }
 
   async function requestPasswordReset(email) {
     return recoverPassword(email);
+  }
+
+  async function signInWithGoogle() {
+    recoveryMode = false;
+    runSessionCleanup();
+
+    if (!useSupabase()) {
+      throw new Error(
+        'Google Sign-In requires a live Supabase connection and is unavailable in local demo mode.'
+      );
+    }
+
+    if (typeof supabaseClient.auth?.signInWithOAuth !== 'function') {
+      throw new Error('Google Sign-In is unavailable in this environment.');
+    }
+
+    const redirectTo = resolveAuthRedirectUrl('/auth/callback');
+    localAuthPendingCount += 1;
+    try {
+      const { data, error } = await supabaseClient.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo,
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      });
+      if (error) {
+        throw new Error(error.message || 'Unable to start Google Sign-In.');
+      }
+      if (!data?.url) {
+        throw new Error('Google Sign-In did not return an authorization URL.');
+      }
+      return {
+        provider: 'google',
+        url: data.url,
+        redirectTo,
+      };
+    } finally {
+      localAuthPendingCount = Math.max(0, localAuthPendingCount - 1);
+    }
+  }
+
+  async function resolveOAuthCallback() {
+    const cb = parseRecoveryCallbackFromUrl();
+
+    if (cb.error || cb.errorCode || cb.errorDescription) {
+      stripRecoveryParamsFromUrl();
+      const existingSession = await getCurrentSession();
+      return {
+        status: 'error',
+        session: existingSession,
+        error: mapOAuthErrorMessage(cb),
+      };
+    }
+
+    if (cb.code) {
+      const cacheKey = `oauth:${cb.code}`;
+      if (processedOAuthCallbacks.has(cacheKey)) {
+        stripRecoveryParamsFromUrl();
+        const cached = processedOAuthCallbacks.get(cacheKey);
+        const session = await getCurrentSession();
+        if (cached.status === 'authenticated' && session) {
+          return { status: 'authenticated', session, error: null };
+        }
+        return {
+          status: 'error',
+          session,
+          error: cached.error || mapOAuthErrorMessage(),
+        };
+      }
+
+      if (!useSupabase()) {
+        stripRecoveryParamsFromUrl();
+        const msg = 'Google Sign-In callback cannot be verified in local demo mode.';
+        processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
+        return { status: 'error', session: await getCurrentSession(), error: msg };
+      }
+
+      const preSession = await getCurrentSession();
+      const stillHasCode = Boolean(parseRecoveryCallbackFromUrl().code);
+
+      if (!stillHasCode && preSession) {
+        recoveryMode = false;
+        processedOAuthCallbacks.set(cacheKey, { status: 'authenticated', error: null });
+        return { status: 'authenticated', session: preSession, error: null };
+      }
+
+      if (typeof supabaseClient.auth?.exchangeCodeForSession !== 'function') {
+        stripRecoveryParamsFromUrl();
+        const msg = 'Google Sign-In code exchange is unavailable.';
+        processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
+        return { status: 'error', session: preSession, error: msg };
+      }
+
+      localAuthPendingCount += 1;
+      try {
+        const { data, error } = cb.flowId
+          ? await supabaseClient.auth.exchangeCodeForSession(cb.code, { flowId: cb.flowId })
+          : await supabaseClient.auth.exchangeCodeForSession(cb.code);
+        stripRecoveryParamsFromUrl();
+
+        if (error || !data?.session?.user) {
+          const msg = mapOAuthErrorMessage({
+            rawMessage: error?.message || 'Invalid or expired Google sign-in code.',
+          });
+          processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
+          return { status: 'error', session: preSession, error: msg };
+        }
+
+        let hydrated = null;
+        try {
+          hydrated = await buildSupabaseSession(data.session.user, { throwOnSuspended: true });
+        } catch (err) {
+          const msg = mapOAuthErrorMessage({ rawMessage: err?.message });
+          processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
+          return { status: 'error', session: null, error: msg };
+        }
+
+        if (!hydrated) {
+          try {
+            await supabaseClient.auth.signOut();
+          } catch {
+            // Ignore secondary signOut failure
+          }
+          const msg = 'Your learner profile could not be initialized. Please try signing in again.';
+          processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
+          return { status: 'error', session: null, error: msg };
+        }
+
+        recoveryMode = false;
+        processedOAuthCallbacks.set(cacheKey, { status: 'authenticated', error: null });
+        return { status: 'authenticated', session: hydrated, error: null };
+      } finally {
+        localAuthPendingCount = Math.max(0, localAuthPendingCount - 1);
+      }
+    }
+
+    stripRecoveryParamsFromUrl();
+    const session = await getCurrentSession();
+    if (session) {
+      recoveryMode = false;
+      return { status: 'authenticated', session, error: null };
+    }
+
+    return {
+      status: 'missing_callback',
+      session: null,
+      error: 'No Google sign-in response was found. Start sign-in again from the login page.',
+    };
   }
 
   async function resolvePasswordRecoverySession() {
@@ -714,6 +887,8 @@ export function createAuthService({
     getCurrentSession,
     signIn,
     signUp,
+    signInWithGoogle,
+    resolveOAuthCallback,
     recoverPassword,
     requestPasswordReset,
     resolvePasswordRecoverySession,
@@ -730,6 +905,8 @@ const defaultAuthService = createAuthService();
 export const getCurrentSession = defaultAuthService.getCurrentSession;
 export const signIn = defaultAuthService.signIn;
 export const signUp = defaultAuthService.signUp;
+export const signInWithGoogle = defaultAuthService.signInWithGoogle;
+export const resolveOAuthCallback = defaultAuthService.resolveOAuthCallback;
 export const recoverPassword = defaultAuthService.recoverPassword;
 export const requestPasswordReset = defaultAuthService.requestPasswordReset;
 export const resolvePasswordRecoverySession = defaultAuthService.resolvePasswordRecoverySession;

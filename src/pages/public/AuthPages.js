@@ -1,6 +1,7 @@
 import {
   signIn,
   signUp,
+  signInWithGoogle,
   recoverPassword,
   updatePassword,
   isPasswordRecoveryMode,
@@ -17,6 +18,7 @@ import { escapeHtml } from '../../lib/formatters.js';
 
 const EYE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_OFF_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>`;
+const GOOGLE_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"/><path fill="#FBBC05" d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"/></svg>`;
 
 function renderPasswordField({
   id,
@@ -75,6 +77,55 @@ function bindPasswordToggles(root) {
   });
 }
 
+function renderGoogleSignInBlock({ buttonId, errorId }) {
+  return `
+    <div class="auth-oauth-divider" role="separator" aria-label="or">
+      <span>or</span>
+    </div>
+    <button type="button" class="btn btn-google" id="${buttonId}">
+      <span class="google-mark" aria-hidden="true">${GOOGLE_ICON}</span>
+      <span class="google-btn-label">Continue with Google</span>
+    </button>
+    <div class="field-error" id="${errorId}" role="alert" style="margin-top:8px;"></div>
+  `;
+}
+
+function bindGoogleSignInButton({ root, buttonId, errorId, auth = null }) {
+  const btn = root.querySelector(`#${buttonId}`);
+  const errEl = root.querySelector(`#${errorId}`);
+  if (!btn) return;
+  const doGoogleSignIn = auth?.signInWithGoogle || signInWithGoogle;
+  let pending = false;
+
+  btn.addEventListener('click', async () => {
+    if (pending) return;
+    pending = true;
+    if (errEl) errEl.textContent = '';
+    const labelEl = btn.querySelector('.google-btn-label');
+    btn.disabled = true;
+    if (labelEl) {
+      labelEl.textContent = 'Redirecting to Google…';
+    } else {
+      btn.textContent = 'Redirecting to Google…';
+    }
+
+    try {
+      await doGoogleSignIn();
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err?.message || 'Unable to start Google Sign-In.';
+      }
+      btn.disabled = false;
+      if (labelEl) {
+        labelEl.textContent = 'Continue with Google';
+      } else {
+        btn.textContent = 'Continue with Google';
+      }
+      pending = false;
+    }
+  });
+}
+
 export function renderLoginPage({ navigate, auth = null }) {
   const doSignIn = auth?.signIn || signIn;
   return {
@@ -105,6 +156,11 @@ export function renderLoginPage({ navigate, auth = null }) {
             <button type="submit" class="btn btn-primary" id="login-submit">Sign in</button>
           </form>
 
+          ${renderGoogleSignInBlock({
+            buttonId: 'login-google-btn',
+            errorId: 'login-google-error',
+          })}
+
           <div style="display:flex; justify-content:space-between; align-items:center; margin-top:18px; font-size:14px;">
             <button type="button" class="link-btn" id="open-forgot-password-btn">Forgot password?</button>
             <a href="/signup" data-link>Create account</a>
@@ -114,6 +170,12 @@ export function renderLoginPage({ navigate, auth = null }) {
     `,
     bind(root) {
       bindPasswordToggles(root);
+      bindGoogleSignInButton({
+        root,
+        buttonId: 'login-google-btn',
+        errorId: 'login-google-error',
+        auth,
+      });
       const form = root.querySelector('#login-form');
       const submitBtn = root.querySelector('#login-submit');
       const formErr = root.querySelector('#login-form-error');
@@ -157,7 +219,8 @@ export function renderLoginPage({ navigate, auth = null }) {
   };
 }
 
-export function renderSignupPage({ navigate }) {
+export function renderSignupPage({ navigate, auth = null }) {
+  const doSignUp = auth?.signUp || signUp;
   return {
     html: `
       <div class="auth-wrap">
@@ -209,6 +272,11 @@ export function renderSignupPage({ navigate }) {
             <button type="submit" class="btn btn-primary" id="signup-submit">Create account</button>
           </form>
 
+          ${renderGoogleSignInBlock({
+            buttonId: 'signup-google-btn',
+            errorId: 'signup-google-error',
+          })}
+
           <div style="margin-top:18px; font-size:14px; text-align:center;">
             Already have an account? <a href="/login" data-link>Sign in</a>
           </div>
@@ -217,6 +285,12 @@ export function renderSignupPage({ navigate }) {
     `,
     bind(root) {
       bindPasswordToggles(root);
+      bindGoogleSignInButton({
+        root,
+        buttonId: 'signup-google-btn',
+        errorId: 'signup-google-error',
+        auth,
+      });
       const form = root.querySelector('#signup-form');
       const submitBtn = root.querySelector('#signup-submit');
       const formErr = root.querySelector('#signup-form-error');
@@ -242,7 +316,7 @@ export function renderSignupPage({ navigate }) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Creating account…';
         try {
-          const session = await signUp(payload);
+          const session = await doSignUp(payload);
           showToast('Account created.', 'success');
           navigate(session?.user?.role === 'admin' ? '/admin' : '/dashboard');
         } catch (err) {
@@ -532,3 +606,52 @@ export function renderResetPasswordPage({
     },
   };
 }
+
+export function renderAuthCallbackPage({ session = null, oauthCallbackState = null } = {}) {
+  const status = oauthCallbackState?.status;
+  if (status === 'error' || status === 'missing_callback') {
+    const errorMsg =
+      oauthCallbackState?.error ||
+      'Unable to complete Google sign-in. Please return to sign in and try again.';
+    const workspaceHref = session?.user?.role === 'admin' ? '/admin' : '/dashboard';
+
+    return {
+      html: `
+        <div class="auth-wrap">
+          <div class="card" id="oauth-callback-error-state" role="alert">
+            <h1 class="page-title">Google sign-in incomplete</h1>
+            <p class="page-subtitle" style="margin-bottom:16px;">${escapeHtml(errorMsg)}</p>
+            ${
+              session
+                ? `<p style="font-size:13.5px; color:var(--color-text-secondary); margin-bottom:18px;">Your existing signed-in session was preserved.</p>`
+                : ''
+            }
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <a href="/login" data-link class="btn btn-primary" id="oauth-back-login">Back to sign in</a>
+              <a href="/signup" data-link class="btn btn-secondary" id="oauth-create-account">Create account</a>
+              ${
+                session
+                  ? `<a href="${workspaceHref}" data-link class="btn btn-secondary" id="oauth-existing-workspace">Return to workspace</a>`
+                  : ''
+              }
+            </div>
+          </div>
+        </div>
+      `,
+      bind() {},
+    };
+  }
+
+  return {
+    html: `
+      <div class="auth-wrap">
+        <div class="card" id="oauth-callback-loading" role="status" aria-live="polite">
+          <h1 class="page-title">Completing Google sign-in…</h1>
+          <p class="page-subtitle" style="margin-bottom:0;">Verifying your Google account and loading your Kord workspace.</p>
+        </div>
+      </div>
+    `,
+    bind() {},
+  };
+}
+

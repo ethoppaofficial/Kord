@@ -58,6 +58,91 @@ export const isProdBuild = runtimeConfig.isProdBuild;
 export const isDemoMode = runtimeConfig.isDemoMode;
 export const supabaseConfigError = runtimeConfig.supabaseConfigError;
 
+const APPROVED_LOCAL_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
+const APPROVED_AISTUDIO_ORIGINS = [
+  'https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app',
+  'https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app',
+];
+
+const DEFAULT_PRODUCTION_ORIGIN =
+  'https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app';
+
+const APPROVED_AUTH_CALLBACK_PATHS = new Set(['/reset-password', '/auth/callback']);
+
+export function normalizeApprovedOrigin(rawOrigin) {
+  const value = String(rawOrigin || '').trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.username || parsed.password) return null;
+    if (parsed.pathname && parsed.pathname !== '/') return null;
+    if (parsed.search || parsed.hash) return null;
+
+    const isLocalHttp =
+      parsed.protocol === 'http:' &&
+      (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+    const isHttps = parsed.protocol === 'https:';
+    if (!isHttps && !isLocalHttp) return null;
+
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+export function getAllowedAuthOrigins({ env = import.meta.env || {} } = {}) {
+  const allowed = new Set([...APPROVED_LOCAL_ORIGINS, ...APPROVED_AISTUDIO_ORIGINS]);
+  const nodeEnv = typeof globalThis !== 'undefined' ? globalThis.process?.env : undefined;
+  const configuredSiteUrl = normalizeApprovedOrigin(
+    env?.VITE_SITE_URL || nodeEnv?.VITE_SITE_URL || ''
+  );
+  if (configuredSiteUrl) {
+    allowed.add(configuredSiteUrl);
+  }
+  return allowed;
+}
+
+export function resolveAuthRedirectUrl(
+  targetPath,
+  { env = import.meta.env || {}, currentOrigin } = {}
+) {
+  const cleanPath = String(targetPath || '').trim();
+  if (!APPROVED_AUTH_CALLBACK_PATHS.has(cleanPath)) {
+    throw new Error('Unsupported authentication redirect path.');
+  }
+
+  const allowedOrigins = getAllowedAuthOrigins({ env });
+  const nodeEnv = typeof globalThis !== 'undefined' ? globalThis.process?.env : undefined;
+  const configuredProdOrigin = normalizeApprovedOrigin(
+    env?.VITE_SITE_URL || nodeEnv?.VITE_SITE_URL || ''
+  );
+
+  const rawCurrentOrigin =
+    currentOrigin !== undefined
+      ? currentOrigin
+      : typeof window !== 'undefined' && window.location?.origin
+        ? window.location.origin
+        : '';
+  const normalizedCurrentOrigin = normalizeApprovedOrigin(rawCurrentOrigin);
+
+  let resolvedOrigin;
+  if (normalizedCurrentOrigin && allowedOrigins.has(normalizedCurrentOrigin)) {
+    resolvedOrigin = normalizedCurrentOrigin;
+  } else if (configuredProdOrigin) {
+    resolvedOrigin = configuredProdOrigin;
+  } else if (env?.PROD) {
+    resolvedOrigin = DEFAULT_PRODUCTION_ORIGIN;
+  } else {
+    resolvedOrigin = 'http://localhost:3000';
+  }
+
+  return `${resolvedOrigin}${cleanPath}`;
+}
+
 export const supabase = hasSupabaseEnv
   ? createClient(runtimeConfig.supabaseUrl, runtimeConfig.supabaseAnonKey, {
       auth: {
@@ -70,4 +155,5 @@ export const supabase = hasSupabaseEnv
       },
     })
   : null;
+
 
