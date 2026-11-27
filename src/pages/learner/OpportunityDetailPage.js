@@ -5,6 +5,10 @@ import { renderErrorState } from '../../components/Common.js';
 import { getSavedOpportunityIds, toggleSavedOpportunity } from './OpportunitiesPage.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderOpportunityDetailPage({ params, session }) {
   const userId = session?.user?.id || null;
   const opp = await getOpportunityByIdForUser(params.id, userId);
@@ -315,11 +319,15 @@ export async function renderOpportunityDetailPage({ params, session }) {
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       root.querySelector('#opp-detail-save')?.addEventListener('click', (e) => {
         const saved = toggleSavedOpportunity(userId, opp.id);
-        e.currentTarget.textContent = saved ? 'Saved' : 'Save listing';
-        e.currentTarget.setAttribute('aria-pressed', String(saved));
+        const btn = /** @type {HTMLElement | null} */ (e.currentTarget);
+        if (btn) {
+          btn.textContent = saved ? 'Saved' : 'Save listing';
+          btn.setAttribute('aria-pressed', String(saved));
+        }
         showToast(saved ? 'Opportunity saved to your shortlist.' : 'Removed from shortlist.', 'info');
       });
     },

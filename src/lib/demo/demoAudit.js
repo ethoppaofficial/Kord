@@ -1,5 +1,16 @@
 import { getDemoCurrentUserId } from './demoStore.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').DemoState} draft
+ * @param {{
+ *   actorId?: string | null;
+ *   action: string;
+ *   targetTable: string;
+ *   targetId?: string;
+ *   beforeData?: unknown;
+ *   afterData?: unknown;
+ * }} entry
+ */
 export function appendDemoAuditLog(
   draft,
   {

@@ -9,8 +9,11 @@ import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDr
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/** @type {Record<string, import('../../types/kord.d.ts').QuizAttempt>} */
 let lastResultByQuiz = {};
+/** @type {Record<string, number[]>} */
 let activeOrderByQuizQuestion = {};
+/** @type {Record<string, boolean>} */
 let restartRequestedByQuiz = {};
 
 registerSessionCleanup(() => {
@@ -19,6 +22,12 @@ registerSessionCleanup(() => {
   restartRequestedByQuiz = {};
 });
 
+/**
+ * @param {import('../../types/kord.d.ts').QuizQuestion} q
+ * @param {number} idx
+ * @param {import('../../types/kord.d.ts').QuizAttemptResultItem | undefined} res
+ * @param {string} quizId
+ */
 function renderQuestionInput(q, idx, res, quizId) {
   const type = q.questionType || 'multiple_choice';
   const contextHtml = q.contextText
@@ -155,10 +164,15 @@ function renderQuestionInput(q, idx, res, quizId) {
   `;
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderQuizPage({ params, session, navigate, rerender }) {
   const targetQuizId = params.assessmentId || params.quizId;
-  const userId = session.user.id;
+  const userId = session?.user?.id || '';
 
+  /** @type {Awaited<ReturnType<typeof resolveCourseHierarchy>> | null} */
   let courseCtx = null;
   if (params.slug) {
     courseCtx = await resolveCourseHierarchy({
@@ -167,17 +181,19 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
       requireEnrollment: true,
     });
     if (courseCtx.status !== 'ok') {
-      return renderHierarchyGuard({
-        ctx: courseCtx,
-        userId,
-        targetUrlAfterEnroll: `/courses/${params.slug}/assessments/${targetQuizId}`,
-        navigate,
-      });
+      return (
+        renderHierarchyGuard({
+          ctx: courseCtx,
+          userId,
+          targetUrlAfterEnroll: `/courses/${params.slug}/assessments/${targetQuizId}`,
+          navigate,
+        }) || { html: '', bind() {} }
+      );
     }
   }
 
   const quiz = await getQuizForLearner(targetQuizId, { userId });
-  if (!quiz || (courseCtx && quiz.courseId !== courseCtx.course.id)) {
+  if (!quiz || (courseCtx?.status === 'ok' && quiz.courseId !== courseCtx.course.id)) {
     return {
       html: renderErrorState({
         title: 'Assessment not found',
@@ -196,21 +212,24 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
       requireEnrollment: true,
     });
     if (courseCtx.status === 'enrollment_required') {
-      return renderHierarchyGuard({
-        ctx: courseCtx,
-        userId,
-        targetUrlAfterEnroll: `/courses/${quiz.course.slug}/assessments/${targetQuizId}`,
-        navigate,
-      });
+      return (
+        renderHierarchyGuard({
+          ctx: courseCtx,
+          userId,
+          targetUrlAfterEnroll: `/courses/${quiz.course.slug}/assessments/${targetQuizId}`,
+          navigate,
+        }) || { html: '', bind() {} }
+      );
     }
   }
 
   const attempts = await getQuizAttempts(userId, quiz.id);
   const latestResult = lastResultByQuiz[quiz.id] || null;
 
+  const quizQuestions = quiz.questions || [];
   const displayQuestions = quiz.shuffleQuestions
-    ? quiz.questions.slice().sort((a, b) => a.id.localeCompare(b.id))
-    : quiz.questions;
+    ? quizQuestions.slice().sort((a, b) => a.id.localeCompare(b.id))
+    : quizQuestions;
 
   const activeCourse = courseCtx?.status === 'ok' ? courseCtx.course : quiz.course;
   const backToPhasePath =
@@ -220,7 +239,7 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
     (activeCourse?.slug ? `/courses/${activeCourse.slug}` : quiz.skill?.slug ? `/skills/${quiz.skill.slug}` : '/skills');
   const typeMeta = ASSESSMENT_TYPES.find((t) => t.key === quiz.quizType);
   const attemptsLeft = quiz.maxAttempts ? Math.max(0, quiz.maxAttempts - attempts.length) : null;
-  const isLocked = quiz.maxAttempts !== null && quiz.maxAttempts !== undefined && attemptsLeft <= 0;
+  const isLocked = quiz.maxAttempts !== null && quiz.maxAttempts !== undefined && attemptsLeft !== null && attemptsLeft <= 0;
   const initialAnswered = latestResult ? displayQuestions.length : 0;
 
   let quizSession = null;
@@ -246,11 +265,13 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
   const initialTimerMins = Math.floor(remainingSeconds / 60);
   const initialTimerSecs = String(remainingSeconds % 60).padStart(2, '0');
 
-  const breadcrumbItems = activeCourse
+  const breadcrumbItems = activeCourse?.slug
     ? [
         { label: 'Explore', href: '/explore' },
-        ...(activeCourse.skill ? [{ label: activeCourse.skill.title, href: `/skills/${activeCourse.skill.slug}` }] : []),
-        { label: activeCourse.title, href: `/courses/${activeCourse.slug}` },
+        ...(activeCourse.skill?.slug && activeCourse.skill?.title
+          ? [{ label: activeCourse.skill.title, href: `/skills/${activeCourse.skill.slug}` }]
+          : []),
+        { label: activeCourse.title || 'Course', href: `/courses/${activeCourse.slug}` },
         ...(backToPhasePath ? [{ label: 'Phase overview', href: backToPhasePath }] : []),
         { label: quiz.title },
       ]
@@ -410,13 +431,14 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindCourseOutlineDrawer(root);
-      const form = root.querySelector('#quiz-form');
-      const errEl = root.querySelector('#quiz-error');
-      const btn = root.querySelector('#quiz-submit-btn');
-      const rail = root.querySelector('#quiz-completion-rail');
-      const timerEl = root.querySelector('#quiz-timer-badge');
+      const form = /** @type {HTMLFormElement | null} */ (root.querySelector('#quiz-form'));
+      const errEl = /** @type {HTMLElement | null} */ (root.querySelector('#quiz-error'));
+      const btn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#quiz-submit-btn'));
+      const rail = /** @type {HTMLElement | null} */ (root.querySelector('#quiz-completion-rail'));
+      const timerEl = /** @type {HTMLElement | null} */ (root.querySelector('#quiz-timer-badge'));
 
       root.querySelector('#restart-quiz-session-btn')?.addEventListener('click', () => {
         restartRequestedByQuiz[quiz.id] = true;
@@ -424,12 +446,13 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
       });
 
       // Server/session-synchronized countdown timer for timed assessments
-      let timerId = null;
+      /** @type {number | undefined} */
+      let timerId;
       if (quiz.timeLimitMinutes && timerEl && !isLocked && !isSessionExpired) {
         let secondsLeft = remainingSeconds;
         timerId = window.setInterval(() => {
           if (!document.body.contains(timerEl)) {
-            window.clearInterval(timerId);
+            if (timerId !== undefined) window.clearInterval(timerId);
             return;
           }
           secondsLeft = Math.max(0, secondsLeft - 1);
@@ -438,15 +461,17 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
           timerEl.textContent = `Timer: ${m}:${s}`;
           if (secondsLeft <= 60) timerEl.style.color = 'var(--color-red)';
           if (secondsLeft === 0) {
-            window.clearInterval(timerId);
+            if (timerId !== undefined) window.clearInterval(timerId);
             showToast('Assessment time limit reached.', 'info');
           }
         }, 1000);
       }
 
       // Ordering button interactions (local DOM update so prior answers & timer stay intact)
+      /** @param {Element} container */
       const attachOrderControls = (container) => {
-        container.querySelectorAll('[data-move-order]').forEach((moveBtn) => {
+        container.querySelectorAll('[data-move-order]').forEach((node) => {
+          const moveBtn = /** @type {HTMLButtonElement} */ (node);
           moveBtn.addEventListener('click', () => {
             const qId = moveBtn.dataset.moveOrder;
             const pos = Number(moveBtn.dataset.pos);
@@ -481,14 +506,19 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
       attachOrderControls(root);
 
       const collectAnswers = () => {
+        /** @type {Record<string, unknown>} */
         const answersMap = {};
         let answered = 0;
+        /** @type {number[]} */
         const missingPrompts = [];
 
         displayQuestions.forEach((q, idx) => {
+          if (!form) return;
           const type = q.questionType || 'multiple_choice';
           if (type === 'multiple_select') {
-            const checked = [...form.querySelectorAll(`input[name="q_${q.id}"]:checked`)].map((c) => Number(c.value));
+            const checked = [...form.querySelectorAll(`input[name="q_${q.id}"]:checked`)].map((c) =>
+              Number(/** @type {HTMLInputElement} */ (c).value)
+            );
             if (checked.length > 0) {
               answersMap[q.id] = checked;
               answered += 1;
@@ -496,7 +526,9 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
               missingPrompts.push(idx + 1);
             }
           } else if (type === 'fill_blank' || isManualQuestionType(type)) {
-            const inp = form.querySelector(`[data-question-input="${q.id}"]`);
+            const inp = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (
+              form.querySelector(`[data-question-input="${q.id}"]`)
+            );
             const val = inp ? inp.value.trim() : '';
             if (val.length > 0) {
               answersMap[q.id] = val;
@@ -509,7 +541,9 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
             answersMap[q.id] = (activeOrderByQuizQuestion[key] || []).slice();
             answered += 1;
           } else {
-            const checked = form.querySelector(`input[name="q_${q.id}"]:checked`);
+            const checked = /** @type {HTMLInputElement | null} */ (
+              form.querySelector(`input[name="q_${q.id}"]:checked`)
+            );
             if (checked) {
               answersMap[q.id] = Number(checked.value);
               answered += 1;
@@ -523,8 +557,10 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
       };
 
       const updateSelectionFeedback = () => {
+        if (!form) return;
         displayQuestions.forEach((q) => {
-          form.querySelectorAll(`input[name="q_${q.id}"]`).forEach((input) => {
+          form.querySelectorAll(`input[name="q_${q.id}"]`).forEach((node) => {
+            const input = /** @type {HTMLInputElement} */ (node);
             input.closest('.quiz-option')?.classList.toggle('is-selected', input.checked);
           });
         });
@@ -533,10 +569,12 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
         if (rail) {
           const total = Math.max(1, displayQuestions.length);
           const pct = Math.round((answered / total) * 100);
-          rail.querySelector('[data-rail-fill]').style.width = `${pct}%`;
-          rail.querySelector('[data-rail-detail]').textContent = `${answered}/${displayQuestions.length}`;
+          const fillEl = /** @type {HTMLElement | null} */ (rail.querySelector('[data-rail-fill]'));
+          const detailEl = /** @type {HTMLElement | null} */ (rail.querySelector('[data-rail-detail]'));
+          if (fillEl) fillEl.style.width = `${pct}%`;
+          if (detailEl) detailEl.textContent = `${answered}/${displayQuestions.length}`;
         }
-        errEl.textContent = '';
+        if (errEl) errEl.textContent = '';
       };
 
       form?.addEventListener('change', updateSelectionFeedback);
@@ -545,17 +583,19 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (isLocked || isSessionExpired) return;
-        errEl.textContent = '';
+        if (errEl) errEl.textContent = '';
 
         const { answersMap, missingPrompts } = collectAnswers();
         if (missingPrompts.length > 0) {
-          errEl.textContent = `Please complete question(s) ${missingPrompts.join(', ')} before submitting.`;
+          if (errEl) errEl.textContent = `Please complete question(s) ${missingPrompts.join(', ')} before submitting.`;
           return;
         }
 
-        if (timerId) window.clearInterval(timerId);
-        btn.disabled = true;
-        btn.textContent = 'Grading…';
+        if (timerId !== undefined) window.clearInterval(timerId);
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Grading…';
+        }
         try {
           // Include unique attempt number in idempotency key so intentional retakes always record cleanly
           const retakeKey = buildIdempotencyKey('quiz-attempt', userId, quiz.id, attempts.length + 1, Date.now());
@@ -572,9 +612,11 @@ export async function renderQuizPage({ params, session, navigate, rerender }) {
           await rerender({ silent: true });
           window.scrollTo({ top: 0, behavior: 'smooth' });
         } catch (err) {
-          errEl.textContent = err.message || 'Unable to submit assessment.';
-          btn.disabled = false;
-          btn.textContent = 'Submit assessment';
+          if (errEl) errEl.textContent = err instanceof Error ? err.message : 'Unable to submit assessment.';
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Submit assessment';
+          }
         }
       });
     },

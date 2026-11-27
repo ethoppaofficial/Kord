@@ -1,6 +1,9 @@
 import { escapeHtml } from '../lib/formatters.js';
 import { icon, kordLogoSvg } from '../lib/icons.js';
 
+/**
+ * @param {{ session: import('../types/kord.d.ts').AuthSession | null; currentPath: string; contentHtml: string }} params
+ */
 export function renderAppLayout({ session, currentPath, contentHtml }) {
   const user = session?.user || null;
   const isAdmin = user?.role === 'admin';
@@ -31,6 +34,7 @@ export function renderAppLayout({ session, currentPath, contentHtml }) {
           { path: '/login', label: 'Sign in', icon: 'arrowRight' },
         ];
 
+  /** @param {{ path: string; exact?: boolean }} item */
   const isActive = (item) =>
     item.exact
       ? currentPath === item.path

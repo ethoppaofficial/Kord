@@ -1,5 +1,6 @@
 import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn} */
 export function buildDigitalMarketingCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-digital-marketing-foundations';
   const skillId = 'skill-digital-marketing-fundamentals';

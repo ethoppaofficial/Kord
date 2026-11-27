@@ -5,7 +5,14 @@ import { renderOpportunityCard, renderStatusBadge, renderEmptyState, renderProgr
 import { getSavedOpportunityIds, toggleSavedOpportunity } from './OpportunitiesPage.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderDashboardPage({ session }) {
+  if (!session?.user) {
+    return { html: '', bind() {} };
+  }
   const user = session.user;
   const [data, greetingInfo] = await Promise.all([
     getDashboardData(user.id),
@@ -244,34 +251,44 @@ export async function renderDashboardPage({ session }) {
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       const weeklyCallout = root.querySelector('#weekly-chart-callout');
-      root.querySelectorAll('[data-week-idx]').forEach((col) => {
+      root.querySelectorAll('[data-week-idx]').forEach((node) => {
+        const col = /** @type {HTMLElement} */ (node);
         const selectWeek = () => {
           const w = data.weeklyMinutes[Number(col.dataset.weekIdx)];
           if (!w) return;
           root.querySelectorAll('[data-week-idx]').forEach((c) => c.classList.toggle('is-active', c === col));
-          weeklyCallout.innerHTML = `<span>Week of <strong>${escapeHtml(w.label)}</strong></span><strong class="mono-num">${w.minutes} mins</strong>`;
+          if (weeklyCallout) {
+            weeklyCallout.innerHTML = `<span>Week of <strong>${escapeHtml(w.label)}</strong></span><strong class="mono-num">${w.minutes} mins</strong>`;
+          }
         };
         col.addEventListener('click', selectWeek);
         col.addEventListener('mouseenter', selectWeek);
       });
 
       const hourlyCallout = root.querySelector('#hourly-chart-callout');
-      root.querySelectorAll('[data-hour-idx]').forEach((col) => {
+      root.querySelectorAll('[data-hour-idx]').forEach((node) => {
+        const col = /** @type {HTMLElement} */ (node);
         const selectHour = () => {
           const b = data.hourlyDistribution[Number(col.dataset.hourIdx)];
           if (!b) return;
           root.querySelectorAll('[data-hour-idx]').forEach((c) => c.classList.toggle('is-active', c === col));
-          hourlyCallout.innerHTML = `<span>Window <strong>${escapeHtml(b.label)}</strong></span><strong class="mono-num">${b.minutes} mins</strong>`;
+          if (hourlyCallout) {
+            hourlyCallout.innerHTML = `<span>Window <strong>${escapeHtml(b.label)}</strong></span><strong class="mono-num">${b.minutes} mins</strong>`;
+          }
         };
         col.addEventListener('click', selectHour);
         col.addEventListener('mouseenter', selectHour);
       });
 
-      root.querySelectorAll('[data-save-opp]').forEach((btn) => {
+      root.querySelectorAll('[data-save-opp]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          const saved = toggleSavedOpportunity(user.id, btn.dataset.saveOpp);
+          const oppId = btn.dataset.saveOpp || '';
+          if (!oppId) return;
+          const saved = toggleSavedOpportunity(user.id, oppId);
           btn.textContent = saved ? 'Saved' : 'Save';
           btn.setAttribute('aria-pressed', String(saved));
           showToast(saved ? 'Opportunity saved to shortlist.' : 'Removed from shortlist.', 'info');

@@ -1,8 +1,10 @@
 import { escapeHtml } from '../lib/formatters.js';
 import { icon } from '../lib/icons.js';
 
+/** @type {HTMLDivElement | null} */
 let container = null;
 
+/** @returns {HTMLDivElement} */
 function ensureContainer() {
   if (container && document.body.contains(container)) return container;
   container = document.createElement('div');
@@ -13,6 +15,11 @@ function ensureContainer() {
   return container;
 }
 
+/**
+ * @param {string} message
+ * @param {'info' | 'success' | 'error'} [variant]
+ * @param {number} [duration]
+ */
 export function showToast(message, variant = 'info', duration = 3800) {
   const stack = ensureContainer();
   const el = document.createElement('div');

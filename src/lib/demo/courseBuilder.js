@@ -1,5 +1,6 @@
 import { DEFAULT_ALLOWED_MIME_TYPES } from '../validators.js';
 
+/** @param {string} url */
 function inferSourceFromUrl(url) {
   try {
     const host = new URL(url).hostname.replace(/^www\./, '');
@@ -9,6 +10,11 @@ function inferSourceFromUrl(url) {
   }
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').CoursePackageSpec} spec
+ * @param {import('../../types/kord.d.ts').CourseBuilderHelpers} helpers
+ * @returns {{ course: import('../../types/kord.d.ts').Course; challenge: import('../../types/kord.d.ts').Challenge }}
+ */
 export function buildCoursePackage(spec, { buildLesson, buildActivity, addAssessment }) {
   const courseId = `course-${spec.slug}`;
   const skillId = spec.skillId;
@@ -211,6 +217,10 @@ export function buildCoursePackage(spec, { buildLesson, buildActivity, addAssess
   return { course, challenge };
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').DomainCourseConfig} cfg
+ * @param {import('../../types/kord.d.ts').CourseBuilderHelpers} helpers
+ */
 export function buildDomainCourse(cfg, helpers) {
   const modules = cfg.modules.map((m, idx) => ({
     title: m.t,
@@ -229,7 +239,7 @@ export function buildDomainCourse(cfg, helpers) {
       example: { title: l.ex[0], body: l.ex[1] },
       stepsTitle: `Applying ${l.t}`,
       steps: l.steps,
-      caseStudy: { title: l.cs[0], scenario: l.cs[1], takeaway: l.cs[2] },
+      caseStudy: { title: l.cs[0], scenario: l.cs[1], takeaway: l.cs[2] || '' },
       callout: { variant: 'tip', title: l.tip[0], text: l.tip[1] },
       inlineCheck: { prompt: l.chk[0], options: l.chk[1], correctIndex: l.chk[2], explanation: l.chk[3] },
       summary: l.sum,
@@ -244,6 +254,10 @@ export function buildDomainCourse(cfg, helpers) {
     },
   }));
 
+  /**
+   * @param {import('../../types/kord.d.ts').DomainQuestionTuple} q
+   * @param {number} i
+   */
   const mapQ = (q, i) => ({
     prompt: q[0],
     options: q[1],
@@ -293,7 +307,11 @@ export function buildDomainCourse(cfg, helpers) {
         title: cfg.ch.title,
         brief: cfg.ch.brief,
         instructions: cfg.ch.instructions,
-        expectedDeliverables: cfg.ch.deliverables,
+        expectedDeliverables: Array.isArray(cfg.ch.deliverables)
+          ? cfg.ch.deliverables
+          : cfg.ch.deliverables
+            ? [cfg.ch.deliverables]
+            : [],
         allowedEvidenceTypes: cfg.ch.evidenceTypes || ['written', 'file', 'project_url', 'screenshot'],
         allowedMimeTypes: cfg.ch.mimeTypes,
         submissionFormat: cfg.ch.format,

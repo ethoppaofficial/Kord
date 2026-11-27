@@ -2,6 +2,10 @@ import { supabase, isDemoMode } from '../supabase.js';
 import { PROGRESSION_RANK } from '../constants.js';
 import { getDemoState, updateDemoState } from '../demo/demoStore.js';
 
+/**
+ * @param {string} userId
+ * @returns {Promise<import('../../types/kord.d.ts').UserSkill[]>}
+ */
 export async function getUserSkills(userId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -9,7 +13,7 @@ export async function getUserSkills(userId) {
       .select('*')
       .eq('user_id', userId);
     if (error) throw error;
-    return data.map((row) => ({
+    return (data || []).map((row) => ({
       id: row.id,
       userId: row.user_id,
       skillId: row.skill_id,
@@ -21,6 +25,10 @@ export async function getUserSkills(userId) {
   return getDemoState().userSkills.filter((us) => us.userId === userId);
 }
 
+/**
+ * @param {string} userId
+ * @param {string} skillId
+ */
 export async function declareUserSkill(userId, skillId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.rpc('declare_user_skill', { p_skill_id: skillId });
@@ -40,6 +48,10 @@ export async function declareUserSkill(userId, skillId) {
  * Only upgrades upward (never allows arbitrary jumps by learners;
  * learners reach Practising via lesson/activity/quiz, Demonstrated via practical course completion or approved challenge,
  * Verified when all published courses for a skill are completed with approved practical deliverables).
+ *
+ * @param {string} userId
+ * @param {string} skillId
+ * @param {import('../../types/kord.d.ts').SkillLevel} targetLevel
  */
 export async function upgradeSkillLevel(userId, skillId, targetLevel) {
   if (!isDemoMode && supabase) {

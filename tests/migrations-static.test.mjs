@@ -7,7 +7,13 @@ const SUPABASE_DIR = path.resolve('supabase');
 const MIGRATIONS_DIR = path.join(SUPABASE_DIR, 'migrations');
 const SRC_DIR = path.resolve('src');
 
+/**
+ * @param {string} dir
+ * @param {string} [extFilter]
+ * @returns {string[]}
+ */
 function collectFiles(dir, extFilter) {
+  /** @type {string[]} */
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);

@@ -6,10 +6,12 @@ const RESOURCES = [
   { title: 'Service Writing & Clear Communication Standards', source: 'gov.uk', url: 'https://www.gov.uk/guidance/content-design', resourceType: 'Documentation' },
 ];
 
-function lessonSpec(t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) {
-  return { t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} in everyday scenarios`], h, exp, def, ex, steps, cs, tip, chk, sum, tk };
-}
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
+const lessonSpec = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) => ({
+  t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} in everyday scenarios`], h, exp, def, ex, steps, cs, tip, chk, sum, tk,
+});
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const COMM_A_SPECS = [
   {
     code: 'ec',
@@ -813,4 +815,5 @@ const COMM_A_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const COMM_A_BUILDERS = COMM_A_SPECS.map((cfg) => (helpers) => buildDomainCourse(cfg, helpers));

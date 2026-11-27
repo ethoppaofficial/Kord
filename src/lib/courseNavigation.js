@@ -13,8 +13,27 @@ import { renderErrorState } from '../components/Common.js';
 import { showToast } from '../components/Toast.js';
 
 /**
+ * @typedef {{
+ *   lesson: import('../types/kord.d.ts').Lesson;
+ *   phase: import('../types/kord.d.ts').Phase;
+ *   phaseIdx: number;
+ *   lessonIdx: number;
+ *   globalIdx: number;
+ *   url: string;
+ * }} FlattenedLessonEntry
+ */
+
+/**
  * Resolves and validates Course -> Phase -> Lesson hierarchy using explicit numeric position ordering.
  * Enforces explicit enrollment for phase/lesson/assessment deep links and verifies parent-child ownership.
+ * @param {{
+ *   courseSlug: string;
+ *   phaseId?: string | null;
+ *   lessonId?: string | null;
+ *   userId?: string | null;
+ *   requireEnrollment?: boolean;
+ *   includeDrafts?: boolean;
+ * }} params
  */
 export async function resolveCourseHierarchy({
   courseSlug,
@@ -26,7 +45,7 @@ export async function resolveCourseHierarchy({
 }) {
   const course = await getCourseBySlug(courseSlug, { includeDrafts });
   if (!course) {
-    return { status: 'not_found' };
+    return { status: /** @type {const} */ ('not_found') };
   }
 
   const [enrollments, lessonProgress, activityProgress, submissions] = await Promise.all([
@@ -38,7 +57,7 @@ export async function resolveCourseHierarchy({
 
   const enrollment = enrollments.find((e) => e.courseId === course.id) || null;
   if (requireEnrollment && !enrollment) {
-    return { status: 'enrollment_required', course };
+    return { status: /** @type {const} */ ('enrollment_required'), course };
   }
 
   const assessments = course.assessments || [];
@@ -61,7 +80,10 @@ export async function resolveCourseHierarchy({
         .sort((a, b) => Number(a.position || 0) - Number(b.position || 0)),
     }));
 
-  const normalizedCourse = { ...course, phases: orderedPhases };
+  const normalizedCourse = /** @type {import('../types/kord.d.ts').Course} */ ({
+    ...course,
+    phases: orderedPhases,
+  });
   const courseProgress = computeCourseProgress({
     course: normalizedCourse,
     lessonProgress,
@@ -77,6 +99,7 @@ export async function resolveCourseHierarchy({
   const progressByActivity = new Map(activityProgress.map((ap) => [ap.activityId, ap]));
 
   // Flattened ordered lesson index across all phases (respecting explicit position order)
+  /** @type {FlattenedLessonEntry[]} */
   const flattenedLessons = [];
   orderedPhases.forEach((p, phaseIdx) => {
     p.lessons.forEach((l, lessonIdx) => {
@@ -99,7 +122,12 @@ export async function resolveCourseHierarchy({
   if (phaseId !== null) {
     phaseIdx = orderedPhases.findIndex((p) => p.id === phaseId);
     if (phaseIdx < 0) {
-      return { status: 'invalid_phase', course: normalizedCourse, enrollment, courseProgress };
+      return {
+        status: /** @type {const} */ ('invalid_phase'),
+        course: normalizedCourse,
+        enrollment,
+        courseProgress,
+      };
     }
     phase = orderedPhases[phaseIdx];
     prevPhase = phaseIdx > 0 ? orderedPhases[phaseIdx - 1] : null;
@@ -113,12 +141,17 @@ export async function resolveCourseHierarchy({
 
   if (lessonId !== null) {
     if (!phase) {
-      return { status: 'invalid_phase', course: normalizedCourse, enrollment, courseProgress };
+      return {
+        status: /** @type {const} */ ('invalid_phase'),
+        course: normalizedCourse,
+        enrollment,
+        courseProgress,
+      };
     }
     const belongsToPhase = phase.lessons.some((l) => l.id === lessonId);
     if (!belongsToPhase) {
       return {
-        status: 'invalid_lesson',
+        status: /** @type {const} */ ('invalid_lesson'),
         course: normalizedCourse,
         phase,
         enrollment,
@@ -136,7 +169,7 @@ export async function resolveCourseHierarchy({
   }
 
   return {
-    status: 'ok',
+    status: /** @type {const} */ ('ok'),
     course: normalizedCourse,
     orderedPhases,
     flattenedLessons,
@@ -161,6 +194,15 @@ export async function resolveCourseHierarchy({
   };
 }
 
+/**
+ * @param {{
+ *   ctx: Awaited<ReturnType<typeof resolveCourseHierarchy>>;
+ *   userId: string;
+ *   targetUrlAfterEnroll?: string;
+ *   navigate: (path: string) => Promise<void>;
+ * }} params
+ * @returns {import('../types/kord.d.ts').PageView | null}
+ */
 export function renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll, navigate }) {
   if (ctx.status === 'not_found') {
     return {
@@ -174,7 +216,7 @@ export function renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll, naviga
     };
   }
 
-  if (ctx.status === 'enrollment_required') {
+  if (ctx.status === 'enrollment_required' && ctx.course) {
     const course = ctx.course;
     return {
       html: `
@@ -192,10 +234,11 @@ export function renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll, naviga
           </div>
         </div>
       `,
+      /** @param {HTMLElement} root */
       bind(root) {
         root.querySelector('#guard-enroll-btn')?.addEventListener('click', async (e) => {
-          const btn = e.currentTarget;
-          if (btn.disabled) return;
+          const btn = /** @type {HTMLButtonElement | null} */ (e.currentTarget);
+          if (!btn || btn.disabled) return;
           btn.disabled = true;
           btn.textContent = 'Enrolling…';
           try {
@@ -205,14 +248,14 @@ export function renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll, naviga
           } catch (err) {
             btn.disabled = false;
             btn.textContent = 'Enroll in course & continue';
-            showToast(err?.message || 'Unable to enroll right now.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to enroll right now.', 'error');
           }
         });
       },
     };
   }
 
-  if (ctx.status === 'invalid_phase') {
+  if (ctx.status === 'invalid_phase' && ctx.course) {
     return {
       html:
         renderErrorState({
@@ -224,7 +267,7 @@ export function renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll, naviga
     };
   }
 
-  if (ctx.status === 'invalid_lesson') {
+  if (ctx.status === 'invalid_lesson' && ctx.course && ctx.phase) {
     return {
       html:
         renderErrorState({

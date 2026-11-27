@@ -23,6 +23,7 @@ registerSessionCleanup(() => {
   auditReasonNote = '';
 });
 
+/** @param {unknown} obj */
 function formatAuditDiff(obj) {
   if (!obj || typeof obj !== 'object') return '—';
   const entries = Object.entries(obj);
@@ -32,6 +33,10 @@ function formatAuditDiff(obj) {
     .join(' · ');
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderAdminGovernancePage({ currentPath, session, rerender }) {
   const [users, auditLogs] = await Promise.all([
     adminListUsers(),
@@ -228,55 +233,60 @@ export async function renderAdminGovernancePage({ currentPath, session, rerender
 
   return {
     html: renderAdminLayout({ currentPath, innerHtml }),
+    /** @param {HTMLElement} root */
     bind(root) {
-      root.querySelectorAll('[data-gov-tab]').forEach((btn) => {
+      root.querySelectorAll('[data-gov-tab]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          activeGovTab = btn.dataset.govTab;
+          activeGovTab = btn.dataset.govTab || 'users';
           rerender({ silent: true });
         });
       });
 
       root.querySelector('#gov-user-search')?.addEventListener('input', (e) => {
-        userSearchQuery = e.target.value;
+        userSearchQuery = /** @type {HTMLInputElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
       root.querySelector('#gov-status-filter')?.addEventListener('change', (e) => {
-        userStatusFilter = e.target.value;
+        userStatusFilter = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
       root.querySelector('#gov-reason-note')?.addEventListener('input', (e) => {
-        auditReasonNote = e.target.value;
+        auditReasonNote = /** @type {HTMLInputElement} */ (e.target).value;
       });
 
       root.querySelector('#audit-table-filter')?.addEventListener('change', (e) => {
-        auditTableFilter = e.target.value;
+        auditTableFilter = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-set-user-status]').forEach((btn) => {
+      root.querySelectorAll('[data-set-user-status]').forEach((node) => {
+        const btn = /** @type {HTMLButtonElement} */ (node);
         btn.addEventListener('click', async () => {
           if (btn.disabled) return;
-          const targetUserId = btn.dataset.setUserStatus;
-          const newStatus = btn.dataset.nextStatus;
+          const targetUserId = btn.dataset.setUserStatus || '';
+          const nextStatus = /** @type {import('../../types/kord.d.ts').AccountStatus} */ (
+            btn.dataset.nextStatus === 'suspended' ? 'suspended' : 'active'
+          );
           btn.disabled = true;
           try {
             await adminSetAccountStatus({
               targetUserId,
-              newStatus,
+              newStatus: nextStatus,
               reason: auditReasonNote,
               actorId: session?.user?.id || null,
             });
             auditReasonNote = '';
             showToast(
-              newStatus === 'suspended' ? 'Account suspended and logged.' : 'Account reactivated and logged.',
+              nextStatus === 'suspended' ? 'Account suspended and logged.' : 'Account reactivated and logged.',
               'success'
             );
             rerender({ silent: true });
           } catch (err) {
             btn.disabled = false;
-            showToast(err?.message || 'Unable to update account status.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to update account status.', 'error');
           }
         });
       });

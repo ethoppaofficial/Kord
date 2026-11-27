@@ -9,6 +9,8 @@ import {
   createAuthUser,
 } from './helpers/pgliteDb.mjs';
 
+/** @typedef {import('./helpers/pgliteDb.mjs').PGliteInstance} PGliteInstance */
+
 const SEEDED_FRONTEND_COURSE_SLUG = 'frontend-development-foundations';
 const SEEDED_GRAPHICS_COURSE_SLUG = 'graphic-design-foundations';
 
@@ -18,6 +20,7 @@ async function setupMigratedDb() {
   return db;
 }
 
+/** @param {PGliteInstance} db */
 async function seedAdminAndLearners(db) {
   const admin = await createAuthUser(db, {
     email: 'ethoppaofficial@gmail.com',
@@ -348,6 +351,7 @@ test('PostgreSQL Progression: quizzes never grant demonstrated, 0-challenge cour
     const questions = (
       await db.query(`select id, question_type, correct_index, answer_config from public.questions where quiz_id = $1::uuid`, [qz.id])
     ).rows;
+    /** @type {Record<string, unknown>} */
     const answers = {};
     for (const q of questions) {
       if (q.question_type === 'multiple_select') answers[q.id] = q.answer_config.correctIndices;
@@ -377,7 +381,8 @@ test('PostgreSQL Progression: quizzes never grant demonstrated, 0-challenge cour
 
   // Submit capstone and approve as admin -> completed_verified & skill = 'verified'
   const ch = (await db.query(`select id, rubric from public.challenges where course_id = $1::uuid`, [course.id])).rows[0];
-  let subId;
+  /** @type {string} */
+  let subId = '';
   await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
     const s = await tx.query(
       `select id from public.submit_challenge_evidence($1::uuid, 'https://example.com/app', null, null, null, '', 'Built accessible semantic UI with responsive layout checks.', 'cap-1')`,
@@ -386,7 +391,9 @@ test('PostgreSQL Progression: quizzes never grant demonstrated, 0-challenge cour
     subId = s.rows[0].id;
   });
 
-  const maxRubric = Object.fromEntries(ch.rubric.map((r) => [r.id, r.maxPoints]));
+  const maxRubric = Object.fromEntries(
+    ch.rubric.map((/** @type {{ id: string; maxPoints: number }} */ r) => [r.id, r.maxPoints])
+  );
   await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
     await tx.query(
       `select public.review_submission($1::uuid, 'approved', $2::jsonb, 20, 20, 'Verified responsive UI deliverable')`,
@@ -405,7 +412,9 @@ test('PostgreSQL Progression: quizzes never grant demonstrated, 0-challenge cour
   assert.equal(us.level, 'verified');
 
   // Re-opening submission as needs_revision triggers DOWNWARD recalculation!
-  const zeroRubric = Object.fromEntries(ch.rubric.map((r) => [r.id, 1]));
+  const zeroRubric = Object.fromEntries(
+    ch.rubric.map((/** @type {{ id: string }} */ r) => [r.id, 1])
+  );
   await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
     await tx.query(
       `select public.review_submission($1::uuid, 'needs_revision', $2::jsonb, 4, 20, 'Needs keyboard focus trap fix')`,
@@ -573,6 +582,7 @@ test('PostgreSQL Quizzes: all 10 question formats, validation, answer hiding, ma
   );
 
   // Insert all 7 auto-graded question formats onto quizA + verify delete works
+  /** @type {Record<string, string>} */
   const createdIds = {};
   await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
     const specs = [
@@ -667,7 +677,7 @@ test('PostgreSQL Quizzes: all 10 question formats, validation, answer hiding, ma
     assert.equal(payload.percentage, 100);
     assert.equal(payload.passed, true);
     assert.equal(payload.solutionsReleased, true);
-    assert.ok(payload.results.every((r) => r.explanation === 'Explained rationale'));
+    assert.ok(payload.results.every((/** @type {{ explanation: string | null }} */ r) => r.explanation === 'Explained rationale'));
   });
 
   // Attempt 3 exceeds max_attempts = 2
@@ -680,6 +690,7 @@ test('PostgreSQL Quizzes: all 10 question formats, validation, answer hiding, ma
   );
 
   // Manual formats (short_answer, long_form, practical_submission) + admin_grade_attempt validation
+  /** @type {Record<string, string>} */
   const manualIds = {};
   await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
     for (const qtype of ['short_answer', 'long_form', 'practical_submission']) {
@@ -691,7 +702,8 @@ test('PostgreSQL Quizzes: all 10 question formats, validation, answer hiding, ma
     }
   });
 
-  let manualAttemptId;
+  /** @type {string} */
+  let manualAttemptId = '';
   await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
     const r = await tx.query(
       `select public.submit_quiz($1::uuid, $2::jsonb, 'manual-1') as res`,
@@ -886,7 +898,8 @@ test('PostgreSQL Submissions & Storage: folder/extension/MIME/size/ownership che
   );
 
   // Valid submission succeeds & blocks deletion of referenced file while allowing orphan deletion
-  let subId;
+  /** @type {string} */
+  let subId = '';
   await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
     const s = await tx.query(
       `select id, rubric_max from public.submit_challenge_evidence($1::uuid, 'https://example.com/live', null, $2, 'valid-shot.png', '', 'Uploaded valid PNG screenshot under 2MB.', 'valid-sub-1')`,
@@ -969,8 +982,8 @@ test('PostgreSQL get_dashboard() SQL Contract: all 7 test cases + cross-user & a
     assert.deepEqual(d.skillLevels, []);
     assert.equal(d.weeklyMinutes.length, 9);
     assert.equal(d.hourlyDistribution.length, 6);
-    assert.ok(d.weeklyMinutes.every((w) => w.minutes === 0));
-    assert.ok(d.hourlyDistribution.every((h) => h.minutes === 0));
+    assert.ok(d.weeklyMinutes.every((/** @type {{ minutes: number }} */ w) => w.minutes === 0));
+    assert.ok(d.hourlyDistribution.every((/** @type {{ minutes: number }} */ h) => h.minutes === 0));
   });
 
   // Case 2: Learner with 1 enrolled course
@@ -1027,7 +1040,9 @@ test('PostgreSQL get_dashboard() SQL Contract: all 7 test cases + cross-user & a
   const q1Questions = (
     await db.query(`select id, question_type, correct_index, answer_config from public.questions where quiz_id = $1::uuid`, [q1.id])
   ).rows;
+  /** @type {Record<string, unknown>} */
   const wrongAns = {};
+  /** @type {Record<string, unknown>} */
   const rightAns = {};
   for (const q of q1Questions) {
     wrongAns[q.id] = q.correct_index === 0 ? 1 : 0;
@@ -1049,7 +1064,7 @@ test('PostgreSQL get_dashboard() SQL Contract: all 7 test cases + cross-user & a
     assert.equal(d.learning.minutesLearned, 30);
     assert.equal(d.enrolledCourses.length, 3);
     assert.equal(d.weeklyMinutes[8].minutes, 30);
-    const bucket0912 = d.hourlyDistribution.find((b) => b.start === 9);
+    const bucket0912 = d.hourlyDistribution.find((/** @type {{ start: number }} */ b) => b.start === 9);
     assert.equal(bucket0912.minutes, 30);
     assert.equal(d.understanding.totalAttempts, 2);
     assert.equal(d.understanding.passedQuizzes, 1);

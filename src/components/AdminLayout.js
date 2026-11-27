@@ -1,5 +1,8 @@
 import { escapeHtml } from '../lib/formatters.js';
 
+/**
+ * @param {{ currentPath: string; innerHtml: string }} params
+ */
 export function renderAdminLayout({ currentPath, innerHtml }) {
   const tabs = [
     { path: '/admin', label: 'Overview', exact: true },

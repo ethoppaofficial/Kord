@@ -6,10 +6,12 @@
 
 const MANUAL_TYPES = new Set(['short_answer', 'long_form', 'practical_submission']);
 
+/** @param {string} type */
 export function isManualQuestionType(type) {
   return MANUAL_TYPES.has(type);
 }
 
+/** @param {unknown} val */
 function normalizeText(val) {
   return String(val ?? '')
     .trim()
@@ -17,11 +19,23 @@ function normalizeText(val) {
     .replace(/\s+/g, ' ');
 }
 
+/**
+ * @param {unknown[]} a
+ * @param {unknown[]} b
+ */
 function arraysEqual(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
   return a.every((v, i) => v === b[i]);
 }
 
+/**
+ * @param {{
+ *   quiz: import('../types/kord.d.ts').Quiz;
+ *   questions: import('../types/kord.d.ts').QuizQuestion[];
+ *   answerKeysByQuestionId: Record<string, import('../types/kord.d.ts').QuizAnswerKey>;
+ *   answersMap: Record<string, unknown>;
+ * }} params
+ */
 export function gradeAssessmentAttempt({ quiz, questions, answerKeysByQuestionId, answersMap }) {
   let score = 0;
   let total = 0;

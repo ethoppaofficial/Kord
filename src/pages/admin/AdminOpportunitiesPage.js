@@ -4,6 +4,10 @@ import { escapeHtml } from '../../lib/formatters.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderAdminOpportunitiesPage({ currentPath, rerender }) {
   const [opportunities, skills] = await Promise.all([listOpportunities(), listSkills()]);
 
@@ -162,29 +166,32 @@ export async function renderAdminOpportunitiesPage({ currentPath, rerender }) {
 
   return {
     html: renderAdminLayout({ currentPath, innerHtml }),
+    /** @param {HTMLElement} root */
     bind(root) {
-      root.querySelectorAll('[data-del-opp]').forEach((btn) => {
+      root.querySelectorAll('[data-del-opp]').forEach((node) => {
+        const btn = /** @type {HTMLButtonElement} */ (node);
         btn.addEventListener('click', async () => {
           if (btn.disabled) return;
           btn.disabled = true;
           try {
-            await adminDeleteOpportunity(btn.dataset.delOpp);
+            await adminDeleteOpportunity(btn.dataset.delOpp || '');
             showToast('Opportunity removed.', 'success');
             rerender({ silent: true });
           } catch (err) {
             btn.disabled = false;
-            showToast(err?.message || 'Unable to remove opportunity.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to remove opportunity.', 'error');
           }
         });
       });
 
       root.querySelector('#admin-opp-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const form = e.currentTarget;
-        const submitBtn = form.querySelector('button[type="submit"]');
+        const form = /** @type {HTMLFormElement} */ (e.currentTarget);
+        const submitBtn = /** @type {HTMLButtonElement | null} */ (form.querySelector('button[type="submit"]'));
         if (submitBtn?.disabled) return;
         if (submitBtn) submitBtn.disabled = true;
 
+        /** @param {FormDataEntryValue | null} val */
         const splitLines = (val) =>
           String(val || '')
             .split('\n')
@@ -237,7 +244,7 @@ export async function renderAdminOpportunitiesPage({ currentPath, rerender }) {
           rerender({ silent: true });
         } catch (err) {
           if (submitBtn) submitBtn.disabled = false;
-          showToast(err?.message || 'Unable to publish opportunity.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to publish opportunity.', 'error');
         }
       });
     },

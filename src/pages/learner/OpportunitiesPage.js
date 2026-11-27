@@ -5,10 +5,15 @@ import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderOpportunityCard, renderEmptyState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/** @param {string | null | undefined} userId */
 function getStorageKey(userId) {
   return `kord_saved_opps_v2_${userId || 'guest'}`;
 }
 
+/**
+ * @param {string | null | undefined} userId
+ * @returns {Set<string>}
+ */
 export function getSavedOpportunityIds(userId) {
   try {
     const raw = localStorage.getItem(getStorageKey(userId));
@@ -18,6 +23,11 @@ export function getSavedOpportunityIds(userId) {
   }
 }
 
+/**
+ * @param {string | null | undefined} userId
+ * @param {string} oppId
+ * @returns {boolean}
+ */
 export function toggleSavedOpportunity(userId, oppId) {
   const set = getSavedOpportunityIds(userId);
   let saved;
@@ -52,6 +62,10 @@ registerSessionCleanup(() => {
   };
 });
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderOpportunitiesPage({ session }) {
   const userId = session?.user?.id || null;
   const opportunities = await listRankedOpportunities(userId);
@@ -68,6 +82,7 @@ export async function renderOpportunitiesPage({ session }) {
     });
   }
 
+  /** @param {import('../../types/kord.d.ts').Opportunity[]} list */
   function renderList(list) {
     if (list.length === 0) {
       return renderEmptyState({
@@ -122,14 +137,18 @@ export async function renderOpportunitiesPage({ session }) {
         ${renderList(initialList)}
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       const resultsEl = root.querySelector('#opp-results');
       const countEl = root.querySelector('#opp-count');
 
       const bindCardActions = () => {
-        root.querySelectorAll('[data-save-opp]').forEach((btn) => {
+        root.querySelectorAll('[data-save-opp]').forEach((node) => {
+          const btn = /** @type {HTMLElement} */ (node);
           btn.addEventListener('click', () => {
-            const saved = toggleSavedOpportunity(userId, btn.dataset.saveOpp);
+            const oppId = btn.dataset.saveOpp || '';
+            if (!oppId) return;
+            const saved = toggleSavedOpportunity(userId, oppId);
             btn.textContent = saved ? 'Saved' : 'Save';
             btn.setAttribute('aria-pressed', String(saved));
             showToast(saved ? 'Opportunity saved to shortlist.' : 'Removed from shortlist.', 'info');
@@ -140,29 +159,32 @@ export async function renderOpportunitiesPage({ session }) {
 
       const refresh = () => {
         const list = getFiltered();
-        countEl.textContent = `Showing ${list.length} of ${opportunities.length} listings`;
-        resultsEl.innerHTML = renderList(list);
+        if (countEl) countEl.textContent = `Showing ${list.length} of ${opportunities.length} listings`;
+        if (resultsEl) resultsEl.innerHTML = renderList(list);
         bindCardActions();
       };
 
       bindCardActions();
 
       root.querySelector('#opp-search')?.addEventListener('input', (e) => {
-        oppFilters.search = e.target.value;
+        const target = /** @type {HTMLInputElement | null} */ (e.target);
+        oppFilters.search = target?.value || '';
         refresh();
       });
 
-      root.querySelectorAll('[data-opp-type]').forEach((btn) => {
+      root.querySelectorAll('[data-opp-type]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          oppFilters.type = btn.dataset.oppType;
+          oppFilters.type = btn.dataset.oppType || 'All';
           root.querySelectorAll('[data-opp-type]').forEach((b) => b.classList.toggle('is-active', b === btn));
           refresh();
         });
       });
 
-      root.querySelectorAll('[data-opp-mode]').forEach((btn) => {
+      root.querySelectorAll('[data-opp-mode]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          oppFilters.workMode = btn.dataset.oppMode;
+          oppFilters.workMode = btn.dataset.oppMode || 'All';
           root.querySelectorAll('[data-opp-mode]').forEach((b) => b.classList.toggle('is-active', b === btn));
           refresh();
         });
@@ -170,10 +192,12 @@ export async function renderOpportunitiesPage({ session }) {
 
       root.querySelector('#opp-saved-toggle')?.addEventListener('click', (e) => {
         oppFilters.savedOnly = !oppFilters.savedOnly;
-        const btn = e.currentTarget;
-        btn.classList.toggle('btn-primary', oppFilters.savedOnly);
-        btn.classList.toggle('btn-secondary', !oppFilters.savedOnly);
-        btn.setAttribute('aria-pressed', String(oppFilters.savedOnly));
+        const btn = /** @type {HTMLElement | null} */ (e.currentTarget);
+        if (btn) {
+          btn.classList.toggle('btn-primary', oppFilters.savedOnly);
+          btn.classList.toggle('btn-secondary', !oppFilters.savedOnly);
+          btn.setAttribute('aria-pressed', String(oppFilters.savedOnly));
+        }
         refresh();
       });
     },

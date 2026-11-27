@@ -4,6 +4,7 @@ import { renderProgressRail, renderStatusBadge } from './Common.js';
 
 /**
  * Renders top breadcrumb bar with optional collapsible Course Outline Drawer trigger.
+ * @param {{ items?: Array<{ label: string; href?: string | null }>; showOutlineToggle?: boolean }} params
  */
 export function renderCourseBreadcrumbs({ items = [], showOutlineToggle = true }) {
   return `
@@ -34,6 +35,17 @@ export function renderCourseBreadcrumbs({ items = [], showOutlineToggle = true }
 /**
  * Renders the collapsible Course Outline Drawer listing ordered phases and lessons
  * without dumping lesson body content.
+ * @param {{
+ *   course: import('../types/kord.d.ts').Course;
+ *   orderedPhases?: import('../types/kord.d.ts').Phase[];
+ *   phaseProgressById?: Record<string, import('../types/kord.d.ts').PhaseProgressSummary>;
+ *   progressByLesson?: Map<string | undefined, import('../types/kord.d.ts').LessonProgressEntry>;
+ *   assessments?: import('../types/kord.d.ts').Quiz[];
+ *   challenges?: import('../types/kord.d.ts').Challenge[];
+ *   activePhaseId?: string | null;
+ *   activeLessonId?: string | null;
+ *   courseProgress?: import('../types/kord.d.ts').CourseProgressSummary | null;
+ * }} params
  */
 export function renderCourseOutlineDrawer({
   course,
@@ -146,13 +158,15 @@ export function renderCourseOutlineDrawer({
   `;
 }
 
+/** @param {HTMLElement} root */
 export function bindCourseOutlineDrawer(root) {
-  const openBtn = root.querySelector('#open-course-outline-btn');
-  const backdrop = root.querySelector('#course-outline-backdrop');
-  const closeBtn = root.querySelector('#close-course-outline-btn');
+  const openBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#open-course-outline-btn'));
+  const backdrop = /** @type {HTMLElement | null} */ (root.querySelector('#course-outline-backdrop'));
+  const closeBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#close-course-outline-btn'));
 
   if (!openBtn || !backdrop) return;
 
+  /** @param {boolean} isOpen */
   const setOpen = (isOpen) => {
     backdrop.hidden = !isOpen;
     openBtn.setAttribute('aria-expanded', String(isOpen));
@@ -167,6 +181,7 @@ export function bindCourseOutlineDrawer(root) {
     if (e.target === backdrop) setOpen(false);
   });
 
+  /** @param {KeyboardEvent} e */
   const onKeyDown = (e) => {
     if (!document.body.contains(backdrop)) {
       document.removeEventListener('keydown', onKeyDown);

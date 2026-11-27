@@ -6,10 +6,12 @@ const RESOURCES = [
   { title: 'Harvard Business Review Strategy & Negotiation', source: 'hbr.org', url: 'https://hbr.org/', resourceType: 'Articles' },
 ];
 
-function L(t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) {
-  return { t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} practically`], h, exp, def, ex, steps, cs, tip, chk, sum, tk };
-}
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
+const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) => ({
+  t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} practically`], h, exp, def, ex, steps, cs, tip, chk, sum, tk,
+});
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const SPECS = [
   {
     code: 'pj',
@@ -796,4 +798,5 @@ const SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const BUSINESS_E_BUILDERS = SPECS.map((spec) => (helpers) => buildDomainCourse(spec, helpers));

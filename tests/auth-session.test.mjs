@@ -32,10 +32,17 @@ const ADMIN_PASS = 'admin@2026';
 const LEARNER_EMAIL = 'maya.lin@example.com';
 const LEARNER_PASS = 'password123';
 
+/** @typedef {import('../src/types/kord.d.ts').AppSupabaseClient} AppSupabaseClient */
+/** @typedef {import('../src/types/kord.d.ts').AuthService} AuthService */
+/** @typedef {import('../src/types/kord.d.ts').SupabaseAuthSessionLike} SupabaseAuthSessionLike */
+
+/** @type {ReturnType<typeof installDomHarness> | null} */
 let harness = null;
+/** @type {Array<ReturnType<typeof mountApp>>} */
 const mountedApps = [];
 
 function createIsolatedSessionStorage() {
+  /** @type {Map<string, string>} */
   const map = new Map();
   return {
     get length() {
@@ -44,18 +51,25 @@ function createIsolatedSessionStorage() {
     clear() {
       map.clear();
     },
+    /** @param {string} key */
     getItem(key) {
-      return map.has(key) ? map.get(key) : null;
+      return map.get(key) ?? null;
     },
+    /**
+     * @param {string} key
+     * @param {string} value
+     */
     setItem(key, value) {
       map.set(String(key), String(value));
     },
+    /** @param {string} key */
     removeItem(key) {
       map.delete(key);
     },
   };
 }
 
+/** @param {ReturnType<typeof createIsolatedSessionStorage>} tabStorage */
 function createTabAuthService(tabStorage) {
   return createAuthService({
     isDemo: true,
@@ -66,6 +80,7 @@ function createTabAuthService(tabStorage) {
       getDemoCurrentUserId() {
         return tabStorage.getItem('kord_current_user_id') || null;
       },
+      /** @param {string | null} userId */
       setDemoCurrentUserId(userId) {
         if (userId) tabStorage.setItem('kord_current_user_id', String(userId));
         else tabStorage.removeItem('kord_current_user_id');
@@ -80,9 +95,11 @@ function resetLocation(pathname = '/') {
   window.location.hash = '';
 }
 
+/** @param {{ auth?: AuthService }} [options] */
 function mountTestApp(options = {}) {
+  assert.ok(harness, 'DOM harness installed');
   const rootEl = harness.createRoot();
-  const ctrl = mountApp(rootEl, options);
+  const ctrl = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootEl)), options);
   mountedApps.push(ctrl);
   return { rootEl, ctrl };
 }
@@ -102,7 +119,7 @@ beforeEach(() => {
 
 afterEach(() => {
   while (mountedApps.length > 0) {
-    mountedApps.pop().destroy();
+    mountedApps.pop()?.destroy();
   }
   harness?.cleanup();
   harness = null;
@@ -114,9 +131,11 @@ test('Scenario 1: Administrator logs in normally and accesses Admin Console only
   await ctrl.ready;
 
   const form = rootEl.querySelector('#login-form');
-  assert.ok(form, 'Login form rendered');
-  rootEl.querySelector('#login-email').value = ADMIN_EMAIL;
-  rootEl.querySelector('#login-password').value = ADMIN_PASS;
+  const emailInput = rootEl.querySelector('#login-email');
+  const passwordInput = rootEl.querySelector('#login-password');
+  assert.ok(form && emailInput && passwordInput, 'Login form rendered');
+  emailInput.value = ADMIN_EMAIL;
+  passwordInput.value = ADMIN_PASS;
   await form.dispatchEvent({ type: 'submit' });
   await flushMicrotasks();
 
@@ -125,7 +144,9 @@ test('Scenario 1: Administrator logs in normally and accesses Admin Console only
   assert.ok(rootEl.innerHTML.includes('Pending reviews'));
   assert.ok(!rootEl.innerHTML.includes('href="/explore"'), 'Admin nav must not include learner Explore link');
   assert.equal(getDemoCurrentUserId(), 'user-admin-ethoppa');
-  const persistedShared = JSON.parse(globalThis.localStorage.getItem('kord_app_state_v5'));
+  const rawPersisted = globalThis.localStorage.getItem('kord_app_state_v5');
+  assert.ok(rawPersisted);
+  const persistedShared = JSON.parse(rawPersisted);
   assert.equal(
     Object.prototype.hasOwnProperty.call(persistedShared, 'currentUserId'),
     false,
@@ -139,8 +160,11 @@ test('Scenario 2: Learner logs in normally and accesses Learner Dashboard', asyn
   await ctrl.ready;
 
   const form = rootEl.querySelector('#login-form');
-  rootEl.querySelector('#login-email').value = LEARNER_EMAIL;
-  rootEl.querySelector('#login-password').value = LEARNER_PASS;
+  const emailInput = rootEl.querySelector('#login-email');
+  const passwordInput = rootEl.querySelector('#login-password');
+  assert.ok(form && emailInput && passwordInput, 'Login form rendered');
+  emailInput.value = LEARNER_EMAIL;
+  passwordInput.value = LEARNER_PASS;
   await form.dispatchEvent({ type: 'submit' });
   await flushMicrotasks();
 
@@ -204,10 +228,12 @@ test('Per-Tab Isolation: Admin in Tab 1 and Learner in Tab 2 stay logged in simu
 
   // Tab 1 logs in as Admin
   const adminSession = await tab1Auth.signIn({ email: ADMIN_EMAIL, password: ADMIN_PASS });
+  assert.ok(adminSession);
   assert.equal(adminSession.user.role, 'admin');
 
   // Tab 2 logs in as Learner concurrently (same localStorage, distinct sessionStorage)
   const learnerSession = await tab2Auth.signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
+  assert.ok(learnerSession);
   assert.equal(learnerSession.user.role, 'learner');
 
   // Both tabs remain authenticated as their respective accounts
@@ -257,10 +283,12 @@ test('Shared Demo Data Sync: Learner submission saved in Tab 2 appears in Admin 
 
   const adminSession = await tab1Auth.signIn({ email: ADMIN_EMAIL, password: ADMIN_PASS });
   const learnerSession = await tab2Auth.signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
+  assert.ok(adminSession && learnerSession);
 
   // Learner enrolls and submits challenge evidence (sync active user for progress/submission guards)
   setDemoCurrentUserId(learnerSession.user.id);
   const course = await getCourseBySlug('frontend-development-foundations');
+  assert.ok(course);
   await enrollInCourse(learnerSession.user.id, course.id);
   const challenge = getDemoState().challenges.find((c) => c.courseId === course.id);
   assert.ok(challenge, 'Frontend course challenge exists');
@@ -332,7 +360,7 @@ test('Logging out clears protected DOM and blocks subsequent navigation or popst
   assert.ok(!rootEl.innerHTML.includes('1. Learning'));
 
   window.location.pathname = '/dashboard';
-  await window.dispatchEvent({ type: 'popstate' });
+  await window.dispatchEvent(/** @type {Event} */ (/** @type {unknown} */ ({ type: 'popstate' })));
   await flushMicrotasks();
 
   assert.equal(window.location.pathname, '/login');
@@ -344,7 +372,9 @@ test('Password reset request and PASSWORD_RECOVERY update flow continue working 
   const res = await requestPasswordReset(LEARNER_EMAIL);
   assert.equal(res.sent, true);
 
-  let authCallback = null;
+  /** @type {{ cb: ((event: string, session: SupabaseAuthSessionLike | null) => void) | null }} */
+  const authListener = { cb: null };
+  /** @type {string | null} */
   let currentPassUpdatedTo = null;
   const recoveryUser = {
     id: 'supa-learner-2',
@@ -356,12 +386,14 @@ test('Password reset request and PASSWORD_RECOVERY update flow continue working 
       async getSession() {
         return { data: { session: { user: recoveryUser } }, error: null };
       },
+      /** @param {(event: string, session: SupabaseAuthSessionLike | null) => void} cb */
       onAuthStateChange(cb) {
-        authCallback = cb;
+        authListener.cb = cb;
         return { data: { subscription: { unsubscribe() {} } } };
       },
+      /** @param {{ password?: string }} attrs */
       async updateUser({ password }) {
-        currentPassUpdatedTo = password;
+        currentPassUpdatedTo = password ?? null;
         return { data: { user: recoveryUser }, error: null };
       },
     },
@@ -391,20 +423,27 @@ test('Password reset request and PASSWORD_RECOVERY update flow continue working 
     },
   };
 
-  const supaAuth = createAuthService({ supabaseClient: mockSupabase, isDemo: false });
+  const supaAuth = createAuthService({
+    supabaseClient: /** @type {AppSupabaseClient} */ (/** @type {unknown} */ (mockSupabase)),
+    isDemo: false,
+  });
   resetLocation('/login');
   const { rootEl, ctrl } = mountTestApp({ auth: supaAuth });
   await ctrl.ready;
 
-  authCallback('PASSWORD_RECOVERY', { user: recoveryUser });
+  assert.ok(authListener.cb);
+  authListener.cb('PASSWORD_RECOVERY', { user: recoveryUser });
   await flushMicrotasks();
 
   assert.equal(window.location.pathname, '/reset-password');
   assert.ok(rootEl.innerHTML.includes('Set a new password'));
 
   const resetForm = rootEl.querySelector('#update-password-form');
-  rootEl.querySelector('#new-password').value = 'newSecurePass99';
-  rootEl.querySelector('#confirm-new-password').value = 'newSecurePass99';
+  const newPassInput = rootEl.querySelector('#new-password');
+  const confirmPassInput = rootEl.querySelector('#confirm-new-password');
+  assert.ok(resetForm && newPassInput && confirmPassInput);
+  newPassInput.value = 'newSecurePass99';
+  confirmPassInput.value = 'newSecurePass99';
   await resetForm.dispatchEvent({ type: 'submit' });
   await flushMicrotasks();
 
@@ -423,6 +462,7 @@ test('Password reset request and PASSWORD_RECOVERY update flow continue working 
 
 test('Dashboard Cleanup: Unenrolled learner sees no Available Flagship Courses card, while enrolled learner sees active courses', async () => {
   const session = await signIn({ email: LEARNER_EMAIL, password: LEARNER_PASS });
+  assert.ok(session);
 
   // 1. Unenrolled learner dashboard
   resetLocation('/dashboard');
@@ -443,6 +483,7 @@ test('Dashboard Cleanup: Unenrolled learner sees no Available Flagship Courses c
 
   // 2. Enroll learner in a course and re-render dashboard
   const course = await getCourseBySlug('frontend-development-foundations');
+  assert.ok(course);
   await enrollInCourse(session.user.id, course.id);
 
   resetLocation('/dashboard');

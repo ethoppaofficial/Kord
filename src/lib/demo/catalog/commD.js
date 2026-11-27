@@ -6,11 +6,13 @@ const RESOURCES = [
   { title: 'Professional Networking & Career Articles', source: 'hbr.org', url: 'https://hbr.org/', resourceType: 'Articles' },
 ];
 
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
 const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   t, intro, o: [`Understand ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} in realistic challenges`],
   h, exp, def, ex, steps, cs, tip, chk, sum, tk,
 });
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const COMM_D_SPECS = [
   {
     code: 'ps',
@@ -350,4 +352,5 @@ const COMM_D_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const COMM_D_BUILDERS = COMM_D_SPECS.map((cfg) => (helpers) => buildDomainCourse(cfg, helpers));

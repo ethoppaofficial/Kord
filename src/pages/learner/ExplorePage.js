@@ -20,7 +20,14 @@ import { computeCourseProgress, computeOverallSkillCourseProgress } from '../../
 import { escapeHtml } from '../../lib/formatters.js';
 import { renderSkillCard, renderCourseCard, renderEmptyState } from '../../components/Common.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderExplorePage({ session }) {
+  if (!session?.user) {
+    return { html: '', bind() {} };
+  }
   let filterState = {
     search: '',
     category: 'All',
@@ -56,17 +63,20 @@ export async function renderExplorePage({ session }) {
   ]);
 
   const userSkillById = new Map(userSkills.map((us) => [us.skillId, us]));
+  /** @type {Map<string, import('../../types/kord.d.ts').Course[]>} */
   const coursesBySkill = new Map();
+  /** @type {Record<string, import('../../types/kord.d.ts').CourseProgressSummary>} */
   const courseProgressById = {};
   const enrollmentByCourseId = new Map(enrollments.map((e) => [e.courseId, e]));
 
   allCourses.forEach((course) => {
-    const linkedIds = Array.from(
-      new Set([course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean))
+    const linkedIds = /** @type {string[]} */ (
+      Array.from(new Set([course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean)))
     );
     linkedIds.forEach((sid) => {
-      if (!coursesBySkill.has(sid)) coursesBySkill.set(sid, []);
-      coursesBySkill.get(sid).push(course);
+      const list = coursesBySkill.get(sid) || [];
+      list.push(course);
+      coursesBySkill.set(sid, list);
     });
 
     const enr = enrollmentByCourseId.get(course.id) || null;
@@ -87,11 +97,12 @@ export async function renderExplorePage({ session }) {
   const categoryBySlug = new Map(categories.map((category) => [String(category.slug || '').toLowerCase(), category]));
   const categoryByName = new Map(categories.map((category) => [String(category.name || '').toLowerCase(), category]));
 
+  /** @param {(import('../../types/kord.d.ts').Skill & { category_id?: string | null }) | null | undefined} skill */
   function getSkillCategory(skill) {
     if (!skill) return null;
 
     const categoryId = String(skill.categoryId || skill.category_id || '').trim();
-    if (categoryId && categoryById.has(categoryId)) return categoryById.get(categoryId);
+    if (categoryId && categoryById.has(categoryId)) return categoryById.get(categoryId) || null;
 
     const directCategoryName = String(skill.categoryName || skill.category || '').trim().toLowerCase();
     if (directCategoryName) {
@@ -101,8 +112,9 @@ export async function renderExplorePage({ session }) {
     return null;
   }
 
+  /** @param {import('../../types/kord.d.ts').Course | null | undefined} course */
   function getCourseCategory(course) {
-    const primarySkill = skillById.get(course?.skillId);
+    const primarySkill = course?.skillId ? skillById.get(course.skillId) : undefined;
     return getSkillCategory(primarySkill);
   }
 
@@ -131,9 +143,11 @@ export async function renderExplorePage({ session }) {
     });
   }
 
+  /** @param {import('../../types/kord.d.ts').Skill[]} filtered */
   function renderCards(filtered) {
     const q = filterState.search.trim().toLowerCase();
 
+    /** @param {import('../../types/kord.d.ts').Course} course */
     const courseMatchesFilters = (course) => {
       if (filterState.courseFilter === 'no_courses') return false;
 
@@ -147,7 +161,13 @@ export async function renderExplorePage({ session }) {
         const linkedSkills = [course.skillId, ...(course.associatedSkillIds || [])]
           .filter(Boolean)
           .map((skillId) => skillById.get(skillId))
-          .filter(Boolean);
+          .filter(
+            /**
+             * @param {import('../../types/kord.d.ts').Skill | undefined} sk
+             * @returns {sk is import('../../types/kord.d.ts').Skill}
+             */
+            (sk) => Boolean(sk)
+          );
         const searchable = [
           course.title,
           course.description,
@@ -166,6 +186,10 @@ export async function renderExplorePage({ session }) {
       ? categories.slice().sort((a, b) => (a.position || 0) - (b.position || 0))
       : categories.filter((category) => category.id === filterState.category);
 
+    /**
+     * @param {import('../../types/kord.d.ts').Skill} skill
+     * @param {number} index
+     */
     const buildSkillCard = (skill, index) => {
       const skillCourses = coursesBySkill.get(skill.id) || [];
       const overall = computeOverallSkillCourseProgress({
@@ -301,46 +325,56 @@ export async function renderExplorePage({ session }) {
         ${renderCards(initialFiltered)}
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       const resultsEl = root.querySelector('#explore-results');
       const countEl = root.querySelector('#explore-count');
-      const catSelect = root.querySelector('#explore-cat-select');
+      const catSelect = /** @type {HTMLSelectElement | null} */ (root.querySelector('#explore-cat-select'));
+      const searchInput = /** @type {HTMLInputElement | null} */ (root.querySelector('#explore-search'));
 
       const refresh = () => {
         const filtered = applyFilters();
-        countEl.textContent = `${filtered.length} of ${skills.length} competencies`;
-        resultsEl.innerHTML = renderCards(filtered);
+        if (countEl) countEl.textContent = `${filtered.length} of ${skills.length} competencies`;
+        if (resultsEl) resultsEl.innerHTML = renderCards(filtered);
         root.querySelector('#reset-explore-filters')?.addEventListener('click', () => {
           filterState = { search: '', category: 'All', level: 'All', courseFilter: 'all' };
-          root.querySelector('#explore-search').value = '';
+          if (searchInput) searchInput.value = '';
           if (catSelect) catSelect.value = 'All';
-          root.querySelectorAll('[data-lvl]').forEach((b) => b.classList.toggle('is-active', b.dataset.lvl === 'All'));
-          root.querySelectorAll('[data-course-filter]').forEach((b) => b.classList.toggle('is-active', b.dataset.courseFilter === 'all'));
+          root.querySelectorAll('[data-lvl]').forEach((b) =>
+            b.classList.toggle('is-active', /** @type {HTMLElement} */ (b).dataset.lvl === 'All')
+          );
+          root.querySelectorAll('[data-course-filter]').forEach((b) =>
+            b.classList.toggle('is-active', /** @type {HTMLElement} */ (b).dataset.courseFilter === 'all')
+          );
           refresh();
         });
       };
 
-      root.querySelector('#explore-search')?.addEventListener('input', (e) => {
-        filterState.search = e.target.value;
+      searchInput?.addEventListener('input', (e) => {
+        const target = /** @type {HTMLInputElement | null} */ (e.target);
+        filterState.search = target?.value || '';
         refresh();
       });
 
       catSelect?.addEventListener('change', (e) => {
-        filterState.category = e.target.value;
+        const target = /** @type {HTMLSelectElement | null} */ (e.target);
+        filterState.category = target?.value || 'All';
         refresh();
       });
 
-      root.querySelectorAll('[data-lvl]').forEach((btn) => {
+      root.querySelectorAll('[data-lvl]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          filterState.level = btn.dataset.lvl;
+          filterState.level = btn.dataset.lvl || 'All';
           root.querySelectorAll('[data-lvl]').forEach((b) => b.classList.toggle('is-active', b === btn));
           refresh();
         });
       });
 
-      root.querySelectorAll('[data-course-filter]').forEach((btn) => {
+      root.querySelectorAll('[data-course-filter]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          filterState.courseFilter = btn.dataset.courseFilter;
+          filterState.courseFilter = btn.dataset.courseFilter || 'all';
           root.querySelectorAll('[data-course-filter]').forEach((b) => b.classList.toggle('is-active', b === btn));
           refresh();
         });

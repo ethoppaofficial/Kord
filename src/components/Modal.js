@@ -1,7 +1,9 @@
 import { escapeHtml } from '../lib/formatters.js';
 import { icon } from '../lib/icons.js';
 
+/** @type {HTMLDivElement | null} */
 let activeBackdrop = null;
+/** @type {(() => void) | null} */
 let activeCleanup = null;
 
 export function closeModal() {
@@ -16,6 +18,14 @@ export function closeModal() {
   activeBackdrop = null;
 }
 
+/**
+ * @param {{
+ *   title: string;
+ *   bodyHtml: string;
+ *   onMount?: ((bodyEl: HTMLElement | null, close: () => void) => void) | null;
+ *   onClose?: (() => void) | null;
+ * }} params
+ */
 export function openModal({ title, bodyHtml, onMount, onClose }) {
   closeModal();
 
@@ -33,6 +43,7 @@ export function openModal({ title, bodyHtml, onMount, onClose }) {
     </div>
   `;
 
+  /** @param {KeyboardEvent} e */
   const onKeyDown = (e) => {
     if (e.key === 'Escape') {
       closeModal();
@@ -47,7 +58,8 @@ export function openModal({ title, bodyHtml, onMount, onClose }) {
   };
 
   backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop || e.target.closest?.('[data-modal-close]')) {
+    const target = /** @type {Element | null} */ (e.target);
+    if (target === backdrop || target?.closest?.('[data-modal-close]')) {
       closeModal();
     }
   });
@@ -57,6 +69,6 @@ export function openModal({ title, bodyHtml, onMount, onClose }) {
   activeBackdrop = backdrop;
 
   if (typeof onMount === 'function') {
-    onMount(backdrop.querySelector('.modal-body'), closeModal);
+    onMount(/** @type {HTMLElement | null} */ (backdrop.querySelector('.modal-body')), closeModal);
   }
 }

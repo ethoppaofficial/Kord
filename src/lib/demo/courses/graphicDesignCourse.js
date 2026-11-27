@@ -1,5 +1,6 @@
 import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn} */
 export function buildGraphicDesignCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-graphic-design-foundations';
   const skillId = 'skill-graphic-design';

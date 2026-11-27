@@ -6,6 +6,7 @@ const RESOURCES = [
   { title: 'Pro Git Book: Version Control & Branching Workflows', source: 'git-scm.com', url: 'https://git-scm.com/book/en/v2', resourceType: 'Guide' },
 ];
 
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
 const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   t,
   intro,
@@ -22,6 +23,7 @@ const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   tk,
 });
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const TECH_SPECS = [
   {
     code: 'wdv',
@@ -1367,6 +1369,7 @@ const TECH_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const TECH_COURSE_BUILDERS = TECH_SPECS.map(
   (spec) => (helpers) => buildDomainCourse(spec, helpers)
 );

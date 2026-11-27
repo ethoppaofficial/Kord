@@ -19,6 +19,10 @@ export const BLOCK_TYPE_CATALOG = [
   { type: 'knowledge_check', label: 'Inline knowledge check' },
 ];
 
+/**
+ * @param {string} type
+ * @returns {import('../types/kord.d.ts').LessonBlock}
+ */
 export function createEmptyBlock(type) {
   const id = `blk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   switch (type) {
@@ -60,6 +64,7 @@ export function createEmptyBlock(type) {
 /**
  * Safe XSS-free JSON content block renderer.
  * Never evaluates raw HTML strings; every field passes through escapeHtml.
+ * @param {import('../types/kord.d.ts').LessonBlock[]} [blocks]
  */
 export function renderLessonBlocks(blocks = []) {
   if (!Array.isArray(blocks) || blocks.length === 0) return '';

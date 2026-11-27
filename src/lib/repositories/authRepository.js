@@ -93,6 +93,10 @@ function stripRecoveryParamsFromUrl() {
   }
 }
 
+/**
+ * @param {{ errorCode?: string | null; errorDescription?: string | null; rawMessage?: string | null }} [opts]
+ * @returns {string}
+ */
 function mapRecoveryErrorMessage({ errorCode = null, errorDescription = null, rawMessage = null } = {}) {
   const combined = [errorCode, errorDescription, rawMessage].filter(Boolean).join(' ');
   if (errorCode === 'otp_expired' || /expired/i.test(combined)) {
@@ -110,6 +114,10 @@ function mapRecoveryErrorMessage({ errorCode = null, errorDescription = null, ra
   return 'This password reset link is invalid or has expired. Request a new reset link to continue.';
 }
 
+/**
+ * @param {{ error?: string | null; errorCode?: string | null; errorDescription?: string | null; rawMessage?: string | null }} [opts]
+ * @returns {string}
+ */
 function mapOAuthErrorMessage({ error = null, errorCode = null, errorDescription = null, rawMessage = null } = {}) {
   const combined = [error, errorCode, errorDescription, rawMessage].filter(Boolean).join(' ');
   if (error === 'access_denied' || errorCode === 'access_denied' || /denied|cancel/i.test(combined)) {
@@ -133,6 +141,14 @@ function mapOAuthErrorMessage({ error = null, errorCode = null, errorDescription
   return 'Unable to complete Google sign-in. Please try again.';
 }
 
+/**
+ * @param {{
+ *   supabaseClient?: import('../../types/kord.d.ts').AppSupabaseClient | null;
+ *   isDemo?: boolean;
+ *   demoStore?: import('../../types/kord.d.ts').DemoStoreLike;
+ * }} [opts]
+ * @returns {import('../../types/kord.d.ts').AuthService}
+ */
 export function createAuthService({
   supabaseClient = supabase,
   isDemo = isDemoMode,
@@ -146,13 +162,20 @@ export function createAuthService({
 } = {}) {
   let recoveryMode = false;
   let localAuthPendingCount = 0;
+  /** @type {Map<string, { status: 'ready' | 'invalid_link'; error: string | null }>} */
   const processedRecoveryCallbacks = new Map();
+  /** @type {Map<string, { status: 'authenticated' | 'error'; error: string | null }>} */
   const processedOAuthCallbacks = new Map();
 
-  function useSupabase() {
-    return !isDemo && Boolean(supabaseClient);
+  /** @returns {import('../../types/kord.d.ts').AppSupabaseClient | null} */
+  function getSupabaseClient() {
+    return !isDemo && supabaseClient ? supabaseClient : null;
   }
 
+  /**
+   * @param {import('../../types/kord.d.ts').DemoState | null | undefined} state
+   * @returns {import('../../types/kord.d.ts').AuthSession | null}
+   */
   function formatDemoSession(state) {
     const currentUserId = demoStore.getDemoCurrentUserId();
     if (!currentUserId) return null;
@@ -176,25 +199,33 @@ export function createAuthService({
     };
   }
 
+  /**
+   * @param {import('../../types/kord.d.ts').SupabaseAuthUserLike | null | undefined} authUser
+   * @param {{ throwOnSuspended?: boolean }} [opts]
+   * @returns {Promise<import('../../types/kord.d.ts').AuthSession | null>}
+   */
   async function buildSupabaseSession(authUser, { throwOnSuspended = false } = {}) {
-    if (!authUser) return null;
-    const { data: profile, error: profileError } = await supabaseClient
+    const client = getSupabaseClient();
+    if (!authUser || !client) return null;
+    const { data: profile, error: profileError } = await client
       .from('profiles')
       .select('id, email, first_name, full_name, role, account_status')
       .eq('id', authUser.id)
       .single();
 
-    if (profileError || !profile || !['learner', 'admin'].includes(profile.role)) {
+    const profileRecord = /** @type {Record<string, unknown> | null} */ (profile);
+    const profileRole = profileRecord?.role;
+    if (profileError || !profileRecord || (profileRole !== 'learner' && profileRole !== 'admin')) {
       if (profileError) {
         console.warn('Unable to load user profile:', profileError.message);
       }
       return null;
     }
 
-    const accountStatus = profile.account_status || 'active';
+    const accountStatus = String(profileRecord.account_status || 'active') === 'suspended' ? 'suspended' : 'active';
     if (accountStatus !== 'active') {
       try {
-        await supabaseClient.auth.signOut();
+        await client.auth.signOut();
       } catch {
         // Ignore secondary signOut failure
       }
@@ -205,32 +236,33 @@ export function createAuthService({
     }
 
     const emailPrefix = String(authUser.email || 'user').split('@')[0];
-    const fullName =
-      profile.full_name ||
-      authUser.user_metadata?.full_name ||
-      authUser.user_metadata?.name ||
-      emailPrefix;
-    const firstName =
-      profile.first_name ||
-      authUser.user_metadata?.first_name ||
-      authUser.user_metadata?.given_name ||
-      extractFirstName(fullName, emailPrefix);
+    const meta = authUser.user_metadata || {};
+    const fullName = String(
+      profileRecord.full_name || meta.full_name || meta.name || emailPrefix
+    );
+    const firstName = String(
+      profileRecord.first_name ||
+        meta.first_name ||
+        meta.given_name ||
+        extractFirstName(fullName, emailPrefix)
+    );
 
     return {
       user: {
         id: authUser.id,
-        email: profile.email || authUser.email,
+        email: String(profileRecord.email || authUser.email || ''),
         firstName,
         fullName,
-        role: profile.role,
+        role: profileRole,
         accountStatus,
       },
     };
   }
 
   async function getCurrentSession() {
-    if (useSupabase()) {
-      const { data: sessionData, error } = await supabaseClient.auth.getSession();
+    const client = getSupabaseClient();
+    if (client) {
+      const { data: sessionData, error } = await client.auth.getSession();
       if (error || !sessionData?.session?.user) {
         recoveryMode = false;
         return null;
@@ -245,15 +277,17 @@ export function createAuthService({
     return formatDemoSession(demoStore.getDemoState());
   }
 
+  /** @param {{ email: string; password: string }} creds */
   async function signIn({ email, password }) {
     const cleanEmail = String(email || '').trim().toLowerCase();
     recoveryMode = false;
     runSessionCleanup();
 
-    if (useSupabase()) {
+    const client = getSupabaseClient();
+    if (client) {
       localAuthPendingCount += 1;
       try {
-        const { data, error } = await supabaseClient.auth.signInWithPassword({
+        const { data, error } = await client.auth.signInWithPassword({
           email: cleanEmail,
           password,
         });
@@ -281,6 +315,7 @@ export function createAuthService({
     return getCurrentSession();
   }
 
+  /** @param {{ firstName: string; lastName: string; fullName?: string; email: string; password: string }} creds */
   async function signUp({ firstName, lastName, fullName, email, password }) {
     const cleanEmail = String(email || '').trim().toLowerCase();
     const cleanFirst = String(firstName || '').trim();
@@ -292,10 +327,11 @@ export function createAuthService({
     recoveryMode = false;
     runSessionCleanup();
 
-    if (useSupabase()) {
+    const client = getSupabaseClient();
+    if (client) {
       localAuthPendingCount += 1;
       try {
-        const { data, error } = await supabaseClient.auth.signUp({
+        const { data, error } = await client.auth.signUp({
           email: cleanEmail,
           password,
           options: {
@@ -321,14 +357,14 @@ export function createAuthService({
       throw new Error('An account with that email already exists.');
     }
 
-    const assignedRole = 'learner';
+    /** @type {import('../../types/kord.d.ts').KordUser} */
     const newUser = {
       id: `user-${Date.now()}`,
       email: cleanEmail,
       firstName: resolvedFirst,
       lastName: cleanLast,
       fullName: cleanFull,
-      role: assignedRole,
+      role: 'learner',
       accountStatus: 'active',
       password,
       createdAt: new Date().toISOString(),
@@ -343,6 +379,7 @@ export function createAuthService({
     return getCurrentSession();
   }
 
+  /** @param {string} email */
   async function recoverPassword(email) {
     const cleanEmail = String(email || '').trim().toLowerCase();
     if (!isValidEmail(cleanEmail)) {
@@ -352,13 +389,18 @@ export function createAuthService({
     const neutralNote =
       'If an account exists for that email, reset instructions have been sent.';
 
-    if (useSupabase()) {
+    const client = getSupabaseClient();
+    if (client) {
       const redirectTo = resolveAuthRedirectUrl('/reset-password');
-      const authApi = supabaseClient.auth;
+      const authApi = /** @type {import('../../types/kord.d.ts').SupabaseAuthLike} */ (
+        /** @type {unknown} */ (client.auth)
+      );
       const result =
         typeof authApi?.resetPasswordForEmail === 'function'
           ? await authApi.resetPasswordForEmail(cleanEmail, { redirectTo })
-          : await authApi.recoverPassword(cleanEmail, { redirectTo });
+          : typeof authApi?.recoverPassword === 'function'
+            ? await authApi.recoverPassword(cleanEmail, { redirectTo })
+            : null;
       if (result?.error) throw new Error(result.error.message);
       return { sent: true, email: cleanEmail, note: neutralNote };
     }
@@ -370,6 +412,7 @@ export function createAuthService({
     };
   }
 
+  /** @param {string} email */
   async function requestPasswordReset(email) {
     return recoverPassword(email);
   }
@@ -378,20 +421,21 @@ export function createAuthService({
     recoveryMode = false;
     runSessionCleanup();
 
-    if (!useSupabase()) {
+    const client = getSupabaseClient();
+    if (!client) {
       throw new Error(
         'Google Sign-In requires a live Supabase connection and is unavailable in local demo mode.'
       );
     }
 
-    if (typeof supabaseClient.auth?.signInWithOAuth !== 'function') {
+    if (typeof client.auth?.signInWithOAuth !== 'function') {
       throw new Error('Google Sign-In is unavailable in this environment.');
     }
 
     const redirectTo = resolveAuthRedirectUrl('/auth/callback');
     localAuthPendingCount += 1;
     try {
-      const { data, error } = await supabaseClient.auth.signInWithOAuth({
+      const { data, error } = await client.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo,
@@ -416,6 +460,7 @@ export function createAuthService({
     }
   }
 
+  /** @returns {Promise<import('../../types/kord.d.ts').OAuthCallbackState>} */
   async function resolveOAuthCallback() {
     const cb = parseRecoveryCallbackFromUrl();
 
@@ -431,9 +476,9 @@ export function createAuthService({
 
     if (cb.code) {
       const cacheKey = `oauth:${cb.code}`;
-      if (processedOAuthCallbacks.has(cacheKey)) {
+      const cached = processedOAuthCallbacks.get(cacheKey);
+      if (cached) {
         stripRecoveryParamsFromUrl();
-        const cached = processedOAuthCallbacks.get(cacheKey);
         const session = await getCurrentSession();
         if (cached.status === 'authenticated' && session) {
           return { status: 'authenticated', session, error: null };
@@ -445,7 +490,8 @@ export function createAuthService({
         };
       }
 
-      if (!useSupabase()) {
+      const client = getSupabaseClient();
+      if (!client) {
         stripRecoveryParamsFromUrl();
         const msg = 'Google Sign-In callback cannot be verified in local demo mode.';
         processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
@@ -461,7 +507,10 @@ export function createAuthService({
         return { status: 'authenticated', session: preSession, error: null };
       }
 
-      if (typeof supabaseClient.auth?.exchangeCodeForSession !== 'function') {
+      const authApi = /** @type {import('../../types/kord.d.ts').SupabaseAuthLike} */ (
+        /** @type {unknown} */ (client.auth)
+      );
+      if (typeof authApi?.exchangeCodeForSession !== 'function') {
         stripRecoveryParamsFromUrl();
         const msg = 'Google Sign-In code exchange is unavailable.';
         processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
@@ -471,8 +520,8 @@ export function createAuthService({
       localAuthPendingCount += 1;
       try {
         const { data, error } = cb.flowId
-          ? await supabaseClient.auth.exchangeCodeForSession(cb.code, { flowId: cb.flowId })
-          : await supabaseClient.auth.exchangeCodeForSession(cb.code);
+          ? await authApi.exchangeCodeForSession(cb.code, { flowId: cb.flowId })
+          : await authApi.exchangeCodeForSession(cb.code);
         stripRecoveryParamsFromUrl();
 
         if (error || !data?.session?.user) {
@@ -487,14 +536,16 @@ export function createAuthService({
         try {
           hydrated = await buildSupabaseSession(data.session.user, { throwOnSuspended: true });
         } catch (err) {
-          const msg = mapOAuthErrorMessage({ rawMessage: err?.message });
+          const msg = mapOAuthErrorMessage({
+            rawMessage: err instanceof Error ? err.message : null,
+          });
           processedOAuthCallbacks.set(cacheKey, { status: 'error', error: msg });
           return { status: 'error', session: null, error: msg };
         }
 
         if (!hydrated) {
           try {
-            await supabaseClient.auth.signOut();
+            await client.auth.signOut();
           } catch {
             // Ignore secondary signOut failure
           }
@@ -525,6 +576,7 @@ export function createAuthService({
     };
   }
 
+  /** @returns {Promise<import('../../types/kord.d.ts').RecoveryState>} */
   async function resolvePasswordRecoverySession() {
     const cb = parseRecoveryCallbackFromUrl();
 
@@ -542,8 +594,8 @@ export function createAuthService({
       const cacheKey = `token_hash:${cb.tokenHash}`;
       stripRecoveryParamsFromUrl();
 
-      if (processedRecoveryCallbacks.has(cacheKey)) {
-        const cached = processedRecoveryCallbacks.get(cacheKey);
+      const cached = processedRecoveryCallbacks.get(cacheKey);
+      if (cached) {
         const session = await getCurrentSession();
         if (cached.status === 'ready' && session) {
           return { status: 'ready', session, error: null };
@@ -561,19 +613,25 @@ export function createAuthService({
         return { status: 'invalid_link', session: await getCurrentSession(), error: msg };
       }
 
-      if (!useSupabase() || typeof supabaseClient.auth?.verifyOtp !== 'function') {
+      const client = getSupabaseClient();
+      const authApi = client
+        ? /** @type {import('../../types/kord.d.ts').SupabaseAuthLike} */ (
+            /** @type {unknown} */ (client.auth)
+          )
+        : null;
+      if (!client || typeof authApi?.verifyOtp !== 'function') {
         const msg = 'This password reset link is invalid or cannot be verified in this environment.';
         processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
         return { status: 'invalid_link', session: await getCurrentSession(), error: msg };
       }
 
       const existingSession = await getCurrentSession();
-      const { data, error } = await supabaseClient.auth.verifyOtp({
+      const { data, error } = await authApi.verifyOtp({
         token_hash: cb.tokenHash,
         type: 'recovery',
       });
       if (error || !data?.session?.user) {
-        const msg = mapRecoveryErrorMessage({ rawMessage: error?.message });
+        const msg = mapRecoveryErrorMessage({ rawMessage: error?.message ?? null });
         processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
         return { status: 'invalid_link', session: existingSession, error: msg };
       }
@@ -591,9 +649,9 @@ export function createAuthService({
 
     if (cb.code) {
       const cacheKey = `code:${cb.code}`;
-      if (processedRecoveryCallbacks.has(cacheKey)) {
+      const cached = processedRecoveryCallbacks.get(cacheKey);
+      if (cached) {
         stripRecoveryParamsFromUrl();
-        const cached = processedRecoveryCallbacks.get(cacheKey);
         const session = await getCurrentSession();
         if (cached.status === 'ready' && session) {
           return { status: 'ready', session, error: null };
@@ -605,7 +663,8 @@ export function createAuthService({
         };
       }
 
-      if (!useSupabase()) {
+      const client = getSupabaseClient();
+      if (!client) {
         stripRecoveryParamsFromUrl();
         const msg = 'This password reset link is invalid or cannot be verified in demo mode.';
         processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
@@ -621,7 +680,10 @@ export function createAuthService({
         return { status: 'ready', session: preSession, error: null };
       }
 
-      if (typeof supabaseClient.auth?.exchangeCodeForSession !== 'function') {
+      const authApi = /** @type {import('../../types/kord.d.ts').SupabaseAuthLike} */ (
+        /** @type {unknown} */ (client.auth)
+      );
+      if (typeof authApi?.exchangeCodeForSession !== 'function') {
         stripRecoveryParamsFromUrl();
         const msg = 'Password recovery code exchange is unavailable.';
         processedRecoveryCallbacks.set(cacheKey, { status: 'invalid_link', error: msg });
@@ -629,8 +691,8 @@ export function createAuthService({
       }
 
       const { data, error } = cb.flowId
-        ? await supabaseClient.auth.exchangeCodeForSession(cb.code, { flowId: cb.flowId })
-        : await supabaseClient.auth.exchangeCodeForSession(cb.code);
+        ? await authApi.exchangeCodeForSession(cb.code, { flowId: cb.flowId })
+        : await authApi.exchangeCodeForSession(cb.code);
       stripRecoveryParamsFromUrl();
 
       if (error || !data?.session?.user) {
@@ -674,6 +736,7 @@ export function createAuthService({
     return { status: 'missing_session', session: null, error: null };
   }
 
+  /** @param {string} newPassword */
   async function updatePassword(newPassword) {
     const cleanPassword = String(newPassword || '');
     if (cleanPassword.length < 6) {
@@ -683,12 +746,13 @@ export function createAuthService({
       throw new Error('Password must be 128 characters or fewer.');
     }
 
-    if (useSupabase()) {
-      const { data: sessionData, error: sessionErr } = await supabaseClient.auth.getSession();
+    const client = getSupabaseClient();
+    if (client) {
+      const { data: sessionData, error: sessionErr } = await client.auth.getSession();
       if (sessionErr || !sessionData?.session?.user) {
         throw new Error('Active password recovery or authenticated session required.');
       }
-      const { error } = await supabaseClient.auth.updateUser({ password: cleanPassword });
+      const { error } = await client.auth.updateUser({ password: cleanPassword });
       if (error) throw new Error(error.message);
       recoveryMode = false;
       stripRecoveryParamsFromUrl();
@@ -709,6 +773,10 @@ export function createAuthService({
     return getCurrentSession();
   }
 
+  /**
+   * @param {{ firstName?: string; fullName?: string; role?: string }} profile
+   * @returns {Promise<Omit<import('../../types/kord.d.ts').KordUser, 'accountStatus'> | null>}
+   */
   async function updateOwnProfile({ firstName, fullName, role }) {
     if (role !== undefined) {
       throw new Error('Profile roles cannot be modified by users.');
@@ -717,13 +785,14 @@ export function createAuthService({
     const cleanFirst = String(firstName || '').trim();
     const cleanFull = String(fullName || '').trim();
 
-    if (useSupabase()) {
-      const { data: sessionData, error: sessionErr } = await supabaseClient.auth.getSession();
+    const client = getSupabaseClient();
+    if (client) {
+      const { data: sessionData, error: sessionErr } = await client.auth.getSession();
       if (sessionErr || !sessionData.session) {
         throw new Error('Authentication required.');
       }
       const uid = sessionData.session.user.id;
-      const { data, error } = await supabaseClient
+      const { data, error } = await client
         .from('profiles')
         .update({
           first_name: cleanFirst,
@@ -733,12 +802,13 @@ export function createAuthService({
         .select('id, email, first_name, full_name, role')
         .single();
       if (error) throw new Error(error.message);
+      const updated = /** @type {Record<string, unknown>} */ (data || {});
       return {
-        id: data.id,
-        email: data.email,
-        firstName: data.first_name,
-        fullName: data.full_name,
-        role: data.role === 'admin' ? 'admin' : 'learner',
+        id: String(updated.id || uid),
+        email: String(updated.email || ''),
+        firstName: String(updated.first_name || ''),
+        fullName: String(updated.full_name || ''),
+        role: updated.role === 'admin' ? 'admin' : 'learner',
       };
     }
 
@@ -747,6 +817,7 @@ export function createAuthService({
       throw new Error('Authentication required.');
     }
 
+    /** @type {Omit<import('../../types/kord.d.ts').KordUser, 'accountStatus'> | null} */
     let updatedUser = null;
     demoStore.updateDemoState((draft) => {
       const user = (draft.users || []).find((u) => u.id === currentUserId);
@@ -770,10 +841,11 @@ export function createAuthService({
     recoveryMode = false;
     runSessionCleanup();
 
-    if (useSupabase()) {
+    const client = getSupabaseClient();
+    if (client) {
       localAuthPendingCount += 1;
       try {
-        await supabaseClient.auth.signOut();
+        await client.auth.signOut();
       } finally {
         localAuthPendingCount = Math.max(0, localAuthPendingCount - 1);
       }
@@ -787,14 +859,19 @@ export function createAuthService({
     return recoveryMode;
   }
 
+  /**
+   * @param {(payload: import('../../types/kord.d.ts').AuthChangePayload) => void} listener
+   * @returns {() => void}
+   */
   function subscribeAuthChanges(listener) {
     if (typeof listener !== 'function') return () => {};
 
-    if (useSupabase()) {
+    const client = getSupabaseClient();
+    if (client) {
       let active = true;
       let eventSeq = 0;
 
-      const { data } = supabaseClient.auth.onAuthStateChange((event, rawSession) => {
+      const { data } = client.auth.onAuthStateChange((event, rawSession) => {
         if (!active) return;
         const seq = ++eventSeq;
         const initiatedLocally = localAuthPendingCount > 0;
@@ -919,18 +996,19 @@ export const subscribeAuthChanges = defaultAuthService.subscribeAuthChanges;
 // =========================================================================
 // Protected Admin User Governance & Audit History APIs
 // =========================================================================
+/** @returns {Promise<Omit<import('../../types/kord.d.ts').KordUser, 'password' | 'lastName'>[]>} */
 export async function adminListUsers() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.rpc('admin_list_users');
     if (error) throw new Error(error.message);
-    return (data || []).map((u) => ({
-      id: u.id,
-      email: u.email,
-      firstName: u.first_name || '',
-      fullName: u.full_name || '',
+    return (/** @type {Record<string, unknown>[]} */ (data || [])).map((u) => ({
+      id: String(u.id || ''),
+      email: String(u.email || ''),
+      firstName: String(u.first_name || ''),
+      fullName: String(u.full_name || ''),
       role: u.role === 'admin' ? 'admin' : 'learner',
-      accountStatus: u.account_status || 'active',
-      createdAt: u.created_at,
+      accountStatus: u.account_status === 'suspended' ? 'suspended' : 'active',
+      createdAt: u.created_at ? String(u.created_at) : undefined,
     }));
   }
 
@@ -943,7 +1021,7 @@ export async function adminListUsers() {
 
   return (state.users || [])
     .slice()
-    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
     .map((u) => ({
       id: u.id,
       email: u.email,
@@ -955,6 +1033,14 @@ export async function adminListUsers() {
     }));
 }
 
+/**
+ * @param {{
+ *   targetUserId: string;
+ *   newStatus: import('../../types/kord.d.ts').AccountStatus;
+ *   reason?: string;
+ *   actorId?: string | null;
+ * }} opts
+ */
 export async function adminSetAccountStatus({
   targetUserId,
   newStatus,
@@ -976,6 +1062,7 @@ export async function adminSetAccountStatus({
     return data;
   }
 
+  /** @type {Omit<import('../../types/kord.d.ts').KordUser, 'password' | 'lastName'> | null} */
   let updatedUser = null;
   updateDemoState((draft) => {
     const resolvedActorId = actorId || getDemoCurrentUserId();
@@ -1033,6 +1120,7 @@ export async function adminSetAccountStatus({
   return updatedUser;
 }
 
+/** @param {{ limit?: number }} [opts] */
 export async function adminListAuditLogs({ limit = 100 } = {}) {
   const safeLimit = Math.max(1, Math.min(250, Number(limit || 100)));
 

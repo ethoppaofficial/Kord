@@ -8,8 +8,12 @@ import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDr
 import { renderProgressRail, renderStatusBadge } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderCourseLessonPage({ params, session, navigate, rerender }) {
-  const userId = session.user.id;
+  const userId = session?.user?.id || '';
   const targetUrl = `/courses/${params.slug}/phases/${params.phaseId}/lessons/${params.lessonId}`;
 
   const ctx = await resolveCourseHierarchy({
@@ -21,7 +25,7 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
   });
 
   if (ctx.status !== 'ok') {
-    return renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll: targetUrl, navigate });
+    return renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll: targetUrl, navigate }) || { html: '', bind() {} };
   }
 
   const {
@@ -39,6 +43,10 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
     challenges,
     quizAttempts,
   } = ctx;
+
+  if (!phase || !lesson) {
+    return { html: '', bind() {} };
+  }
 
   const lp = progressByLesson.get(lesson.id);
   const wordCount = (lp?.notes || '').trim().split(/\s+/).filter(Boolean).length;
@@ -150,7 +158,7 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
             ? `
           <div style="margin-top:22px; padding-top:18px; border-top:1px solid var(--color-border);">
             <h2 style="font-size:1.1rem; margin-bottom:12px;">Video walkthrough</h2>
-            ${lesson.videos.map((v, idx) => renderVideoPlayerHtml(v, idx)).join('')}
+            ${(lesson.videos || []).map((v, idx) => renderVideoPlayerHtml(v, idx)).join('')}
           </div>
         `
             : ''
@@ -266,17 +274,21 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
         </nav>
       </article>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindCourseOutlineDrawer(root);
 
       // Inline Knowledge Check handler
-      root.querySelectorAll('[data-check-kc]').forEach((btn) => {
+      root.querySelectorAll('[data-check-kc]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
           const kcId = btn.dataset.checkKc;
-          const box = root.querySelector(`[data-inline-kc="${kcId}"]`);
-          const feedback = root.querySelector(`[data-kc-feedback="${kcId}"]`);
+          const box = /** @type {HTMLElement | null} */ (root.querySelector(`[data-inline-kc="${kcId}"]`));
+          const feedback = /** @type {HTMLElement | null} */ (root.querySelector(`[data-kc-feedback="${kcId}"]`));
           if (!box || !feedback) return;
-          const selected = box.querySelector(`input[name="inline_kc_${kcId}"]:checked`);
+          const selected = /** @type {HTMLInputElement | null} */ (
+            box.querySelector(`input[name="inline_kc_${kcId}"]:checked`)
+          );
           if (!selected) {
             feedback.style.color = 'var(--color-amber)';
             feedback.textContent = 'Select an option first.';
@@ -293,36 +305,40 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
       });
 
       // Video playback help toggle
-      root.querySelectorAll('[data-video-fallback-toggle]').forEach((btn) => {
+      root.querySelectorAll('[data-video-fallback-toggle]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          const helpEl = root.querySelector(`#video-help-${btn.dataset.videoFallbackToggle}`);
+          const helpEl = /** @type {HTMLElement | null} */ (
+            root.querySelector(`#video-help-${btn.dataset.videoFallbackToggle}`)
+          );
           if (helpEl) {
             helpEl.style.display = helpEl.style.display === 'none' ? 'block' : 'none';
           }
         });
       });
 
-      const notesEl = root.querySelector('#lesson-notes');
-      const statusEl = root.querySelector('#notes-save-status');
-      let saveTimer = null;
+      const notesEl = /** @type {HTMLTextAreaElement | null} */ (root.querySelector('#lesson-notes'));
+      const statusEl = /** @type {HTMLElement | null} */ (root.querySelector('#notes-save-status'));
+      /** @type {number | undefined} */
+      let saveTimer;
       notesEl?.addEventListener('input', () => {
         const words = notesEl.value.trim().split(/\s+/).filter(Boolean).length;
-        statusEl.textContent = `${words} words · Saving…`;
-        window.clearTimeout(saveTimer);
+        if (statusEl) statusEl.textContent = `${words} words · Saving…`;
+        if (saveTimer !== undefined) window.clearTimeout(saveTimer);
         saveTimer = window.setTimeout(async () => {
           try {
             await saveLessonNotes(userId, lesson.id, course.id, notesEl.value);
-            statusEl.textContent = `${words} words · Saved`;
+            if (statusEl) statusEl.textContent = `${words} words · Saved`;
           } catch (err) {
-            statusEl.textContent = `${words} words · Save failed`;
-            showToast(err?.message || 'Unable to save notes.', 'error');
+            if (statusEl) statusEl.textContent = `${words} words · Save failed`;
+            showToast(err instanceof Error ? err.message : 'Unable to save notes.', 'error');
           }
         }, 300);
       });
 
       root.querySelector('#toggle-lesson-complete')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        if (btn.disabled) return;
+        const btn = /** @type {HTMLButtonElement | null} */ (e.currentTarget);
+        if (!btn || btn.disabled) return;
         btn.disabled = true;
         const nextDone = !lp?.completed;
         try {
@@ -330,14 +346,14 @@ export async function renderCourseLessonPage({ params, session, navigate, rerend
             userId,
             course.id,
             lesson.id,
-            lesson.estMinutes,
+            lesson.estMinutes || 0,
             nextDone
           );
           showToast(nextDone ? 'Lesson marked complete!' : 'Lesson marked incomplete.', 'success');
           rerender({ silent: true });
         } catch (err) {
           btn.disabled = false;
-          showToast(err?.message || 'Unable to update lesson status.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to update lesson status.', 'error');
         }
       });
     },

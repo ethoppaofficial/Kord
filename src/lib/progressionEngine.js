@@ -12,6 +12,13 @@
  *   are completed with practical approval (0-course skills never auto-complete or auto-verify).
  */
 
+/**
+ * @param {{
+ *   enrolledAt?: string | null;
+ *   remainingMinutes: number;
+ *   recommendedWeeklyHours?: number;
+ * }} input
+ */
 export function computeProjectedCompletionDate({ enrolledAt, remainingMinutes, recommendedWeeklyHours }) {
   const start = enrolledAt ? new Date(enrolledAt) : new Date();
   const baseTime = Number.isNaN(start.getTime()) ? Date.now() : Date.now();
@@ -21,6 +28,18 @@ export function computeProjectedCompletionDate({ enrolledAt, remainingMinutes, r
   return projected.toISOString();
 }
 
+/**
+ * @param {{
+ *   phase: import('../types/kord.d.ts').Phase | null | undefined;
+ *   lessonProgress?: import('../types/kord.d.ts').LessonProgressEntry[];
+ *   activityProgress?: import('../types/kord.d.ts').ActivityProgressEntry[];
+ *   assessments?: import('../types/kord.d.ts').Quiz[];
+ *   quizAttempts?: import('../types/kord.d.ts').QuizAttempt[];
+ *   challenges?: import('../types/kord.d.ts').Challenge[];
+ *   submissions?: import('../types/kord.d.ts').Submission[];
+ * }} params
+ * @returns {import('../types/kord.d.ts').PhaseProgressSummary}
+ */
 export function computePhaseProgress({
   phase,
   lessonProgress = [],
@@ -109,6 +128,19 @@ export function computePhaseProgress({
   };
 }
 
+/**
+ * @param {{
+ *   course: import('../types/kord.d.ts').Course;
+ *   lessonProgress?: import('../types/kord.d.ts').LessonProgressEntry[];
+ *   activityProgress?: import('../types/kord.d.ts').ActivityProgressEntry[];
+ *   assessments?: import('../types/kord.d.ts').Quiz[];
+ *   quizAttempts?: import('../types/kord.d.ts').QuizAttempt[];
+ *   challenges?: import('../types/kord.d.ts').Challenge[];
+ *   submissions?: import('../types/kord.d.ts').Submission[];
+ *   enrollment?: import('../types/kord.d.ts').CourseEnrollment | null;
+ * }} params
+ * @returns {import('../types/kord.d.ts').CourseProgressSummary}
+ */
 export function computeCourseProgress({
   course,
   lessonProgress = [],
@@ -146,6 +178,7 @@ export function computeCourseProgress({
       (!c.phaseId || publishedPhaseIds.has(c.phaseId))
   );
 
+  /** @type {Record<string, import('../types/kord.d.ts').PhaseProgressSummary>} */
   const phaseProgressById = {};
   let completedPhasesCount = 0;
   phases.forEach((p) => {
@@ -235,6 +268,7 @@ export function computeCourseProgress({
   const practicalApproved =
     requiredCourseChallenges.length > 0 && approvedChallengesCount >= requiredCourseChallenges.length;
 
+  /** @type {import('../types/kord.d.ts').CourseCompletionState} */
   let completionState = 'in_progress';
   if (instructionalDone) {
     if (rules.requireChallengeApproval && requiredCourseChallenges.length > 0) {
@@ -283,10 +317,16 @@ export function computeCourseProgress({
   };
 }
 
+/**
+ * @param {{
+ *   publishedCourses?: import('../types/kord.d.ts').Course[];
+ *   courseProgressById?: Record<string, import('../types/kord.d.ts').CourseProgressSummary>;
+ * }} [params]
+ */
 export function computeOverallSkillCourseProgress({
   publishedCourses = [],
   courseProgressById = {},
-}) {
+} = {}) {
   if (publishedCourses.length === 0) {
     return {
       totalPublishedCourses: 0,

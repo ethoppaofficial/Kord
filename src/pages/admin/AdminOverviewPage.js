@@ -8,6 +8,10 @@ import { escapeHtml } from '../../lib/formatters.js';
 import { buildUserGreeting } from '../../lib/greeting.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderAdminOverviewPage({ session, currentPath }) {
   const [categories, skills, courses, submissions, opportunities, quizzes, writtenAttempts, greetingInfo] =
     await Promise.all([

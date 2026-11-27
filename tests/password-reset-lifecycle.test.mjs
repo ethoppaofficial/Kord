@@ -7,9 +7,26 @@ import { createAuthService } from '../src/lib/repositories/authRepository.js';
 import { validateResetPasswordForm } from '../src/lib/validators.js';
 import { mountApp } from '../src/app/app.js';
 
+/** @typedef {import('../src/types/kord.d.ts').AppSupabaseClient} AppSupabaseClient */
+/** @typedef {import('../src/types/kord.d.ts').SupabaseAuthUserLike} SupabaseAuthUserLike */
+/** @typedef {import('../src/types/kord.d.ts').SupabaseAuthSessionLike} SupabaseAuthSessionLike */
+
+/** @type {ReturnType<typeof installDomHarness> | null} */
 let harness = null;
+/** @type {Array<ReturnType<typeof mountApp>>} */
 const mountedApps = [];
 
+/**
+ * @typedef {{ data: { session: SupabaseAuthSessionLike | null }; error: { message: string } | null }} RecoverySessionResult
+ * @typedef {{ data: { user: SupabaseAuthUserLike | null } | null; error: { message: string } | null }} UpdateUserResult
+ * @param {{
+ *   initialSessionUser?: SupabaseAuthUserLike | null;
+ *   exchangeResult?: ((code: string, options?: unknown) => RecoverySessionResult | Promise<RecoverySessionResult>) | RecoverySessionResult | null;
+ *   verifyOtpResult?: ((params: unknown) => RecoverySessionResult | Promise<RecoverySessionResult>) | RecoverySessionResult | null;
+ *   updateUserHandler?: ((attrs: { password?: string; data?: Record<string, unknown> }, activeUser: SupabaseAuthUserLike | null) => UpdateUserResult | Promise<UpdateUserResult>) | null;
+ *   role?: string;
+ * }} [opts]
+ */
 function createMockSupabaseForRecovery({
   initialSessionUser = null,
   exchangeResult = null,
@@ -17,9 +34,13 @@ function createMockSupabaseForRecovery({
   updateUserHandler = null,
   role = 'learner',
 } = {}) {
+  /** @type {SupabaseAuthUserLike | null} */
   let activeUser = initialSessionUser;
+  /** @type {Array<{ code: string; options?: unknown }>} */
   const exchangeCalls = [];
+  /** @type {Array<unknown>} */
   const verifyOtpCalls = [];
+  /** @type {Array<{ password?: string; data?: Record<string, unknown> }>} */
   const updateCalls = [];
   let signOutCount = 0;
 
@@ -31,6 +52,10 @@ function createMockSupabaseForRecovery({
           error: null,
         };
       },
+      /**
+       * @param {string} code
+       * @param {unknown} [options]
+       */
       async exchangeCodeForSession(code, options) {
         exchangeCalls.push({ code, options });
         const res =
@@ -42,6 +67,7 @@ function createMockSupabaseForRecovery({
         }
         return res || { data: { session: null }, error: { message: 'Invalid code' } };
       },
+      /** @param {{ token_hash: string; type: string }} params */
       async verifyOtp(params) {
         verifyOtpCalls.push(params);
         const res =
@@ -53,6 +79,7 @@ function createMockSupabaseForRecovery({
         }
         return res || { data: { session: null }, error: { message: 'Invalid token' } };
       },
+      /** @param {{ password?: string; data?: Record<string, unknown> }} attrs */
       async updateUser(attrs) {
         updateCalls.push(attrs);
         if (typeof updateUserHandler === 'function') {
@@ -100,7 +127,7 @@ function createMockSupabaseForRecovery({
   };
 
   return {
-    client,
+    client: /** @type {AppSupabaseClient} */ (/** @type {unknown} */ (client)),
     getActiveUser: () => activeUser,
     getExchangeCalls: () => exchangeCalls,
     getVerifyOtpCalls: () => verifyOtpCalls,
@@ -109,6 +136,7 @@ function createMockSupabaseForRecovery({
   };
 }
 
+/** @param {string} fullPath */
 function setUrl(fullPath) {
   const [pathPart, hashPart = ''] = fullPath.split('#');
   const [pathname, search = ''] = pathPart.split('?');
@@ -131,9 +159,10 @@ beforeEach(() => {
 
 afterEach(() => {
   while (mountedApps.length > 0) {
-    mountedApps.pop().destroy();
+    mountedApps.pop()?.destroy();
   }
   harness?.cleanup();
+  harness = null;
 });
 
 test('validateResetPasswordForm enforces length bounds and confirmation match', () => {
@@ -180,21 +209,25 @@ test('Valid PKCE recovery callback (?code=...) exchanges session, strips URL, up
     },
   });
   const auth = createAuthService({ supabaseClient: mock.client, isDemo: false });
+  assert.ok(harness, 'DOM harness installed');
 
   setUrl('/reset-password?code=pkce-code-123&type=recovery');
   const rootEl = harness.createRoot();
-  const ctrl = mountApp(rootEl, { auth });
+  const ctrl = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootEl)), { auth });
   mountedApps.push(ctrl);
   await ctrl.ready;
 
   assert.equal(mock.getExchangeCalls().length, 1);
   assert.equal(mock.getExchangeCalls()[0].code, 'pkce-code-123');
   assert.equal(window.location.search, '', 'Callback code must be stripped from URL');
-  assert.ok(rootEl.querySelector('#update-password-form'), 'Password update form renders');
+  const form = rootEl.querySelector('#update-password-form');
+  const passInput = rootEl.querySelector('#new-password');
+  const confirmInput = rootEl.querySelector('#confirm-new-password');
+  assert.ok(form && passInput && confirmInput, 'Password update form renders');
 
-  rootEl.querySelector('#new-password').value = 'newStrongPass42';
-  rootEl.querySelector('#confirm-new-password').value = 'newStrongPass42';
-  await rootEl.querySelector('#update-password-form').dispatchEvent({ type: 'submit' });
+  passInput.value = 'newStrongPass42';
+  confirmInput.value = 'newStrongPass42';
+  await form.dispatchEvent({ type: 'submit' });
   await flushMicrotasks();
 
   assert.equal(mock.getUpdateCalls().length, 1);
@@ -225,10 +258,11 @@ test('Valid OTP token_hash recovery callback verifies via verifyOtp and navigate
     },
   });
   const auth = createAuthService({ supabaseClient: mock.client, isDemo: false });
+  assert.ok(harness, 'DOM harness installed');
 
   setUrl('/reset-password?token_hash=hash-xyz-999&type=recovery');
   const rootEl = harness.createRoot();
-  const ctrl = mountApp(rootEl, { auth });
+  const ctrl = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootEl)), { auth });
   mountedApps.push(ctrl);
   await ctrl.ready;
 
@@ -238,11 +272,14 @@ test('Valid OTP token_hash recovery callback verifies via verifyOtp and navigate
     type: 'recovery',
   });
   assert.equal(window.location.search, '');
-  assert.ok(rootEl.querySelector('#update-password-form'));
+  const form = rootEl.querySelector('#update-password-form');
+  const passInput = rootEl.querySelector('#new-password');
+  const confirmInput = rootEl.querySelector('#confirm-new-password');
+  assert.ok(form && passInput && confirmInput);
 
-  rootEl.querySelector('#new-password').value = 'updatedPass77';
-  rootEl.querySelector('#confirm-new-password').value = 'updatedPass77';
-  await rootEl.querySelector('#update-password-form').dispatchEvent({ type: 'submit' });
+  passInput.value = 'updatedPass77';
+  confirmInput.value = 'updatedPass77';
+  await form.dispatchEvent({ type: 'submit' });
   await flushMicrotasks();
 
   assert.ok(rootEl.querySelector('#reset-password-success'));
@@ -255,12 +292,14 @@ test('Valid OTP token_hash recovery callback verifies via verifyOtp and navigate
 });
 
 test('Invalid, expired, reused, or missing recovery links block the password update form and preserve existing login sessions', async () => {
+  assert.ok(harness, 'DOM harness installed');
+
   // 1. Missing session (direct visit)
   const emptyMock = createMockSupabaseForRecovery();
   const emptyAuth = createAuthService({ supabaseClient: emptyMock.client, isDemo: false });
   setUrl('/reset-password');
   const root1 = harness.createRoot();
-  const ctrl1 = mountApp(root1, { auth: emptyAuth });
+  const ctrl1 = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (root1)), { auth: emptyAuth });
   mountedApps.push(ctrl1);
   await ctrl1.ready;
   assert.equal(root1.querySelector('#update-password-form'), null);
@@ -270,7 +309,7 @@ test('Invalid, expired, reused, or missing recovery links block the password upd
   // 2. Bare ?type=recovery URL param without a real session must NOT unlock the form
   setUrl('/reset-password?type=recovery');
   const root2 = harness.createRoot();
-  const ctrl2 = mountApp(root2, { auth: emptyAuth });
+  const ctrl2 = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (root2)), { auth: emptyAuth });
   mountedApps.push(ctrl2);
   await ctrl2.ready;
   assert.equal(root2.querySelector('#update-password-form'), null);
@@ -296,7 +335,7 @@ test('Invalid, expired, reused, or missing recovery links block the password upd
     '/reset-password?error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired'
   );
   const root3 = harness.createRoot();
-  const ctrl3 = mountApp(root3, { auth: existingAuth });
+  const ctrl3 = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (root3)), { auth: existingAuth });
   mountedApps.push(ctrl3);
   await ctrl3.ready;
 
@@ -311,7 +350,7 @@ test('Invalid, expired, reused, or missing recovery links block the password upd
   // 4. Failed PKCE code exchange blocks form and preserves existing session
   setUrl('/reset-password?code=reused-or-bad-code');
   const root4 = harness.createRoot();
-  const ctrl4 = mountApp(root4, { auth: existingAuth });
+  const ctrl4 = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (root4)), { auth: existingAuth });
   mountedApps.push(ctrl4);
   await ctrl4.ready;
 
@@ -328,6 +367,7 @@ test('Password reset form enforces validation, handles failed updateUser calls, 
     user_metadata: { first_name: 'Ada', full_name: 'Ada Lovelace' },
   };
 
+  /** @type {((value: UpdateUserResult) => void) | undefined} */
   let resolveFirstUpdate;
   let attemptNumber = 0;
   const mock = createMockSupabaseForRecovery({
@@ -346,10 +386,11 @@ test('Password reset form enforces validation, handles failed updateUser calls, 
     },
   });
   const auth = createAuthService({ supabaseClient: mock.client, isDemo: false });
+  assert.ok(harness, 'DOM harness installed');
 
   setUrl('/reset-password?code=valid-dup-code');
   const rootEl = harness.createRoot();
-  const ctrl = mountApp(rootEl, { auth });
+  const ctrl = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootEl)), { auth });
   mountedApps.push(ctrl);
   await ctrl.ready;
 
@@ -358,25 +399,22 @@ test('Password reset form enforces validation, handles failed updateUser calls, 
   const confirmInput = rootEl.querySelector('#confirm-new-password');
   const submitBtn = rootEl.querySelector('#update-password-submit');
   const formErr = rootEl.querySelector('#update-password-error');
+  const confirmErr = rootEl.querySelector('[data-error-for="confirmPassword"]');
+  const passErr = rootEl.querySelector('[data-error-for="password"]');
+  assert.ok(form && passInput && confirmInput && submitBtn && formErr && confirmErr && passErr);
 
   // Mismatched confirmation blocks submission
   passInput.value = 'validPass123';
   confirmInput.value = 'mismatchPass';
   await form.dispatchEvent({ type: 'submit' });
-  assert.equal(
-    rootEl.querySelector('[data-error-for="confirmPassword"]').textContent,
-    'Passwords do not match.'
-  );
+  assert.equal(confirmErr.textContent, 'Passwords do not match.');
   assert.equal(mock.getUpdateCalls().length, 0);
 
   // Too-short password blocks submission
   passInput.value = '123';
   confirmInput.value = '123';
   await form.dispatchEvent({ type: 'submit' });
-  assert.equal(
-    rootEl.querySelector('[data-error-for="password"]').textContent,
-    'Password must be at least 6 characters.'
-  );
+  assert.equal(passErr.textContent, 'Password must be at least 6 characters.');
   assert.equal(mock.getUpdateCalls().length, 0);
 
   // Valid submission while in-flight rejects duplicate submit
@@ -388,6 +426,7 @@ test('Password reset form enforces validation, handles failed updateUser calls, 
   assert.equal(mock.getUpdateCalls().length, 1, 'Duplicate submission must be blocked');
 
   // First attempt fails -> error message shown, form re-enabled for retry
+  assert.ok(resolveFirstUpdate);
   resolveFirstUpdate({ data: null, error: { message: 'New password should be different from old password.' } });
   await firstSubmitPromise;
   await flushMicrotasks();

@@ -6,6 +6,7 @@ const RESOURCES = [
   { title: 'Canva Learn: Design & Brand Systems', source: 'canva.com', url: 'https://www.canva.com/learn/', resourceType: 'Guide' },
 ];
 
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
 const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   t,
   intro,
@@ -22,6 +23,7 @@ const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   tk,
 });
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const CREATIVE_SPECS = [
   {
     code: 'uux',
@@ -814,4 +816,5 @@ const CREATIVE_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const CREATIVE_COURSE_BUILDERS = CREATIVE_SPECS.map((spec) => (helpers) => buildDomainCourse(spec, helpers));

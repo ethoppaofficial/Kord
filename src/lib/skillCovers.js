@@ -1,5 +1,9 @@
 import { escapeHtml, slugify } from './formatters.js';
 
+/** @typedef {{ c1: string; c2: string; accent: string; accentSoft: string; secondary: string; label: string }} SkillCoverPalette */
+/** @typedef {Partial<import('../types/kord.d.ts').Skill> & { category_id?: string; categoryName?: string; coverUrl?: string; thumbnailUrl?: string }} SkillCoverInput */
+
+/** @type {Record<string, SkillCoverPalette>} */
 const CATEGORY_PALETTES = {
   'cat-communication': {
     c1: '#0f172a',
@@ -59,6 +63,7 @@ const CATEGORY_PALETTES = {
   },
 };
 
+/** @type {Record<string, { cat: string; scene: string }>} */
 const SLUG_SCENE_CONFIG = {
   // 1. Communication & Interpersonal (14)
   'effective-communication': { cat: 'cat-communication', scene: 'dialogue_clarity' },
@@ -174,6 +179,7 @@ const SLUG_SCENE_CONFIG = {
   'client-management': { cat: 'cat-career', scene: 'client_milestones' },
 };
 
+/** @param {SkillCoverInput | null | undefined} skill */
 function inferCategoryId(skill) {
   const rawCatId = String(skill?.categoryId || skill?.category_id || '').trim();
   if (rawCatId && CATEGORY_PALETTES[rawCatId]) return rawCatId;
@@ -188,6 +194,10 @@ function inferCategoryId(skill) {
   return 'cat-communication';
 }
 
+/**
+ * @param {SkillCoverInput | null | undefined} skill
+ * @param {string} catId
+ */
 function inferSceneForUnknownSkill(skill, catId) {
   const s = `${skill?.slug || ''} ${skill?.title || ''}`.toLowerCase();
   if (/speak|present|talk/.test(s)) return 'stage_podium';
@@ -199,6 +209,7 @@ function inferSceneForUnknownSkill(skill, catId) {
   if (/market|ads|growth/.test(s)) return 'growth_funnel';
   if (/resume|cv|career|interview/.test(s)) return 'resume_sheet';
 
+  /** @type {Record<string, string>} */
   const defaults = {
     'cat-communication': 'dialogue_clarity',
     'cat-writing': 'nib_manuscript',
@@ -211,6 +222,7 @@ function inferSceneForUnknownSkill(skill, catId) {
   return defaults[catId] || 'dialogue_clarity';
 }
 
+/** @param {SkillCoverInput | null | undefined} skill */
 export function resolveSkillCoverSpec(skill) {
   const slug = slugify(skill?.slug || skill?.title || '');
   const mapped = SLUG_SCENE_CONFIG[slug];
@@ -220,6 +232,10 @@ export function resolveSkillCoverSpec(skill) {
   return { slug, catId, palette, scene };
 }
 
+/**
+ * @param {string} scene
+ * @param {SkillCoverPalette} p
+ */
 function renderSceneArtwork(scene, p) {
   const a = p.accent;
   const s = p.secondary;
@@ -1143,6 +1159,7 @@ function renderSceneArtwork(scene, p) {
   }
 }
 
+/** @param {SkillCoverInput | null | undefined} skill */
 export function buildSkillCoverSvgDataUri(skill) {
   const { palette, scene } = resolveSkillCoverSpec(skill);
 
@@ -1166,6 +1183,7 @@ export function buildSkillCoverSvgDataUri(skill) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
+/** @param {SkillCoverInput | null | undefined} skill */
 export function resolveSkillCover(skill) {
   if (!skill) return '';
   const custom = String(skill.coverUrl || skill.thumbnailUrl || '').trim();
@@ -1175,6 +1193,10 @@ export function resolveSkillCover(skill) {
   return buildSkillCoverSvgDataUri(skill);
 }
 
+/**
+ * @param {SkillCoverInput | null | undefined} skill
+ * @param {{ variant?: 'card' | 'banner'; alt?: string }} [opts]
+ */
 export function renderSkillCoverHtml(skill, { variant = 'card', alt = '' } = {}) {
   const { palette } = resolveSkillCoverSpec(skill);
   const src = resolveSkillCover(skill);

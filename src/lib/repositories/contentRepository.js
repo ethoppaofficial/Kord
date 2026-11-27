@@ -6,7 +6,12 @@ import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import { normalizeVideoEntry } from '../videoProvider.js';
 import { validateRubricWeights, DEFAULT_ALLOWED_MIME_TYPES } from '../validators.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').Course | null | undefined} course
+ * @param {{ assessments?: import('../../types/kord.d.ts').Quiz[] | null; challenges?: import('../../types/kord.d.ts').Challenge[] | null }} [opts]
+ */
 export function validateCourseForPublish(course, { assessments = null, challenges = null } = {}) {
+  /** @type {string[]} */
   const errors = [];
   if (!course) {
     return { valid: false, errors: ['Course does not exist.'] };
@@ -73,12 +78,17 @@ export function validateCourseForPublish(course, { assessments = null, challenge
   return { valid: errors.length === 0, errors };
 }
 
+/**
+ * @param {{ skillId?: string | null; associatedSkillIds?: string[] | null }} course
+ * @returns {string[]}
+ */
 function getCourseLinkedSkillIds(course) {
-  return Array.from(
-    new Set([course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean))
+  return /** @type {string[]} */ (
+    Array.from(new Set([course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean)))
   );
 }
 
+/** @returns {Promise<import('../../types/kord.d.ts').Category[]>} */
 export async function listCategories() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.from('categories').select('*').order('position');
@@ -88,6 +98,9 @@ export async function listCategories() {
   return (getDemoState().categories || []).slice().sort((a, b) => (a.position || 0) - (b.position || 0));
 }
 
+/**
+ * @param {{ id?: string; name: string; slug?: string; description?: string; position?: number }} payload
+ */
 export async function adminUpsertCategory({ id, name, slug, description = '', position }) {
   const cleanName = String(name || '').trim();
   const cleanSlug = slug ? slugify(slug) : slugify(cleanName);
@@ -153,6 +166,10 @@ export async function adminUpsertCategory({ id, name, slug, description = '', po
   });
 }
 
+/**
+ * @param {{ includeDrafts?: boolean }} [opts]
+ * @returns {Promise<import('../../types/kord.d.ts').Skill[]>}
+ */
 export async function listSkills({ includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
     const [{ data: skillsData, error }, { data: coursesData }, { data: linksData }] = await Promise.all([
@@ -161,13 +178,18 @@ export async function listSkills({ includeDrafts = false } = {}) {
       supabase.from('course_skills').select('course_id, skill_id'),
     ]);
     if (error) throw error;
+    /** @type {Map<string, string[]>} */
     const extraLinksByCourse = new Map();
     (linksData || []).forEach((row) => {
-      if (!extraLinksByCourse.has(row.course_id)) extraLinksByCourse.set(row.course_id, []);
-      extraLinksByCourse.get(row.course_id).push(row.skill_id);
+      const existingLinks = extraLinksByCourse.get(row.course_id) || [];
+      existingLinks.push(row.skill_id);
+      extraLinksByCourse.set(row.course_id, existingLinks);
     });
     const courses = (coursesData || []).map((c) =>
-      mapCourseSummary({ ...c, course_skills: (extraLinksByCourse.get(c.id) || []).map((sid) => ({ skill_id: sid })) })
+      mapCourseSummary({
+        ...c,
+        course_skills: (extraLinksByCourse.get(c.id) || []).map((/** @type {string} */ sid) => ({ skill_id: sid })),
+      })
     );
 
     return (skillsData || [])
@@ -220,6 +242,11 @@ export async function listSkills({ includeDrafts = false } = {}) {
     .filter((s) => includeDrafts || s.publicationStatus === 'published');
 }
 
+/**
+ * @param {string} slug
+ * @param {{ includeDrafts?: boolean }} [opts]
+ * @returns {Promise<import('../../types/kord.d.ts').Skill | null>}
+ */
 export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
   const allSkills = await listSkills({ includeDrafts });
   const skill = allSkills.find((s) => s.slug === slug);
@@ -238,6 +265,7 @@ export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
     ]);
 
     const extraCourseIds = (extraLinks || []).map((r) => r.course_id);
+    /** @type {Record<string, any>[]} */
     let extraCourses = [];
     if (extraCourseIds.length > 0) {
       const { data: ec } = await supabase
@@ -248,6 +276,7 @@ export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
       extraCourses = ec || [];
     }
 
+    /** @type {Map<string, Record<string, any>>} */
     const mergedMap = new Map();
     [...(directCourses || []), ...extraCourses].forEach((row) => mergedMap.set(row.id, row));
 
@@ -287,6 +316,10 @@ export async function getSkillBySlug(slug, { includeDrafts = false } = {}) {
   };
 }
 
+/**
+ * @param {{ includeDrafts?: boolean }} [opts]
+ * @returns {Promise<(import('../../types/kord.d.ts').Course & { associatedSkills?: import('../../types/kord.d.ts').Skill[] })[]>}
+ */
 export async function listAllCourses({ includeDrafts = true } = {}) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -299,9 +332,10 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
     return (data || [])
       .map((c) => {
         const primarySkill = c.skills || null;
+        /** @type {Map<string, import('../../types/kord.d.ts').Skill>} */
         const secondaryMap = new Map();
         if (primarySkill?.id) secondaryMap.set(primarySkill.id, primarySkill);
-        (c.course_skills || []).forEach((cs) => {
+        (c.course_skills || []).forEach((/** @type {any} */ cs) => {
           if (cs?.skills?.id && !secondaryMap.has(cs.skills.id)) {
             secondaryMap.set(cs.skills.id, cs.skills);
           }
@@ -325,8 +359,14 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
       const normalized = normalizeCourseForRead(c, { includeDrafts });
       const skill = skillById.get(c.skillId) || null;
       const associatedSkills = (normalized.associatedSkillIds || [])
-        .map((sid) => skillById.get(sid))
-        .filter(Boolean);
+        .map((/** @type {string} */ sid) => skillById.get(sid))
+        .filter(
+          /**
+           * @param {import('../../types/kord.d.ts').Skill | undefined} s
+           * @returns {s is import('../../types/kord.d.ts').Skill}
+           */
+          (s) => Boolean(s)
+        );
       return {
         ...normalized,
         categoryId: skill?.categoryId || c.categoryId || null,
@@ -337,6 +377,7 @@ export async function listAllCourses({ includeDrafts = true } = {}) {
     });
 }
 
+/** @returns {Promise<import('../../types/kord.d.ts').Challenge[]>} */
 export async function listAllChallenges() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.from('challenges').select('*');
@@ -346,6 +387,11 @@ export async function listAllChallenges() {
   return (getDemoState().challenges || []).slice();
 }
 
+/**
+ * @param {string} slug
+ * @param {{ includeDrafts?: boolean }} [opts]
+ * @returns {Promise<(import('../../types/kord.d.ts').Course & { associatedSkills?: import('../../types/kord.d.ts').Skill[]; versions?: import('../../types/kord.d.ts').CourseVersion[] }) | null>}
+ */
 export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -359,9 +405,10 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
     if (!includeDrafts && data.publication_status !== 'published') return null;
     const course = mapFullCourse(data, { includeDrafts });
     const primarySkill = data.skills || null;
+    /** @type {Map<string, import('../../types/kord.d.ts').Skill>} */
     const associatedSkillMap = new Map();
     if (primarySkill?.id) associatedSkillMap.set(primarySkill.id, primarySkill);
-    (data.course_skills || []).forEach((cs) => {
+    (data.course_skills || []).forEach((/** @type {any} */ cs) => {
       const sk = cs?.skills;
       if (sk?.id && (includeDrafts || (sk.publication_status || 'published') === 'published')) {
         if (!associatedSkillMap.has(sk.id)) associatedSkillMap.set(sk.id, sk);
@@ -382,8 +429,8 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
       associatedSkills: Array.from(associatedSkillMap.values()),
       versions: (data.course_versions || [])
         .slice()
-        .sort((a, b) => Number(b.version_number || 0) - Number(a.version_number || 0))
-        .map((v) => ({
+        .sort((/** @type {any} */ a, /** @type {any} */ b) => Number(b.version_number || 0) - Number(a.version_number || 0))
+        .map((/** @type {any} */ v) => ({
           id: v.id,
           courseId: v.course_id,
           versionNumber: v.version_number,
@@ -391,8 +438,9 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
           snapshot: v.snapshot || {},
           createdAt: v.created_at,
         })),
-      assessments: (assessments || []).map((a) => ({
+      assessments: (assessments || []).map((/** @type {any} */ a) => ({
         id: a.id,
+        skillId: a.skill_id || course.skillId,
         courseId: a.course_id,
         phaseId: a.phase_id,
         lessonId: a.lesson_id,
@@ -417,8 +465,14 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
 
   const normalized = normalizeCourseForRead(course, { includeDrafts });
   const associatedSkills = (normalized.associatedSkillIds || [])
-    .map((sid) => (state.skills || []).find((s) => s.id === sid))
-    .filter(Boolean);
+    .map((/** @type {string} */ sid) => (state.skills || []).find((s) => s.id === sid))
+    .filter(
+      /**
+       * @param {import('../../types/kord.d.ts').Skill | undefined} s
+       * @returns {s is import('../../types/kord.d.ts').Skill}
+       */
+      (s) => Boolean(s)
+    );
   const assessments = (state.quizzes || []).filter((q) => q.courseId === course.id);
   const challenges = (state.challenges || []).filter((c) => c.courseId === course.id);
   const versions = (state.courseVersions || [])
@@ -438,6 +492,10 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
   };
 }
 
+/**
+ * @param {string} courseId
+ * @param {{ includeDrafts?: boolean }} [opts]
+ */
 export async function getCourseById(courseId, { includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
     const { data } = await supabase.from('courses').select('slug').eq('id', courseId).single();
@@ -448,6 +506,7 @@ export async function getCourseById(courseId, { includeDrafts = false } = {}) {
   return course ? getCourseBySlug(course.slug, { includeDrafts }) : null;
 }
 
+/** @param {string} challengeId */
 export async function getChallengeById(challengeId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -473,13 +532,16 @@ export async function getChallengeById(challengeId) {
   return { ...challenge, skill, course };
 }
 
+/**
+ * @param {Omit<Partial<import('../../types/kord.d.ts').Skill>, 'outcomes'> & { outcomes?: string[] | string }} payload
+ */
 export async function adminUpsertSkill(payload) {
   const cleanTitle = String(payload.title || '').trim();
   const cleanSlug = payload.slug ? slugify(payload.slug) : slugify(cleanTitle);
   const key = buildIdempotencyKey('admin-skill', payload.id || cleanSlug, cleanTitle, payload.publicationStatus || '');
 
   const parsedOutcomes = Array.isArray(payload.outcomes)
-    ? payload.outcomes.map((x) => String(x || '').trim()).filter(Boolean)
+    ? payload.outcomes.map((/** @type {unknown} */ x) => String(x || '').trim()).filter(Boolean)
     : String(payload.outcomes || '')
         .split('\n')
         .map((x) => x.trim())
@@ -583,16 +645,20 @@ export async function adminUpsertSkill(payload) {
   });
 }
 
+/**
+ * @param {Omit<Partial<import('../../types/kord.d.ts').Course>, 'outcomes' | 'prerequisites'> & { outcomes?: string[] | string; prerequisites?: string[] | string }} payload
+ */
 export async function adminUpsertCourse(payload) {
   const cleanTitle = String(payload.title || '').trim();
   const cleanSlug = payload.slug ? slugify(payload.slug) : slugify(cleanTitle);
-  const linkedSkills = Array.from(
-    new Set([payload.skillId, ...(payload.associatedSkillIds || [])].filter(Boolean))
+  const primarySkillId = payload.skillId || '';
+  const linkedSkills = /** @type {string[]} */ (
+    Array.from(new Set([primarySkillId, ...(payload.associatedSkillIds || [])].filter(Boolean)))
   );
   const key = buildIdempotencyKey(
     'admin-course',
     payload.id || cleanSlug,
-    payload.skillId,
+    primarySkillId,
     cleanTitle,
     linkedSkills.join(','),
     payload.publicationStatus || ''
@@ -600,13 +666,13 @@ export async function adminUpsertCourse(payload) {
 
   return runIdempotent(key, async () => {
     const parsedOutcomes = Array.isArray(payload.outcomes)
-      ? payload.outcomes.map((x) => String(x || '').trim()).filter(Boolean)
+      ? payload.outcomes.map((/** @type {unknown} */ x) => String(x || '').trim()).filter(Boolean)
       : String(payload.outcomes || '')
           .split('\n')
           .map((x) => x.trim())
           .filter(Boolean);
     const parsedPrereqs = Array.isArray(payload.prerequisites)
-      ? payload.prerequisites.map((x) => String(x || '').trim()).filter(Boolean)
+      ? payload.prerequisites.map((/** @type {unknown} */ x) => String(x || '').trim()).filter(Boolean)
       : String(payload.prerequisites || '')
           .split('\n')
           .map((x) => x.trim())
@@ -687,6 +753,7 @@ export async function adminUpsertCourse(payload) {
       return data;
     }
 
+    /** @type {import('../../types/kord.d.ts').Course | null} */
     let savedCourse = null;
     updateDemoState((draft) => {
       draft.courses = draft.courses || [];
@@ -695,9 +762,9 @@ export async function adminUpsertCourse(payload) {
         ? draft.courses.find((c) => c.id === payload.id)
         : draft.courses.find((c) => c.slug === cleanSlug);
 
-      const siblingCount = draft.courses.filter((c) => c.skillId === payload.skillId).length;
+      const siblingCount = draft.courses.filter((c) => c.skillId === primarySkillId).length;
       const fields = {
-        skillId: payload.skillId,
+        skillId: primarySkillId,
         associatedSkillIds: linkedSkills,
         slug: cleanSlug,
         title: cleanTitle,
@@ -789,6 +856,10 @@ export async function adminUpsertCourse(payload) {
   });
 }
 
+/**
+ * @param {string} courseId
+ * @param {string} status
+ */
 export async function adminSetCourseStatus(courseId, status) {
   const allowed = ['published', 'draft', 'archived'];
   if (!allowed.includes(status)) {
@@ -837,6 +908,10 @@ export async function adminSetCourseStatus(courseId, status) {
   });
 }
 
+/**
+ * @param {string} courseId
+ * @param {string} [changeNotes]
+ */
 export async function adminCreateCourseVersion(courseId, changeNotes = '') {
   const cleanNotes = String(changeNotes || '').trim() || 'Curriculum update release';
   const key = buildIdempotencyKey('admin-course-version', courseId, cleanNotes, Date.now());
@@ -851,6 +926,7 @@ export async function adminCreateCourseVersion(courseId, changeNotes = '') {
     }
 
     const nowIso = new Date().toISOString();
+    /** @type {import('../../types/kord.d.ts').CourseVersion | null} */
     let createdVersion = null;
     updateDemoState((draft) => {
       draft.courseVersions = draft.courseVersions || [];
@@ -880,6 +956,9 @@ export async function adminCreateCourseVersion(courseId, changeNotes = '') {
   });
 }
 
+/**
+ * @param {Omit<Partial<import('../../types/kord.d.ts').Phase>, 'objectives'> & { courseId: string; title: string; objectives?: string[] | string }} payload
+ */
 export async function adminUpsertPhase({
   id,
   courseId,
@@ -971,6 +1050,10 @@ export async function adminUpsertPhase({
   });
 }
 
+/**
+ * @param {string} courseId
+ * @param {string[]} orderedPhaseIds
+ */
 export async function adminReorderPhases(courseId, orderedPhaseIds) {
   const key = buildIdempotencyKey('admin-phase-reorder', courseId, orderedPhaseIds.join(','), Date.now());
   return runIdempotent(key, async () => {
@@ -988,15 +1071,19 @@ export async function adminReorderPhases(courseId, orderedPhaseIds) {
       if (!course) throw new Error('Course not found');
       const posMap = new Map(orderedPhaseIds.map((pid, idx) => [pid, idx + 1]));
       (course.phases || []).forEach((p) => {
-        if (posMap.has(p.id)) p.position = posMap.get(p.id);
+        const nextPos = posMap.get(p.id);
+        if (nextPos !== undefined) p.position = nextPos;
       });
-      course.phases.sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      course.phases = (course.phases || []).slice().sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
       course.updatedAt = new Date().toISOString();
       return draft;
     });
   });
 }
 
+/**
+ * @param {Partial<import('../../types/kord.d.ts').PhaseActivity> & { courseId: string; phaseId: string; title: string }} payload
+ */
 export async function adminUpsertActivity({
   id,
   courseId,
@@ -1059,12 +1146,24 @@ export async function adminUpsertActivity({
           resources: [],
         });
       }
-      course.updatedAt = new Date().toISOString();
+      if (course) {
+        course.updatedAt = new Date().toISOString();
+      }
       return draft;
     });
   });
 }
 
+/**
+ * @param {Omit<Partial<import('../../types/kord.d.ts').Lesson>, 'objectives' | 'takeaways' | 'videos'> & {
+ *   courseId: string;
+ *   phaseId: string;
+ *   title: string;
+ *   objectives?: string[] | string;
+ *   takeaways?: string[] | string;
+ *   videos?: Array<import('../../types/kord.d.ts').VideoEntry & { urlUpdated?: boolean }>;
+ * }} payload
+ */
 export async function adminUpsertLesson({
   id,
   courseId,
@@ -1088,7 +1187,7 @@ export async function adminUpsertLesson({
     const cleanVideos = (videos || []).map((v) => {
       if (v.videoId && v.embedUrl && !v.urlUpdated) return v;
       const normalized = normalizeVideoEntry(v);
-      if (!normalized.valid) throw new Error(normalized.error);
+      if (!normalized.valid || !normalized.video) throw new Error(normalized.error || 'Invalid video URL');
       return normalized.video;
     });
 
@@ -1212,6 +1311,10 @@ export async function adminUpsertLesson({
   });
 }
 
+/**
+ * @param {string} courseId
+ * @param {string} phaseId
+ */
 export async function adminDeletePhase(courseId, phaseId) {
   const key = buildIdempotencyKey('admin-phase-del', courseId, phaseId, Date.now());
   return runIdempotent(key, async () => {
@@ -1259,22 +1362,31 @@ export async function adminDeletePhase(courseId, phaseId) {
         throw new Error('Cannot delete a module that has linked assessments. Remove or reassign the assessment first.');
       }
       const lessonIds = new Set((phase.lessons || []).map((l) => l.id));
-      const hasLessonProgress = (draft.lessonProgress || []).some((lp) => lessonIds.has(lp.lessonId));
+      const hasLessonProgress = (draft.lessonProgress || []).some((lp) =>
+        lp.lessonId ? lessonIds.has(lp.lessonId) : false
+      );
       const actIds = new Set((phase.activities || []).map((a) => a.id));
       const hasActivityProgress = (draft.activityProgress || []).some((ap) => actIds.has(ap.activityId));
       if (hasLessonProgress || hasActivityProgress) {
         throw new Error('Cannot delete a module with recorded learner progress. Unpublish the module instead.');
       }
 
-      course.phases = (course.phases || [])
-        .filter((p) => p.id !== phaseId)
-        .map((p, idx) => ({ ...p, position: idx + 1 }));
-      course.updatedAt = new Date().toISOString();
+      if (course) {
+        course.phases = (course.phases || [])
+          .filter((p) => p.id !== phaseId)
+          .map((p, idx) => ({ ...p, position: idx + 1 }));
+        course.updatedAt = new Date().toISOString();
+      }
       return draft;
     });
   });
 }
 
+/**
+ * @param {string} courseId
+ * @param {string} phaseId
+ * @param {string[]} orderedLessonIds
+ */
 export async function adminReorderLessons(courseId, phaseId, orderedLessonIds) {
   const key = buildIdempotencyKey('admin-lesson-reorder', courseId, phaseId, orderedLessonIds.join(','), Date.now());
   return runIdempotent(key, async () => {
@@ -1293,15 +1405,23 @@ export async function adminReorderLessons(courseId, phaseId, orderedLessonIds) {
       if (!phase) throw new Error('Module not found');
       const posMap = new Map(orderedLessonIds.map((lid, idx) => [lid, idx + 1]));
       (phase.lessons || []).forEach((l) => {
-        if (posMap.has(l.id)) l.position = posMap.get(l.id);
+        const nextPos = posMap.get(l.id);
+        if (nextPos !== undefined) l.position = nextPos;
       });
-      phase.lessons.sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
-      course.updatedAt = new Date().toISOString();
+      phase.lessons = (phase.lessons || []).slice().sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      if (course) {
+        course.updatedAt = new Date().toISOString();
+      }
       return draft;
     });
   });
 }
 
+/**
+ * @param {string} courseId
+ * @param {string} phaseId
+ * @param {string} lessonId
+ */
 export async function adminDeleteLesson(courseId, phaseId, lessonId) {
   const key = buildIdempotencyKey('admin-lesson-del', courseId, phaseId, lessonId);
   return runIdempotent(key, async () => {
@@ -1331,6 +1451,9 @@ export async function adminDeleteLesson(courseId, phaseId, lessonId) {
   });
 }
 
+/**
+ * @param {Omit<Partial<import('../../types/kord.d.ts').Challenge>, 'expectedDeliverables'> & { skillId: string; expectedDeliverables?: string[] | string }} payload
+ */
 export async function adminUpsertChallenge(payload) {
   const cleanTitle = String(payload.title || '').trim();
   if (cleanTitle.length < 3) {
@@ -1360,7 +1483,7 @@ export async function adminUpsertChallenge(payload) {
     Math.max(1, Number(payload.passingScore || Math.round(maxScore * 0.72)))
   );
   const expectedDeliverables = Array.isArray(payload.expectedDeliverables)
-    ? payload.expectedDeliverables.map((x) => String(x || '').trim()).filter(Boolean)
+    ? payload.expectedDeliverables.map((/** @type {unknown} */ x) => String(x || '').trim()).filter(Boolean)
     : String(payload.expectedDeliverables || '')
         .split('\n')
         .map((x) => x.trim())
@@ -1396,6 +1519,7 @@ export async function adminUpsertChallenge(payload) {
       return mapChallenge(data);
     }
 
+    /** @type {import('../../types/kord.d.ts').Challenge | null} */
     let savedChallenge = null;
     updateDemoState((draft) => {
       draft.challenges = draft.challenges || [];
@@ -1433,15 +1557,17 @@ export async function adminUpsertChallenge(payload) {
           afterData: { title: fields.title, courseId: fields.courseId },
         });
       } else {
-        savedChallenge = {
+        /** @type {import('../../types/kord.d.ts').Challenge} */
+        const created = {
           id: `ch-${payload.courseId || Date.now()}`,
           ...fields,
         };
-        draft.challenges.push(savedChallenge);
+        savedChallenge = created;
+        draft.challenges.push(created);
         appendDemoAuditLog(draft, {
           action: 'challenge_created',
           targetTable: 'challenges',
-          targetId: savedChallenge.id,
+          targetId: created.id,
           beforeData: null,
           afterData: { title: fields.title, courseId: fields.courseId },
         });
@@ -1452,9 +1578,14 @@ export async function adminUpsertChallenge(payload) {
   });
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').Course} c
+ * @param {{ includeDrafts?: boolean }} [opts]
+ * @returns {import('../../types/kord.d.ts').Course}
+ */
 function normalizeCourseForRead(c, { includeDrafts = false } = {}) {
-  const associatedSkillIds = Array.from(
-    new Set([c.skillId, ...(c.associatedSkillIds || [])].filter(Boolean))
+  const associatedSkillIds = /** @type {string[]} */ (
+    Array.from(new Set([c.skillId, ...(c.associatedSkillIds || [])].filter(Boolean)))
   );
   const phases = (c.phases || [])
     .filter((p) => includeDrafts || (p.publicationStatus || 'published') === 'published')
@@ -1480,14 +1611,19 @@ function normalizeCourseForRead(c, { includeDrafts = false } = {}) {
   };
 }
 
+/**
+ * @param {Record<string, any>} c
+ * @returns {import('../../types/kord.d.ts').Course}
+ */
 function mapCourseSummary(c) {
-  const linked = (c.course_skills || []).map((cs) => cs.skill_id).filter(Boolean);
+  const linked = (c.course_skills || []).map((/** @type {any} */ cs) => cs.skill_id).filter(Boolean);
   return {
     id: c.id,
     skillId: c.skill_id,
     associatedSkillIds: Array.from(new Set([c.skill_id, ...linked].filter(Boolean))),
     slug: c.slug,
     title: c.title,
+    description: c.description || '',
     difficulty: c.difficulty,
     estimatedDurationWeeks: c.estimated_duration_weeks,
     thumbnailUrl: c.thumbnail_url || '',
@@ -1498,8 +1634,13 @@ function mapCourseSummary(c) {
   };
 }
 
+/**
+ * @param {Record<string, any>} c
+ * @param {{ includeDrafts?: boolean }} [opts]
+ * @returns {import('../../types/kord.d.ts').Course}
+ */
 function mapFullCourse(c, { includeDrafts = false } = {}) {
-  const linked = (c.course_skills || []).map((cs) => cs.skill_id).filter(Boolean);
+  const linked = (c.course_skills || []).map((/** @type {any} */ cs) => cs.skill_id).filter(Boolean);
   return {
     id: c.id,
     skillId: c.skill_id,
@@ -1529,10 +1670,10 @@ function mapFullCourse(c, { includeDrafts = false } = {}) {
     publicationStatus: c.publication_status || 'published',
     position: Number(c.position || 1),
     phases: (c.phases || [])
-      .filter((p) => includeDrafts || (p.publication_status || 'published') === 'published')
+      .filter((/** @type {any} */ p) => includeDrafts || (p.publication_status || 'published') === 'published')
       .slice()
-      .sort((a, b) => a.position - b.position)
-      .map((p) => ({
+      .sort((/** @type {any} */ a, /** @type {any} */ b) => a.position - b.position)
+      .map((/** @type {any} */ p) => ({
         id: p.id,
         position: p.position,
         title: p.title,
@@ -1543,8 +1684,8 @@ function mapFullCourse(c, { includeDrafts = false } = {}) {
         publicationStatus: p.publication_status || 'published',
         activities: (p.activities || [])
           .slice()
-          .sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
-          .map((a) => ({
+          .sort((/** @type {any} */ a, /** @type {any} */ b) => Number(a.position || 0) - Number(b.position || 0))
+          .map((/** @type {any} */ a) => ({
             id: a.id,
             phaseId: a.phase_id,
             lessonId: a.lesson_id || null,
@@ -1558,10 +1699,10 @@ function mapFullCourse(c, { includeDrafts = false } = {}) {
             resources: a.resources || [],
           })),
         lessons: (p.lessons || [])
-          .filter((l) => includeDrafts || (l.publication_status || 'published') === 'published')
+          .filter((/** @type {any} */ l) => includeDrafts || (l.publication_status || 'published') === 'published')
           .slice()
-          .sort((a, b) => a.position - b.position)
-          .map((l) => ({
+          .sort((/** @type {any} */ a, /** @type {any} */ b) => a.position - b.position)
+          .map((/** @type {any} */ l) => ({
             id: l.id,
             position: l.position,
             title: l.title,
@@ -1581,6 +1722,10 @@ function mapFullCourse(c, { includeDrafts = false } = {}) {
   };
 }
 
+/**
+ * @param {Record<string, any>} c
+ * @returns {import('../../types/kord.d.ts').Challenge}
+ */
 function mapChallenge(c) {
   return {
     id: c.id,

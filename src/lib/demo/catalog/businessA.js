@@ -6,10 +6,12 @@ const RESOURCES = [
   { title: 'MindTools Business & Planning Frameworks', source: 'mindtools.com', url: 'https://www.mindtools.com/', resourceType: 'Guide' },
 ];
 
-function L(t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) {
-  return { t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} practically`], h, exp, def, ex, steps, cs, tip, chk, sum, tk };
-}
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
+const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) => ({
+  t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} practically`], h, exp, def, ex, steps, cs, tip, chk, sum, tk,
+});
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const SPECS = [
   {
     code: 'en',
@@ -796,4 +798,5 @@ const SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const BUSINESS_A_BUILDERS = SPECS.map((spec) => (helpers) => buildDomainCourse(spec, helpers));

@@ -4,14 +4,20 @@ import { createFlagshipCurriculumSeed } from './flagshipCoursesSeed.js';
 
 export const CURRENT_SEED_VERSION = 8;
 
+/** @returns {import('../../types/kord.d.ts').DemoState} */
 export function createInitialSeed() {
   const now = Date.now();
+  /**
+   * @param {number} d
+   * @param {number} [hour]
+   */
   const daysAgo = (d, hour = 10) => {
     const dt = new Date(now - d * 86400000);
     dt.setHours(hour, 15, 0, 0);
     return dt.toISOString();
   };
 
+  /** @type {import('../../types/kord.d.ts').KordUser[]} */
   const users = [
     {
       id: 'user-learner-maya',

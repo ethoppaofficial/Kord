@@ -20,6 +20,16 @@ const EYE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" st
 const EYE_OFF_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>`;
 const GOOGLE_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"/><path fill="#FBBC05" d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"/></svg>`;
 
+/**
+ * @param {{
+ *   id: string;
+ *   name: string;
+ *   label: string;
+ *   autocomplete: string;
+ *   placeholder?: string;
+ *   errorKey: string;
+ * }} params
+ */
 function renderPasswordField({
   id,
   name,
@@ -51,12 +61,15 @@ function renderPasswordField({
   `;
 }
 
+/** @param {HTMLElement} root */
 function bindPasswordToggles(root) {
   const buttons = root.querySelectorAll('[data-password-toggle]');
   buttons.forEach((btn) => {
     btn.addEventListener('click', () => {
       const targetId = btn.getAttribute('data-password-toggle');
-      const input = targetId ? root.querySelector(`#${targetId}`) : null;
+      const input = /** @type {HTMLInputElement | null} */ (
+        targetId ? root.querySelector(`#${targetId}`) : null
+      );
       if (!input) return;
 
       const currentType = input.getAttribute('type') || input.type || 'password';
@@ -77,6 +90,9 @@ function bindPasswordToggles(root) {
   });
 }
 
+/**
+ * @param {{ buttonId: string; errorId: string }} params
+ */
 function renderGoogleSignInBlock({ buttonId, errorId }) {
   return `
     <div class="auth-oauth-divider" role="separator" aria-label="or">
@@ -90,8 +106,16 @@ function renderGoogleSignInBlock({ buttonId, errorId }) {
   `;
 }
 
+/**
+ * @param {{
+ *   root: HTMLElement;
+ *   buttonId: string;
+ *   errorId: string;
+ *   auth?: Partial<import('../../types/kord.d.ts').AuthService> | null;
+ * }} params
+ */
 function bindGoogleSignInButton({ root, buttonId, errorId, auth = null }) {
-  const btn = root.querySelector(`#${buttonId}`);
+  const btn = /** @type {HTMLButtonElement | null} */ (root.querySelector(`#${buttonId}`));
   const errEl = root.querySelector(`#${errorId}`);
   if (!btn) return;
   const doGoogleSignIn = auth?.signInWithGoogle || signInWithGoogle;
@@ -113,7 +137,8 @@ function bindGoogleSignInButton({ root, buttonId, errorId, auth = null }) {
       await doGoogleSignIn();
     } catch (err) {
       if (errEl) {
-        errEl.textContent = err?.message || 'Unable to start Google Sign-In.';
+        errEl.textContent =
+          err instanceof Error && err.message ? err.message : 'Unable to start Google Sign-In.';
       }
       btn.disabled = false;
       if (labelEl) {
@@ -126,6 +151,13 @@ function bindGoogleSignInButton({ root, buttonId, errorId, auth = null }) {
   });
 }
 
+/**
+ * @param {{
+ *   navigate: (path: string) => unknown;
+ *   auth?: Partial<import('../../types/kord.d.ts').AuthService> | null;
+ * }} params
+ * @returns {import('../../types/kord.d.ts').PageView}
+ */
 export function renderLoginPage({ navigate, auth = null }) {
   const doSignIn = auth?.signIn || signIn;
   return {
@@ -168,6 +200,7 @@ export function renderLoginPage({ navigate, auth = null }) {
         </div>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindPasswordToggles(root);
       bindGoogleSignInButton({
@@ -176,13 +209,13 @@ export function renderLoginPage({ navigate, auth = null }) {
         errorId: 'login-google-error',
         auth,
       });
-      const form = root.querySelector('#login-form');
-      const submitBtn = root.querySelector('#login-submit');
+      const form = /** @type {HTMLFormElement | null} */ (root.querySelector('#login-form'));
+      const submitBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#login-submit'));
       const formErr = root.querySelector('#login-form-error');
       const forgotBtn = root.querySelector('#open-forgot-password-btn');
 
       forgotBtn?.addEventListener('click', () => {
-        const emailInput = root.querySelector('#login-email');
+        const emailInput = /** @type {HTMLInputElement | null} */ (root.querySelector('#login-email'));
         openForgotPasswordModal({
           initialEmail: String(emailInput?.value || '').trim(),
           auth,
@@ -191,7 +224,7 @@ export function renderLoginPage({ navigate, auth = null }) {
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        formErr.textContent = '';
+        if (formErr) formErr.textContent = '';
         const fd = new FormData(form);
         const payload = {
           email: String(fd.get('email') || ''),
@@ -199,26 +232,41 @@ export function renderLoginPage({ navigate, auth = null }) {
         };
 
         const errors = validateLoginForm(payload);
-        root.querySelector('[data-error-for="email"]').textContent = errors.email || '';
-        root.querySelector('[data-error-for="password"]').textContent = errors.password || '';
+        const emailErr = root.querySelector('[data-error-for="email"]');
+        const passErr = root.querySelector('[data-error-for="password"]');
+        if (emailErr) emailErr.textContent = errors.email || '';
+        if (passErr) passErr.textContent = errors.password || '';
         if (Object.keys(errors).length > 0) return;
 
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Signing in…';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Signing in…';
+        }
         try {
           const session = await doSignIn(payload);
           showToast('Signed in successfully.', 'success');
           navigate(session?.user?.role === 'admin' ? '/admin' : '/dashboard');
         } catch (err) {
-          formErr.textContent = err.message || 'Sign in failed.';
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Sign in';
+          if (formErr) {
+            formErr.textContent = err instanceof Error && err.message ? err.message : 'Sign in failed.';
+          }
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Sign in';
+          }
         }
       });
     },
   };
 }
 
+/**
+ * @param {{
+ *   navigate: (path: string) => unknown;
+ *   auth?: Partial<import('../../types/kord.d.ts').AuthService> | null;
+ * }} params
+ * @returns {import('../../types/kord.d.ts').PageView}
+ */
 export function renderSignupPage({ navigate, auth = null }) {
   const doSignUp = auth?.signUp || signUp;
   return {
@@ -283,6 +331,7 @@ export function renderSignupPage({ navigate, auth = null }) {
         </div>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindPasswordToggles(root);
       bindGoogleSignInButton({
@@ -291,13 +340,13 @@ export function renderSignupPage({ navigate, auth = null }) {
         errorId: 'signup-google-error',
         auth,
       });
-      const form = root.querySelector('#signup-form');
-      const submitBtn = root.querySelector('#signup-submit');
+      const form = /** @type {HTMLFormElement | null} */ (root.querySelector('#signup-form'));
+      const submitBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#signup-submit'));
       const formErr = root.querySelector('#signup-form-error');
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        formErr.textContent = '';
+        if (formErr) formErr.textContent = '';
         const fd = new FormData(form);
         const payload = {
           firstName: String(fd.get('firstName') || ''),
@@ -307,28 +356,40 @@ export function renderSignupPage({ navigate, auth = null }) {
           confirmPassword: String(fd.get('confirmPassword') || ''),
         };
 
-        const errors = validateSignupForm(payload);
+        const errors = /** @type {Record<string, string>} */ (validateSignupForm(payload));
         ['firstName', 'lastName', 'email', 'password', 'confirmPassword'].forEach((k) => {
-          root.querySelector(`[data-error-for="${k}"]`).textContent = errors[k] || '';
+          const el = root.querySelector(`[data-error-for="${k}"]`);
+          if (el) el.textContent = errors[k] || '';
         });
         if (Object.keys(errors).length > 0) return;
 
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Creating account…';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Creating account…';
+        }
         try {
           const session = await doSignUp(payload);
           showToast('Account created.', 'success');
           navigate(session?.user?.role === 'admin' ? '/admin' : '/dashboard');
         } catch (err) {
-          formErr.textContent = err.message || 'Unable to create account.';
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Create account';
+          if (formErr) {
+            formErr.textContent =
+              err instanceof Error && err.message ? err.message : 'Unable to create account.';
+          }
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Create account';
+          }
         }
       });
     },
   };
 }
 
+/**
+ * @param {{ auth?: Partial<import('../../types/kord.d.ts').AuthService> | null }} [params]
+ * @returns {import('../../types/kord.d.ts').PageView}
+ */
 export function renderForgotPasswordPage({ auth = null } = {}) {
   const doRecover =
     auth?.recoverPassword || auth?.requestPasswordReset || recoverPassword;
@@ -358,38 +419,58 @@ export function renderForgotPasswordPage({ auth = null } = {}) {
         </div>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
-      const form = root.querySelector('#reset-form');
-      const submitBtn = root.querySelector('#reset-submit');
-      const feedback = root.querySelector('#reset-feedback');
+      const form = /** @type {HTMLFormElement | null} */ (root.querySelector('#reset-form'));
+      const submitBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#reset-submit'));
+      const feedback = /** @type {HTMLElement | null} */ (root.querySelector('#reset-feedback'));
 
       form?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const email = String(new FormData(form).get('email') || '').trim();
         const errEl = root.querySelector('[data-error-for="email"]');
         const errors = validateForgotPasswordForm({ email });
-        errEl.textContent = errors.email || '';
+        if (errEl) errEl.textContent = errors.email || '';
         if (errors.email) return;
 
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Sending…';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Sending…';
+        }
         try {
           const res = await doRecover(email);
-          feedback.style.color = 'var(--color-green)';
-          feedback.textContent = res.note || 'Reset instructions sent. Check your inbox.';
+          if (feedback) {
+            feedback.style.color = 'var(--color-green)';
+            feedback.textContent = res.note || 'Reset instructions sent. Check your inbox.';
+          }
           showToast('Reset request processed.', 'success');
         } catch (err) {
-          feedback.style.color = 'var(--color-red)';
-          feedback.textContent = err.message || 'Unable to process request.';
+          if (feedback) {
+            feedback.style.color = 'var(--color-red)';
+            feedback.textContent =
+              err instanceof Error && err.message ? err.message : 'Unable to process request.';
+          }
         } finally {
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Send reset link';
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Send reset link';
+          }
         }
       });
     },
   };
 }
 
+/**
+ * @param {{
+ *   navigate: (path: string) => unknown;
+ *   session: import('../../types/kord.d.ts').AuthSession | null;
+ *   auth?: Partial<import('../../types/kord.d.ts').AuthService> | null;
+ *   recoveryState?: import('../../types/kord.d.ts').RecoveryState | null;
+ *   signOut?: ((opts?: { redirectTo?: string; toastMessage?: string }) => Promise<void>) | null;
+ * }} params
+ * @returns {import('../../types/kord.d.ts').PageView}
+ */
 export function renderResetPasswordPage({
   navigate,
   session,
@@ -430,6 +511,7 @@ export function renderResetPasswordPage({
           </div>
         </div>
       `,
+      /** @param {HTMLElement} root */
       bind(root) {
         root.querySelector('#reset-request-new-link')?.addEventListener('click', () => {
           openForgotPasswordModal({ auth });
@@ -457,6 +539,7 @@ export function renderResetPasswordPage({
           </div>
         </div>
       `,
+      /** @param {HTMLElement} root */
       bind(root) {
         root.querySelector('#reset-request-link-btn')?.addEventListener('click', () => {
           openForgotPasswordModal({ auth });
@@ -498,14 +581,15 @@ export function renderResetPasswordPage({
         </div>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindPasswordToggles(root);
       const card = root.querySelector('#reset-password-card');
-      const form = root.querySelector('#update-password-form');
-      const submitBtn = root.querySelector('#update-password-submit');
+      const form = /** @type {HTMLFormElement | null} */ (root.querySelector('#update-password-form'));
+      const submitBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#update-password-submit'));
       const formErr = root.querySelector('#update-password-error');
-      const passwordInput = root.querySelector('#new-password');
-      const confirmInput = root.querySelector('#confirm-new-password');
+      const passwordInput = /** @type {HTMLInputElement | null} */ (root.querySelector('#new-password'));
+      const confirmInput = /** @type {HTMLInputElement | null} */ (root.querySelector('#confirm-new-password'));
       let submitting = false;
 
       passwordInput?.addEventListener('input', () => {
@@ -523,7 +607,7 @@ export function renderResetPasswordPage({
         e.preventDefault();
         if (submitting) return;
 
-        formErr.textContent = '';
+        if (formErr) formErr.textContent = '';
         const fd = new FormData(form);
         const password = String(fd.get('password') ?? passwordInput?.value ?? '');
         const confirmPassword = String(
@@ -531,14 +615,17 @@ export function renderResetPasswordPage({
         );
 
         const errors = validateResetPasswordForm({ password, confirmPassword });
-        root.querySelector('[data-error-for="password"]').textContent = errors.password || '';
-        root.querySelector('[data-error-for="confirmPassword"]').textContent =
-          errors.confirmPassword || '';
+        const passErr = root.querySelector('[data-error-for="password"]');
+        const confirmErr = root.querySelector('[data-error-for="confirmPassword"]');
+        if (passErr) passErr.textContent = errors.password || '';
+        if (confirmErr) confirmErr.textContent = errors.confirmPassword || '';
         if (Object.keys(errors).length > 0) return;
 
         submitting = true;
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Updating password…';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Updating password…';
+        }
         if (passwordInput) passwordInput.disabled = true;
         if (confirmInput) confirmInput.disabled = true;
 
@@ -594,9 +681,14 @@ export function renderResetPasswordPage({
             }
           }
         } catch (err) {
-          formErr.textContent = err?.message || 'Unable to update password.';
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Update password';
+          if (formErr) {
+            formErr.textContent =
+              err instanceof Error && err.message ? err.message : 'Unable to update password.';
+          }
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Update password';
+          }
           if (passwordInput) passwordInput.disabled = false;
           if (confirmInput) confirmInput.disabled = false;
         } finally {
@@ -607,6 +699,13 @@ export function renderResetPasswordPage({
   };
 }
 
+/**
+ * @param {{
+ *   session?: import('../../types/kord.d.ts').AuthSession | null;
+ *   oauthCallbackState?: import('../../types/kord.d.ts').OAuthCallbackState | null;
+ * }} [params]
+ * @returns {import('../../types/kord.d.ts').PageView}
+ */
 export function renderAuthCallbackPage({ session = null, oauthCallbackState = null } = {}) {
   const status = oauthCallbackState?.status;
   if (status === 'error' || status === 'missing_callback') {

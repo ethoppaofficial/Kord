@@ -11,7 +11,22 @@ const REQUIRED_FLAGSHIP_COURSE_IDS = [
   'course-communication-public-speaking',
 ];
 
+/**
+ * @typedef {(
+ *   state: import('../../types/kord.d.ts').DemoState,
+ *   meta: {
+ *     fromStorageEvent?: boolean;
+ *     previousUserId?: string | null;
+ *     previousRole?: string | null;
+ *     nextUserId?: string | null;
+ *     nextRole?: string | null;
+ *   }
+ * ) => void} DemoStateListener
+ */
+
+/** @type {Set<DemoStateListener>} */
 const listeners = new Set();
+/** @type {string | null} */
 let lastSerializedState = null;
 
 export function getDemoCurrentUserId() {
@@ -30,6 +45,7 @@ export function getDemoCurrentUserId() {
   }
 }
 
+/** @param {string | null | undefined} userId */
 export function setDemoCurrentUserId(userId) {
   try {
     const storage =
@@ -49,13 +65,25 @@ export function setDemoCurrentUserId(userId) {
   }
 }
 
+/**
+ * @template T
+ * @param {T} obj
+ * @returns {T}
+ */
 function stripSessionFields(obj) {
   if (!obj || typeof obj !== 'object') return obj;
-  const { currentUserId: _omitted, ...clean } = obj;
-  return clean;
+  const { currentUserId: _omitted, ...clean } = /** @type {Record<string, unknown>} */ (obj);
+  return /** @type {T} */ (clean);
 }
 
+/**
+ * @template {{ id?: string }} T
+ * @param {T[]} [seedItems]
+ * @param {T[]} [storedItems]
+ * @returns {T[]}
+ */
 function mergeById(seedItems = [], storedItems = []) {
+  /** @type {Map<string, T>} */
   const map = new Map();
   seedItems.forEach((item) => {
     if (item?.id) map.set(item.id, item);
@@ -69,8 +97,14 @@ function mergeById(seedItems = [], storedItems = []) {
   return Array.from(map.values());
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').Skill[]} [seedSkills]
+ * @param {import('../../types/kord.d.ts').Skill[]} [storedSkills]
+ * @returns {import('../../types/kord.d.ts').Skill[]}
+ */
 function mergeSkills(seedSkills = [], storedSkills = []) {
   const storedById = new Map(storedSkills.filter((s) => s?.id).map((s) => [s.id, s]));
+  /** @type {import('../../types/kord.d.ts').Skill[]} */
   const result = [];
   const seenIds = new Set();
 
@@ -104,7 +138,13 @@ function mergeSkills(seedSkills = [], storedSkills = []) {
   return result;
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').KordUser[]} [seedUsers]
+ * @param {import('../../types/kord.d.ts').KordUser[]} [storedUsers]
+ * @returns {import('../../types/kord.d.ts').KordUser[]}
+ */
 function mergeUsers(seedUsers = [], storedUsers = []) {
+  /** @type {Map<string, import('../../types/kord.d.ts').KordUser>} */
   const byId = new Map();
   const seenEmails = new Set();
   storedUsers.forEach((u) => {
@@ -121,13 +161,19 @@ function mergeUsers(seedUsers = [], storedUsers = []) {
   return Array.from(byId.values());
 }
 
+/** @param {unknown} parsed */
 function needsCurriculumMigration(parsed) {
   if (!parsed || typeof parsed !== 'object') return true;
-  if (parsed.seedVersion !== CURRENT_SEED_VERSION) return true;
-  const courseIds = new Set((parsed.courses || []).map((c) => c.id));
+  const obj = /** @type {{ seedVersion?: unknown; courses?: Array<{ id?: string }> }} */ (parsed);
+  if (obj.seedVersion !== CURRENT_SEED_VERSION) return true;
+  const courseIds = new Set((obj.courses || []).map((c) => c.id));
   return REQUIRED_FLAGSHIP_COURSE_IDS.some((id) => !courseIds.has(id));
 }
 
+/**
+ * @param {Record<string, any>} parsed
+ * @returns {import('../../types/kord.d.ts').DemoState}
+ */
 function migrateDemoState(parsed) {
   const seed = createInitialSeed();
   const cleanParsed = stripSessionFields(parsed);
@@ -160,6 +206,11 @@ function migrateDemoState(parsed) {
   return stripSessionFields(merged);
 }
 
+/**
+ * @param {string | null} raw
+ * @param {{ persistIfSeeded?: boolean }} [opts]
+ * @returns {import('../../types/kord.d.ts').DemoState}
+ */
 function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
   try {
     if (!raw) {
@@ -203,7 +254,7 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
     parsed.courseCompletions = parsed.courseCompletions || [];
     parsed.quizSessions = parsed.quizSessions || [];
     parsed.adminAuditLogs = parsed.adminAuditLogs || [];
-    parsed.users = (parsed.users || []).map((u) => ({
+    parsed.users = (parsed.users || []).map((/** @type {import('../../types/kord.d.ts').KordUser} */ u) => ({
       ...u,
       accountStatus: u.accountStatus || 'active',
     }));
@@ -283,6 +334,10 @@ export function getDemoState() {
   return state;
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').DemoState | ((draft: import('../../types/kord.d.ts').DemoState) => import('../../types/kord.d.ts').DemoState)} updater
+ * @returns {import('../../types/kord.d.ts').DemoState}
+ */
 export function updateDemoState(updater) {
   // Reconcile with any external tab writes before mutating
   try {
@@ -323,6 +378,7 @@ export function updateDemoState(updater) {
   return state;
 }
 
+/** @param {DemoStateListener} fn */
 export function subscribeDemoState(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);

@@ -30,6 +30,12 @@ import { createCatalogSkills } from '../src/lib/demo/catalogSkillsSeed.js';
 import { resolveSkillCover, resolveSkillCoverSpec } from '../src/lib/skillCovers.js';
 import { renderSkillCard } from '../src/components/Common.js';
 
+/** @typedef {import('../src/types/kord.d.ts').AppSupabaseClient} AppSupabaseClient */
+/** @typedef {import('../src/types/kord.d.ts').Course} Course */
+/** @typedef {import('../src/types/kord.d.ts').CourseProgressSummary} CourseProgressSummary */
+/** @typedef {import('../src/types/kord.d.ts').Quiz} Quiz */
+/** @typedef {import('../src/types/kord.d.ts').QuizQuestion} QuizQuestion */
+
 beforeEach(() => {
   globalThis.localStorage.clear();
   globalThis.sessionStorage.clear();
@@ -39,31 +45,36 @@ beforeEach(() => {
 test('authRepository fails closed when profile row is missing, query fails, or role is unexpected; demo signUp never grants admin', async () => {
   const fakeUser = { id: 'u-1', email: 'ethoppaofficial@gmail.com', user_metadata: { full_name: 'Admin' } };
 
-  const makeMockSupabase = (profileResult) => ({
-    auth: {
-      async getSession() {
-        return { data: { session: { user: fakeUser } }, error: null };
-      },
-      onAuthStateChange() {
-        return { data: { subscription: { unsubscribe() {} } } };
-      },
-    },
-    from() {
-      return {
-        select() {
-          return {
-            eq() {
-              return {
-                async single() {
-                  return profileResult;
-                },
-              };
-            },
-          };
+  /**
+   * @param {{ data: Record<string, unknown> | null; error: { code?: string; status?: number; message: string } | null }} profileResult
+   * @returns {AppSupabaseClient}
+   */
+  const makeMockSupabase = (profileResult) =>
+    /** @type {AppSupabaseClient} */ (/** @type {unknown} */ ({
+      auth: {
+        async getSession() {
+          return { data: { session: { user: fakeUser } }, error: null };
         },
-      };
-    },
-  });
+        onAuthStateChange() {
+          return { data: { subscription: { unsubscribe() {} } } };
+        },
+      },
+      from() {
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  async single() {
+                    return profileResult;
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+    }));
 
   // Missing profile (PGRST116) must fail closed
   const missingAuth = createAuthService({
@@ -97,7 +108,9 @@ test('authRepository fails closed when profile row is missing, query fails, or r
     }),
     isDemo: false,
   });
-  assert.equal((await okAuth.getCurrentSession()).user.role, 'learner');
+  const okSession = await okAuth.getCurrentSession();
+  assert.ok(okSession);
+  assert.equal(okSession.user.role, 'learner');
 
   // Demo signUp unconditionally creates learner (never admin even for admin email pattern)
   const signedUp = await signUp({
@@ -106,6 +119,7 @@ test('authRepository fails closed when profile row is missing, query fails, or r
     email: 'ethoppaofficial.alias@gmail.com',
     password: 'password123',
   });
+  assert.ok(signedUp);
   assert.equal(signedUp.user.role, 'learner');
 });
 
@@ -149,6 +163,7 @@ test('validateSubmissionForm and submitChallengeEvidence enforce allowedEvidence
     email: 'idem.tester@example.com',
     password: 'password123',
   });
+  assert.ok(learner);
   const chList = getDemoState().challenges.filter((c) => !c.courseId);
   const cA = chList[0] || getDemoState().challenges[0];
   const cB = chList[1] || getDemoState().challenges[1];
@@ -194,11 +209,11 @@ test('validateSubmissionForm and submitChallengeEvidence enforce allowedEvidence
 });
 
 test('assessmentEngine strictly validates ordering & multiple_select indices without silent array filtering', () => {
-  const quiz = { passPercent: 70, requiresManualReview: false };
-  const questions = [
+  const quiz = /** @type {Quiz} */ (/** @type {unknown} */ ({ passPercent: 70, requiresManualReview: false }));
+  const questions = /** @type {QuizQuestion[]} */ (/** @type {unknown} */ ([
     { id: 'q-ms', questionType: 'multiple_select', marks: 1, options: ['A', 'B', 'C'] },
     { id: 'q-ord', questionType: 'ordering', marks: 1, options: ['First', 'Second', 'Third'] },
-  ];
+  ]));
   const answerKeysByQuestionId = {
     'q-ms': { correctIndices: [0, 2] },
     'q-ord': { correctOrder: [2, 0, 1] },
@@ -234,7 +249,7 @@ test('assessmentEngine strictly validates ordering & multiple_select indices wit
 test('Demo progression prevents false demonstrated on 0-challenge courses and recalculates downward cleanly', async () => {
   const skillId = getDemoState().skills[0].id;
   updateDemoState((draft) => {
-    draft.courses.push({
+    draft.courses.push(/** @type {Course} */ (/** @type {unknown} */ ({
       id: 'course-theory-demo',
       skillId,
       associatedSkillIds: [skillId],
@@ -257,20 +272,22 @@ test('Demo progression prevents false demonstrated on 0-challenge courses and re
           activities: [],
         },
       ],
-    });
+    })));
     return draft;
   });
 
   // Pure engine check: completed theory course never increments verifiedCoursesCount
+  const theoryCourse = getDemoState().courses.find((c) => c.id === 'course-theory-demo');
+  assert.ok(theoryCourse);
   const overall = computeOverallSkillCourseProgress({
-    publishedCourses: [getDemoState().courses.find((c) => c.id === 'course-theory-demo')],
+    publishedCourses: [theoryCourse],
     courseProgressById: {
-      'course-theory-demo': {
+      'course-theory-demo': /** @type {CourseProgressSummary} */ (/** @type {unknown} */ ({
         progressPercent: 100,
         isCompleted: true,
         completionState: 'completed',
         practicalApproved: false,
-      },
+      })),
     },
   });
   assert.equal(overall.verifiedCoursesCount, 0);
@@ -283,20 +300,24 @@ test('Demo progression prevents false demonstrated on 0-challenge courses and re
     password: 'password123',
   });
   const course = await getCourseBySlug('frontend-development-foundations');
+  assert.ok(learner && course);
   await enrollInCourse(learner.user.id, course.id);
   const enrollments = await getCourseEnrollments(learner.user.id);
   assert.equal(enrollments.length, 1);
   assert.equal(enrollments[0].courseId, course.id);
   assert.equal(enrollments[0].status, 'active');
-  const firstLesson = course.phases[0].lessons[0];
+  const firstLesson = course.phases?.[0]?.lessons?.[0];
+  assert.ok(firstLesson);
 
-  await toggleLessonComplete(learner.user.id, course.id, firstLesson.id, firstLesson.estMinutes, true);
+  await toggleLessonComplete(learner.user.id, course.id, firstLesson.id, firstLesson.estMinutes ?? 0, true);
   let skillRec = (await getUserSkills(learner.user.id)).find((s) => s.skillId === course.skillId);
+  assert.ok(skillRec);
   assert.equal(skillRec.level, 'practising');
 
   // Uncompleting the sole completed lesson recalculates skill back to 'declared'
-  await toggleLessonComplete(learner.user.id, course.id, firstLesson.id, firstLesson.estMinutes, false);
+  await toggleLessonComplete(learner.user.id, course.id, firstLesson.id, firstLesson.estMinutes ?? 0, false);
   skillRec = (await getUserSkills(learner.user.id)).find((s) => s.skillId === course.skillId);
+  assert.ok(skillRec);
   assert.equal(skillRec.level, 'declared');
 
   // Manual quiz downgrade recalculates skill downward
@@ -319,6 +340,7 @@ test('Demo progression prevents false demonstrated on 0-challenge courses and re
 
   const subRes = await submitQuiz(learner.user.id, manualQuizId, { [manualQId]: 'Grid answer' }, 'mq-1');
   const adminAccount = getDemoState().users.find((u) => u.role === 'admin');
+  assert.ok(adminAccount && adminAccount.password);
   await signIn({ email: adminAccount.email, password: adminAccount.password });
 
   // Passing grade -> practising
@@ -329,6 +351,7 @@ test('Demo progression prevents false demonstrated on 0-challenge courses and re
     feedback: 'Initial pass',
   });
   skillRec = (await getUserSkills(learner.user.id)).find((s) => s.skillId === course.skillId);
+  assert.ok(skillRec);
   assert.equal(skillRec.level, 'practising');
 
   // Re-grading below threshold -> downgrades back to declared
@@ -339,6 +362,7 @@ test('Demo progression prevents false demonstrated on 0-challenge courses and re
     feedback: 'Revised downward after rubric audit',
   });
   skillRec = (await getUserSkills(learner.user.id)).find((s) => s.skillId === course.skillId);
+  assert.ok(skillRec);
   assert.equal(skillRec.level, 'declared');
 });
 

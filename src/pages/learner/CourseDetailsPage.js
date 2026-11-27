@@ -7,8 +7,12 @@ import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDr
 import { renderProgressRail, renderStatusBadge } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderCourseDetailsPage({ params, session, navigate, rerender }) {
-  const userId = session.user.id;
+  const userId = session?.user?.id || '';
   const ctx = await resolveCourseHierarchy({
     courseSlug: params.slug,
     userId,
@@ -16,7 +20,7 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
   });
 
   if (ctx.status !== 'ok') {
-    return renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll: `/courses/${params.slug}`, navigate });
+    return renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll: `/courses/${params.slug}`, navigate }) || { html: '', bind() {} };
   }
 
   const {
@@ -356,9 +360,11 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindCourseOutlineDrawer(root);
 
+      /** @param {HTMLButtonElement | null} btn */
       const triggerEnroll = async (btn) => {
         if (!btn || btn.disabled) return;
         btn.disabled = true;
@@ -370,17 +376,21 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
         } catch (err) {
           btn.disabled = false;
           btn.textContent = 'Enroll in course';
-          showToast(err?.message || 'Unable to enroll in this course.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to enroll in this course.', 'error');
         }
       };
 
-      root.querySelector('#course-enroll-btn')?.addEventListener('click', (e) => triggerEnroll(e.currentTarget));
-      root.querySelector('#course-enroll-btn-banner')?.addEventListener('click', (e) => triggerEnroll(e.currentTarget));
+      root.querySelector('#course-enroll-btn')?.addEventListener('click', (e) => {
+        triggerEnroll(/** @type {HTMLButtonElement | null} */ (e.currentTarget));
+      });
+      root.querySelector('#course-enroll-btn-banner')?.addEventListener('click', (e) => {
+        triggerEnroll(/** @type {HTMLButtonElement | null} */ (e.currentTarget));
+      });
 
       root.querySelectorAll('[data-enroll-prompt]').forEach((btn) => {
         btn.addEventListener('click', () => {
           showToast('Click "Enroll in course" to unlock phases and lessons.', 'info');
-          root.querySelector('#course-enroll-btn')?.focus();
+          /** @type {HTMLElement | null} */ (root.querySelector('#course-enroll-btn'))?.focus();
         });
       });
 
@@ -392,7 +402,7 @@ export async function renderCourseDetailsPage({ params, session, navigate, reren
           showToast(nextStatus === 'paused' ? 'Course paused.' : 'Course resumed.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to update course status.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to update course status.', 'error');
         }
       });
     },

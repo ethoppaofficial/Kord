@@ -57,6 +57,10 @@ const FEATURED_PREVIEWS = [
   },
 ];
 
+/**
+ * @param {{ session: import('../../types/kord.d.ts').AuthSession | null }} params
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderLandingPage({ session }) {
   const isSignedIn = Boolean(session?.user);
 
@@ -175,23 +179,27 @@ export async function renderLandingPage({ session }) {
         </div>
       </section>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       const titleEl = root.querySelector('#hero-stage-title');
       const detailEl = root.querySelector('#hero-stage-detail');
       const levelEl = root.querySelector('#hero-stage-level');
-      const previewEl = root.querySelector('#hero-stage-preview');
+      const previewEl = /** @type {HTMLElement | null} */ (root.querySelector('#hero-stage-preview'));
 
-      root.querySelectorAll('[data-stage-btn]').forEach((btn) => {
+      root.querySelectorAll('[data-stage-btn]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
           const stage = STAGES.find((s) => s.key === btn.dataset.stageBtn);
           if (!stage) return;
           root.querySelectorAll('[data-stage-btn]').forEach((b) => b.classList.toggle('is-active', b === btn));
-          titleEl.textContent = stage.previewTitle;
-          detailEl.textContent = stage.previewDetail;
-          levelEl.textContent = stage.level;
-          previewEl.classList.remove('pop-in');
-          void previewEl.offsetWidth;
-          previewEl.classList.add('pop-in');
+          if (titleEl) titleEl.textContent = stage.previewTitle;
+          if (detailEl) detailEl.textContent = stage.previewDetail;
+          if (levelEl) levelEl.textContent = stage.level;
+          if (previewEl) {
+            previewEl.classList.remove('pop-in');
+            void previewEl.offsetWidth;
+            previewEl.classList.add('pop-in');
+          }
         });
       });
     },

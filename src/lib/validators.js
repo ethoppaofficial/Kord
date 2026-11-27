@@ -1,18 +1,22 @@
+/** @param {unknown} email */
 export function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
 }
 
+/** @param {unknown} url */
 export function isValidUrl(url) {
   if (!url) return false;
   try {
-    const parsed = new URL(url.trim());
+    const parsed = new URL(String(url).trim());
     return parsed.protocol === 'http:' || parsed.protocol === 'https:';
   } catch {
     return false;
   }
 }
 
+/** @param {{ email?: string; password?: string }} input */
 export function validateLoginForm({ email, password }) {
+  /** @type {Record<string, string>} */
   const errors = {};
   if (!isValidEmail(email)) {
     errors.email = 'Enter a valid email address.';
@@ -23,7 +27,9 @@ export function validateLoginForm({ email, password }) {
   return errors;
 }
 
+/** @param {{ email?: string }} input */
 export function validateForgotPasswordForm({ email }) {
+  /** @type {Record<string, string>} */
   const errors = {};
   const cleanEmail = String(email || '').trim();
   if (!cleanEmail) {
@@ -36,7 +42,9 @@ export function validateForgotPasswordForm({ email }) {
   return errors;
 }
 
+/** @param {{ password?: string; confirmPassword?: string }} input */
 export function validateResetPasswordForm({ password, confirmPassword }) {
+  /** @type {Record<string, string>} */
   const errors = {};
   const rawPassword = String(password || '');
   const rawConfirm = String(confirmPassword || '');
@@ -56,7 +64,9 @@ export function validateResetPasswordForm({ password, confirmPassword }) {
   return errors;
 }
 
+/** @param {{ firstName?: string; lastName?: string; email?: string; password?: string; confirmPassword?: string }} input */
 export function validateSignupForm({ firstName, lastName, email, password, confirmPassword }) {
+  /** @type {Record<string, string>} */
   const errors = {};
   if (!firstName || String(firstName).trim().length < 2) {
     errors.firstName = 'Enter your first name (at least 2 characters).';
@@ -96,6 +106,7 @@ export const DEFAULT_ALLOWED_MIME_TYPES = [
   'video/quicktime',
 ];
 
+/** @type {Record<string, string[]>} */
 export const MIME_EXTENSION_MAP = {
   'application/pdf': ['pdf'],
   'image/png': ['png'],
@@ -120,6 +131,7 @@ const BLOCKED_EXTENSIONS = new Set([
   'exe', 'bat', 'cmd', 'sh', 'js', 'mjs', 'cjs', 'html', 'htm', 'svg', 'php', 'py', 'rb', 'dll', 'msi', 'app',
 ]);
 
+/** @param {unknown} fileName */
 export function getFileExtension(fileName) {
   const clean = String(fileName || '').trim();
   const idx = clean.lastIndexOf('.');
@@ -127,6 +139,10 @@ export function getFileExtension(fileName) {
   return clean.slice(idx + 1).toLowerCase();
 }
 
+/**
+ * @param {{ name?: string; size?: number; type?: string } | null | undefined} file
+ * @param {Partial<import('../types/kord.d.ts').Challenge>} [challenge]
+ */
 export function validateEvidenceFile(file, challenge = {}) {
   if (!file) return null;
   const maxMb = Number(challenge.maxFileSizeMb || 25);
@@ -134,7 +150,7 @@ export function validateEvidenceFile(file, challenge = {}) {
   if (Number(file.size || 0) <= 0) {
     return 'Uploaded file appears empty.';
   }
-  if (file.size > maxBytes) {
+  if (Number(file.size || 0) > maxBytes) {
     return `File exceeds the ${maxMb} MB maximum upload size for this assignment.`;
   }
 
@@ -168,6 +184,7 @@ export function validateEvidenceFile(file, challenge = {}) {
   return null;
 }
 
+/** @param {unknown} fileName */
 export function sanitizeEvidenceFilename(fileName) {
   const base = String(fileName || 'evidence').split(/[\\/]/).pop() || 'evidence';
   const dotIdx = base.lastIndexOf('.');
@@ -182,6 +199,11 @@ export function sanitizeEvidenceFilename(fileName) {
   return safeExt ? `${safeStem}.${safeExt}` : safeStem;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {number} offset
+ * @param {number[]} expected
+ */
 function bytesMatch(bytes, offset, expected) {
   if (!bytes || bytes.length < offset + expected.length) return false;
   for (let i = 0; i < expected.length; i += 1) {
@@ -190,6 +212,11 @@ function bytesMatch(bytes, offset, expected) {
   return true;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {number} offset
+ * @param {number} length
+ */
 function asciiAt(bytes, offset, length) {
   if (!bytes || bytes.length < offset + length) return '';
   let out = '';
@@ -199,6 +226,7 @@ function asciiAt(bytes, offset, length) {
   return out;
 }
 
+/** @param {File | { name?: string; slice?: (start: number, end: number) => Blob | { arrayBuffer: () => Promise<ArrayBufferLike> }; arrayBuffer?: () => Promise<ArrayBufferLike> } | null | undefined} file */
 export async function inspectEvidenceFileSignature(file) {
   if (!file) return null;
   const ext = getFileExtension(file.name);
@@ -288,12 +316,20 @@ export async function inspectEvidenceFileSignature(file) {
   return null;
 }
 
+/**
+ * @param {File | { name?: string; size?: number; type?: string; slice?: (start: number, end: number) => Blob | { arrayBuffer: () => Promise<ArrayBufferLike> }; arrayBuffer?: () => Promise<ArrayBufferLike> } | null | undefined} file
+ * @param {Partial<import('../types/kord.d.ts').Challenge>} [challenge]
+ */
 export async function validateEvidenceFileContent(file, challenge = {}) {
   const syncError = validateEvidenceFile(file, challenge);
   if (syncError) return syncError;
   return inspectEvidenceFileSignature(file);
 }
 
+/**
+ * @param {import('../types/kord.d.ts').RubricCriterion[]} [rubric]
+ * @returns {{ valid: true; totalWeight: number; totalPoints: number; error: null } | { valid: false; totalWeight: number; totalPoints: number; error: string }}
+ */
 export function validateRubricWeights(rubric = []) {
   if (!Array.isArray(rubric) || rubric.length === 0) {
     return { valid: false, totalWeight: 0, totalPoints: 0, error: 'Rubric must include at least 1 criterion.' };
@@ -327,7 +363,18 @@ export function validateRubricWeights(rubric = []) {
   return { valid: true, totalWeight, totalPoints, error: null };
 }
 
+/**
+ * @param {{
+ *   evidenceUrl?: string;
+ *   repoUrl?: string;
+ *   file?: { name?: string; size?: number; type?: string } | null;
+ *   submissionText?: string;
+ *   explanation?: string;
+ *   challenge?: Partial<import('../types/kord.d.ts').Challenge>;
+ * }} input
+ */
 export function validateSubmissionForm({ evidenceUrl, repoUrl, file, submissionText, explanation, challenge = {} }) {
+  /** @type {Record<string, string>} */
   const errors = {};
   const allowed =
     Array.isArray(challenge.allowedEvidenceTypes) && challenge.allowedEvidenceTypes.length > 0
@@ -361,7 +408,7 @@ export function validateSubmissionForm({ evidenceUrl, repoUrl, file, submissionT
   if (rawText.length > 0 && !allowed.includes('written')) {
     errors.submissionText = 'Written text deliverables are not accepted for this assignment.';
   }
-  if (hasFile) {
+  if (file) {
     const acceptsAnyFile =
       allowed.includes('file') ||
       allowed.includes('screenshot') ||

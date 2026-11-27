@@ -6,8 +6,12 @@ import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDr
 import { renderProgressRail, renderStatusBadge } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderCoursePhasePage({ params, session, navigate, rerender }) {
-  const userId = session.user.id;
+  const userId = session?.user?.id || '';
   const targetUrl = `/courses/${params.slug}/phases/${params.phaseId}`;
 
   const ctx = await resolveCourseHierarchy({
@@ -18,7 +22,7 @@ export async function renderCoursePhasePage({ params, session, navigate, rerende
   });
 
   if (ctx.status !== 'ok') {
-    return renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll: targetUrl, navigate });
+    return renderHierarchyGuard({ ctx, userId, targetUrlAfterEnroll: targetUrl, navigate }) || { html: '', bind() {} };
   }
 
   const {
@@ -36,6 +40,10 @@ export async function renderCoursePhasePage({ params, session, navigate, rerende
     quizAttempts,
     submissions,
   } = ctx;
+
+  if (!phase) {
+    return { html: '', bind() {} };
+  }
 
   const pp = phaseProgressById[phase.id];
   const lessons = phase.lessons || [];
@@ -155,7 +163,7 @@ export async function renderCoursePhasePage({ params, session, navigate, rerende
             <div class="lesson-nav-footer">
               <div>
                 ${
-                  prevPhaseUrl
+                  prevPhaseUrl && prevPhase
                     ? `<a href="${escapeHtml(prevPhaseUrl)}" data-link class="btn btn-secondary btn-sm">← Previous: Phase ${prevPhase.position}</a>`
                     : `<a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-secondary btn-sm">← Course overview</a>`
                 }
@@ -163,7 +171,7 @@ export async function renderCoursePhasePage({ params, session, navigate, rerende
               <a href="/courses/${escapeHtml(course.slug)}" data-link class="btn btn-ghost btn-sm">All phases</a>
               <div>
                 ${
-                  nextPhaseUrl
+                  nextPhaseUrl && nextPhase
                     ? `<a href="${escapeHtml(nextPhaseUrl)}" data-link class="btn btn-navy btn-sm">Next: Phase ${nextPhase.position} →</a>`
                     : ''
                 }
@@ -253,7 +261,7 @@ export async function renderCoursePhasePage({ params, session, navigate, rerende
             <h2 style="font-size:1.05rem;">Phase completion requirements</h2>
             <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--color-text-secondary); display:flex; flex-direction:column; gap:5px;">
               <li>Complete all <strong class="mono-num">${pp?.requiredLessonsCount || 0}</strong> required lessons in this module</li>
-              ${pp?.requiredActivitiesCount > 0 ? `<li>Complete <strong class="mono-num">${pp.requiredActivitiesCount}</strong> practical activity(ies)</li>` : ''}
+              ${(pp?.requiredActivitiesCount || 0) > 0 ? `<li>Complete <strong class="mono-num">${pp?.requiredActivitiesCount || 0}</strong> practical activity(ies)</li>` : ''}
               ${phaseAssessments.length > 0 ? `<li>Pass <strong class="mono-num">${phaseAssessments.length}</strong> module assessment(s)</li>` : ''}
               ${phaseChallenges.length > 0 ? `<li>Earn approval on <strong class="mono-num">${phaseChallenges.length}</strong> practical challenge(s)</li>` : ''}
             </ul>
@@ -292,24 +300,29 @@ export async function renderCoursePhasePage({ params, session, navigate, rerende
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindCourseOutlineDrawer(root);
 
-      root.querySelectorAll('[data-toggle-activity]').forEach((btn) => {
+      root.querySelectorAll('[data-toggle-activity]').forEach((node) => {
+        const btn = /** @type {HTMLButtonElement} */ (node);
         btn.addEventListener('click', async () => {
           if (btn.disabled) return;
           btn.disabled = true;
-          const actId = btn.dataset.toggleActivity;
+          const actId = btn.dataset.toggleActivity || '';
           const nextDone = btn.dataset.done !== '1';
           const estMinutes = Number(btn.dataset.estMinutes || 25);
-          const notes = root.querySelector(`[data-activity-notes="${actId}"]`)?.value || '';
+          const notesEl = /** @type {HTMLTextAreaElement | null} */ (
+            root.querySelector(`[data-activity-notes="${actId}"]`)
+          );
+          const notes = notesEl?.value || '';
           try {
             await togglePhaseActivityComplete(userId, course.id, actId, estMinutes, nextDone, notes);
             showToast(nextDone ? 'Practical activity marked complete!' : 'Activity updated.', 'success');
             rerender({ silent: true });
           } catch (err) {
             btn.disabled = false;
-            showToast(err?.message || 'Unable to update activity progress.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to update activity progress.', 'error');
           }
         });
       });

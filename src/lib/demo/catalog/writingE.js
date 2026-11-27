@@ -6,10 +6,12 @@ const RESOURCES = [
   { title: 'Purdue OWL Editing & Mechanics Handbook', source: 'Purdue OWL', url: 'https://owl.purdue.edu/', resourceType: 'Guide' },
 ];
 
-function L(t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) {
-  return { t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} cleanly`], h, exp, def, ex, steps, cs, tip, chk, sum, tk };
-}
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
+const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) => ({
+  t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} cleanly`], h, exp, def, ex, steps, cs, tip, chk, sum, tk,
+});
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const SPECS = [
   {
     code: 'cs',
@@ -796,4 +798,5 @@ const SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const WRITING_E_BUILDERS = SPECS.map((spec) => (helpers) => buildDomainCourse(spec, helpers));

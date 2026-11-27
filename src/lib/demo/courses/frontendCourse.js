@@ -1,5 +1,6 @@
 import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn} */
 export function buildFrontendCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-frontend-foundations';
   const skillId = 'skill-frontend-development';

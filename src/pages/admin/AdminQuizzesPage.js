@@ -12,6 +12,7 @@ import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { showToast } from '../../components/Toast.js';
 
+/** @type {string | null} */
 let selectedQuizId = null;
 let selectedQuestionType = 'multiple_choice';
 
@@ -20,6 +21,10 @@ registerSessionCleanup(() => {
   selectedQuestionType = 'multiple_choice';
 });
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderAdminQuizzesPage({ currentPath, rerender }) {
   const [quizzes, skills, courses] = await Promise.all([
     adminListAllQuizzes(),
@@ -101,7 +106,7 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
               ${
                 (q.options || []).length > 0
                   ? `<ol start="0" style="margin:0; padding-left:20px; font-size:13px; color:var(--color-text-secondary);">
-                      ${q.options
+                      ${(q.options || [])
                         .map((opt, idx) => {
                           const isHit =
                             q.questionType === 'multiple_select'
@@ -270,28 +275,30 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
 
   return {
     html: renderAdminLayout({ currentPath, innerHtml }),
+    /** @param {HTMLElement} root */
     bind(root) {
       root.querySelector('#admin-quiz-select')?.addEventListener('change', (e) => {
-        selectedQuizId = e.target.value;
+        selectedQuizId = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
       root.querySelector('#q-type')?.addEventListener('change', (e) => {
-        selectedQuestionType = e.target.value;
+        selectedQuestionType = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-del-q]').forEach((btn) => {
+      root.querySelectorAll('[data-del-q]').forEach((node) => {
+        const btn = /** @type {HTMLButtonElement} */ (node);
         btn.addEventListener('click', async () => {
-          if (btn.disabled) return;
+          if (btn.disabled || !selectedQuizId) return;
           btn.disabled = true;
           try {
-            await adminDeleteQuestion(selectedQuizId, btn.dataset.delQ);
+            await adminDeleteQuestion(selectedQuizId, btn.dataset.delQ || '');
             showToast('Question removed.', 'success');
             rerender({ silent: true });
           } catch (err) {
             btn.disabled = false;
-            showToast(err?.message || 'Unable to remove question.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to remove question.', 'error');
           }
         });
       });
@@ -299,7 +306,7 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
       root.querySelector('#admin-question-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (!selectedQuizId) return;
-        const fd = new FormData(e.currentTarget);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         const qType = String(fd.get('questionType'));
         const options =
           qType === 'true_false'
@@ -339,13 +346,13 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
           showToast('Question saved securely.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to save question.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to save question.', 'error');
         }
       });
 
       root.querySelector('#admin-create-quiz-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const fd = new FormData(e.currentTarget);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
           await adminUpsertAssessment({
             skillId: String(fd.get('skillId')),
@@ -360,7 +367,7 @@ export async function renderAdminQuizzesPage({ currentPath, rerender }) {
           showToast('Assessment created!', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to create assessment.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to create assessment.', 'error');
         }
       });
     },

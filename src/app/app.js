@@ -41,6 +41,7 @@ import { renderAdminGovernancePage } from '../pages/admin/AdminGovernancePage.js
 // - 'oauth_callback': '/auth/callback' (handles Google OAuth PKCE code exchange & errors)
 // - 'learner': strictly authenticated learner only (guests redirected to /login; admins isolated)
 // - 'admin': strictly authenticated admin only (guests redirected to /login; learners blocked)
+/** @type {import('../types/kord.d.ts').RouteDefinition[]} */
 const ROUTES = [
   { pattern: '/', access: 'public', render: renderLandingPage },
   { pattern: '/login', access: 'auth_page', render: renderLoginPage },
@@ -72,22 +73,29 @@ const ROUTES = [
   { pattern: '/admin/governance', access: 'admin', render: renderAdminGovernancePage },
 ];
 
+/**
+ * @param {HTMLElement} rootEl
+ * @param {{ auth?: import('../types/kord.d.ts').AuthService; configError?: string | null }} [options]
+ */
 export function mountApp(rootEl, options = {}) {
   const auth = options.auth || defaultAuthRepository;
 
   let renderSeq = 0;
   let destroyed = false;
   let localSignOutInProgress = false;
+  /** @type {{ initialized: boolean; userId: string | null; role: string | null }} */
   let lastKnownAuth = {
     initialized: false,
     userId: null,
     role: null,
   };
 
+  /** @param {string | null | undefined} role */
   function getHomePathForRole(role) {
     return role === 'admin' ? '/admin' : '/dashboard';
   }
 
+  /** @param {string} path */
   function navigate(path) {
     if (destroyed) return Promise.resolve();
     closeModal();
@@ -100,6 +108,7 @@ export function mountApp(rootEl, options = {}) {
     return renderCurrentRoute({ animateRoute: true });
   }
 
+  /** @param {{ event?: string; session?: import('../types/kord.d.ts').AuthSession | null; crossTab?: boolean }} [payload] */
   async function handleAuthChange({ event, session: incomingSession, crossTab = true } = {}) {
     if (destroyed || localSignOutInProgress) return;
 
@@ -226,7 +235,9 @@ export function mountApp(rootEl, options = {}) {
     const matched = matchRoute(ROUTES, pathname);
 
     let session;
+    /** @type {import('../types/kord.d.ts').RecoveryState | null} */
     let recoveryState = null;
+    /** @type {import('../types/kord.d.ts').OAuthCallbackState | null} */
     let oauthCallbackState = null;
     try {
       if (
@@ -433,7 +444,7 @@ export function mountApp(rootEl, options = {}) {
         currentPath: pathname,
         contentHtml: renderErrorState({
           title: 'Something went wrong',
-          message: err?.message || 'An unexpected error occurred while rendering this view.',
+          message: err instanceof Error ? err.message : 'An unexpected error occurred while rendering this view.',
           retryAction: true,
         }),
       });
@@ -470,8 +481,10 @@ export function mountApp(rootEl, options = {}) {
     });
   }
 
+  /** @param {MouseEvent} e */
   const onDocumentClick = (e) => {
-    const link = e.target?.closest?.('a[data-link]');
+    const target = /** @type {Element | null} */ (e.target);
+    const link = target?.closest?.('a[data-link]');
     if (!link) return;
     if (!rootEl.contains(link) && !link.closest?.('.modal-backdrop')) return;
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;

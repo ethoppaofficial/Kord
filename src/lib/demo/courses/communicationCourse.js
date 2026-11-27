@@ -1,5 +1,6 @@
 import { COURSE_THUMBNAILS } from '../../courseThumbnails.js';
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn} */
 export function buildCommunicationCourse({ buildLesson, buildActivity, addAssessment }) {
   const courseId = 'course-communication-public-speaking';
   const skillId = 'skill-public-speaking';

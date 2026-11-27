@@ -3,8 +3,15 @@ const TZ_CACHE_TTL_MS = 30 * 60 * 1000;
 
 const HONORIFIC_PATTERN = /^(mr|mrs|ms|miss|mx|dr|prof|eng|engr|sir|chief)\.?$/i;
 
+/** @typedef {{ timezone: string; city: string; country: string; source: 'ip' | 'browser'; cachedAt?: number }} TimezoneInfo */
+
+/** @type {Promise<TimezoneInfo> | null} */
 let inFlightTzPromise = null;
 
+/**
+ * @param {unknown} fullName
+ * @param {string} [fallback]
+ */
 export function extractFirstName(fullName, fallback = 'there') {
   const clean = String(fullName || '').trim();
   if (!clean) return fallback;
@@ -15,6 +22,7 @@ export function extractFirstName(fullName, fallback = 'there') {
   return parts[0];
 }
 
+/** @param {unknown} tz @returns {tz is string} */
 function isValidTimeZone(tz) {
   if (!tz || typeof tz !== 'string') return false;
   try {
@@ -43,6 +51,7 @@ function readCachedTimezone() {
   return null;
 }
 
+/** @param {TimezoneInfo} info */
 function writeCachedTimezone(info) {
   try {
     sessionStorage.setItem(
@@ -54,6 +63,11 @@ function writeCachedTimezone(info) {
   }
 }
 
+/**
+ * @param {string} url
+ * @param {number} [timeoutMs]
+ * @returns {Promise<Record<string, any> | null>}
+ */
 async function fetchJsonWithTimeout(url, timeoutMs = 2200) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -78,10 +92,11 @@ export async function resolveIpTimezone() {
     // Primary IP geolocation lookup
     const ipapi = await fetchJsonWithTimeout('https://ipapi.co/json/', 2200);
     if (ipapi && isValidTimeZone(ipapi.timezone)) {
+      /** @type {TimezoneInfo} */
       const info = {
         timezone: ipapi.timezone,
-        city: ipapi.city || '',
-        country: ipapi.country_name || '',
+        city: String(ipapi.city || ''),
+        country: String(ipapi.country_name || ''),
         source: 'ip',
       };
       writeCachedTimezone(info);
@@ -90,11 +105,13 @@ export async function resolveIpTimezone() {
 
     // Secondary IP geolocation fallback
     const ipwho = await fetchJsonWithTimeout('https://ipwho.is/', 2200);
-    if (ipwho && ipwho.success !== false && isValidTimeZone(ipwho.timezone?.id)) {
+    const ipwhoTz = typeof ipwho?.timezone === 'object' && ipwho?.timezone ? ipwho.timezone.id : undefined;
+    if (ipwho && ipwho.success !== false && isValidTimeZone(ipwhoTz)) {
+      /** @type {TimezoneInfo} */
       const info = {
-        timezone: ipwho.timezone.id,
-        city: ipwho.city || '',
-        country: ipwho.country || '',
+        timezone: ipwhoTz,
+        city: String(ipwho.city || ''),
+        country: String(ipwho.country || ''),
         source: 'ip',
       };
       writeCachedTimezone(info);
@@ -104,12 +121,12 @@ export async function resolveIpTimezone() {
     // Graceful browser timezone fallback if IP endpoints are unreachable
     const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const fallbackTz = isValidTimeZone(browserTz) ? browserTz : 'UTC';
-    return {
+    return /** @type {TimezoneInfo} */ ({
       timezone: fallbackTz,
       city: '',
       country: '',
       source: 'browser',
-    };
+    });
   })().finally(() => {
     inFlightTzPromise = null;
   });
@@ -117,6 +134,10 @@ export async function resolveIpTimezone() {
   return inFlightTzPromise;
 }
 
+/**
+ * @param {string} timezone
+ * @param {Date} [date]
+ */
 export function getTimePeriodForTimezone(timezone, date = new Date()) {
   const safeTz = isValidTimeZone(timezone) ? timezone : 'UTC';
   let hour = date.getHours();
@@ -157,6 +178,7 @@ export function getTimePeriodForTimezone(timezone, date = new Date()) {
   return { period: 'evening', greeting: 'Good evening', hour, localTime };
 }
 
+/** @param {Partial<import('../types/kord.d.ts').KordUser> | null | undefined} user */
 export async function buildUserGreeting(user) {
   const firstName =
     String(user?.firstName || '').trim() ||

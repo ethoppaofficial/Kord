@@ -6,10 +6,12 @@ const RESOURCES = [
   { title: 'Plain Language Audience Writing Principles', source: 'plainlanguage.gov', url: 'https://www.plainlanguage.gov/guidelines/', resourceType: 'Documentation' },
 ];
 
-function L(t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) {
-  return { t, intro, o: o || [`Analyze ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} in original writing`], h, exp, def, ex, steps, cs, tip, chk, sum, tk };
-}
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
+const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) => ({
+  t, intro, o: o || [`Analyze ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} in original writing`], h, exp, def, ex, steps, cs, tip, chk, sum, tk,
+});
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const SPECS = [
   {
     code: 'cw',
@@ -796,4 +798,5 @@ const SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const WRITING_B_BUILDERS = SPECS.map((spec) => (helpers) => buildDomainCourse(spec, helpers));

@@ -4,7 +4,12 @@ const VOID_TAGS = new Set([
   'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
 
+/**
+ * @param {string} attrText
+ * @returns {Map<string, string>}
+ */
 function parseAttributes(attrText) {
+  /** @type {Map<string, string>} */
   const attrs = new Map();
   const re = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
   let m;
@@ -16,6 +21,11 @@ function parseAttributes(attrText) {
   return attrs;
 }
 
+/**
+ * @param {TestElement | null} el
+ * @param {string} part
+ * @returns {boolean}
+ */
 function matchesSimpleSelector(el, part) {
   if (!el || el.nodeType !== 1) return false;
   let rest = part.trim();
@@ -53,12 +63,18 @@ function matchesSimpleSelector(el, part) {
   return true;
 }
 
+/**
+ * @param {TestElement} el
+ * @param {string} selector
+ * @returns {boolean}
+ */
 function matchesSelector(el, selector) {
   const groups = selector.split(',').map((s) => s.trim()).filter(Boolean);
   for (const group of groups) {
     const parts = group.split(/\s+/).filter(Boolean);
     if (parts.length === 0) continue;
     if (!matchesSimpleSelector(el, parts[parts.length - 1])) continue;
+    /** @type {TestElement | null} */
     let cur = el.parentNode;
     let idx = parts.length - 2;
     while (idx >= 0 && cur) {
@@ -72,6 +88,10 @@ function matchesSelector(el, selector) {
   return false;
 }
 
+/**
+ * @param {TestElement} parent
+ * @param {string} html
+ */
 function parseHtmlInto(parent, html) {
   parent.children = [];
   const tokenRe = /<!--[\s\S]*?-->|<\/?([a-zA-Z0-9_-]+)([^>]*)>|([^<]+)/g;
@@ -117,12 +137,18 @@ export class TestElement {
   constructor(tagName = 'div') {
     this.nodeType = 1;
     this.tagName = tagName.toUpperCase();
+    /** @type {TestElement[]} */
     this.children = [];
+    /** @type {TestElement | null} */
     this.parentNode = null;
+    /** @type {Map<string, string>} */
     this.attributes = new Map();
+    /** @type {Map<string, Set<(event: unknown) => unknown>>} */
     this.listeners = new Map();
+    /** @type {Record<string, string>} */
     this.style = {};
     this._rawInnerHTML = '';
+    /** @type {string[]} */
     this._textNodes = [];
     this.value = '';
     this.disabled = false;
@@ -147,8 +173,8 @@ export class TestElement {
 
   get dataset() {
     const el = this;
-    return new Proxy(
-      {},
+    return /** @type {Record<string, string | undefined>} */ (new Proxy(
+      /** @type {Record<string, string | undefined>} */ ({}),
       {
         get(_t, prop) {
           const kebab = String(prop).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
@@ -160,19 +186,31 @@ export class TestElement {
           return true;
         },
       }
-    );
+    ));
   }
 
+  /**
+   * @param {string} name
+   * @param {unknown} value
+   */
   setAttribute(name, value) {
     const val = String(value ?? '');
     this.attributes.set(name, val);
     if (name === 'value') this.value = val;
   }
 
+  /**
+   * @param {string} name
+   * @returns {string | null}
+   */
   getAttribute(name) {
-    return this.attributes.has(name) ? this.attributes.get(name) : null;
+    return this.attributes.get(name) ?? null;
   }
 
+  /**
+   * @param {string} name
+   * @returns {boolean}
+   */
   hasAttribute(name) {
     return this.attributes.has(name);
   }
@@ -187,6 +225,7 @@ export class TestElement {
     parseHtmlInto(this, this._rawInnerHTML);
   }
 
+  /** @returns {string} */
   get textContent() {
     return this._textNodes.join('') + this.children.map((c) => c.textContent).join('');
   }
@@ -197,12 +236,20 @@ export class TestElement {
     this._rawInnerHTML = String(val ?? '');
   }
 
+  /**
+   * @param {TestElement} child
+   * @returns {TestElement}
+   */
   appendChild(child) {
     child.parentNode = this;
     this.children.push(child);
     return child;
   }
 
+  /**
+   * @param {TestElement} child
+   * @returns {TestElement}
+   */
   removeChild(child) {
     const idx = this.children.indexOf(child);
     if (idx >= 0) {
@@ -212,6 +259,10 @@ export class TestElement {
     return child;
   }
 
+  /**
+   * @param {TestElement | null | undefined} target
+   * @returns {boolean}
+   */
   contains(target) {
     if (!target) return false;
     if (target === this) return true;
@@ -221,7 +272,12 @@ export class TestElement {
     return false;
   }
 
+  /**
+   * @param {string} selector
+   * @returns {TestElement | null}
+   */
   closest(selector) {
+    /** @type {TestElement | null} */
     let cur = this;
     while (cur) {
       if (matchesSelector(cur, selector)) return cur;
@@ -230,8 +286,14 @@ export class TestElement {
     return null;
   }
 
+  /**
+   * @param {string} selector
+   * @returns {TestElement[]}
+   */
   querySelectorAll(selector) {
+    /** @type {TestElement[]} */
     const out = [];
+    /** @param {TestElement} node */
     const walk = (node) => {
       for (const child of node.children) {
         if (matchesSelector(child, selector)) out.push(child);
@@ -242,20 +304,39 @@ export class TestElement {
     return out;
   }
 
+  /**
+   * @param {string} selector
+   * @returns {TestElement | null}
+   */
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;
   }
 
+  /**
+   * @param {string} type
+   * @param {(event: unknown) => unknown} fn
+   */
   addEventListener(type, fn) {
     if (typeof fn !== 'function') return;
-    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
-    this.listeners.get(type).add(fn);
+    let bucket = this.listeners.get(type);
+    if (!bucket) {
+      bucket = new Set();
+      this.listeners.set(type, bucket);
+    }
+    bucket.add(fn);
   }
 
+  /**
+   * @param {string} type
+   * @param {(event: unknown) => unknown} fn
+   */
   removeEventListener(type, fn) {
     this.listeners.get(type)?.delete(fn);
   }
 
+  /**
+   * @param {{ type: string; [key: string]: unknown }} event
+   */
   async dispatchEvent(event) {
     const evt = {
       defaultPrevented: false,
@@ -275,34 +356,51 @@ export class TestElement {
   async click() {
     const evt = await this.dispatchEvent({ type: 'click', target: this });
     if (globalThis.document && !evt.defaultPrevented) {
-      await globalThis.document.dispatchEvent({
-        type: 'click',
-        target: this,
-        preventDefault() {},
-      });
+      await globalThis.document.dispatchEvent(
+        /** @type {Event} */ (/** @type {unknown} */ ({
+          type: 'click',
+          target: this,
+          preventDefault() {},
+        }))
+      );
     }
     return evt;
   }
 }
 
 export function installDomHarness() {
+  /** @type {Map<string, Set<(event: unknown) => unknown>>} */
   const docListeners = new Map();
   const body = new TestElement('body');
 
   const doc = {
     body,
     visibilityState: 'visible',
+    /** @param {string} tag */
     createElement(tag) {
       return new TestElement(tag);
     },
+    /**
+     * @param {string} type
+     * @param {(event: unknown) => unknown} fn
+     */
     addEventListener(type, fn) {
       if (typeof fn !== 'function') return;
-      if (!docListeners.has(type)) docListeners.set(type, new Set());
-      docListeners.get(type).add(fn);
+      let bucket = docListeners.get(type);
+      if (!bucket) {
+        bucket = new Set();
+        docListeners.set(type, bucket);
+      }
+      bucket.add(fn);
     },
+    /**
+     * @param {string} type
+     * @param {(event: unknown) => unknown} fn
+     */
     removeEventListener(type, fn) {
       docListeners.get(type)?.delete(fn);
     },
+    /** @param {{ type: string; [key: string]: unknown }} event */
     async dispatchEvent(event) {
       const evt = {
         defaultPrevented: false,
@@ -316,9 +414,11 @@ export function installDomHarness() {
       }
       return evt;
     },
+    /** @param {string} sel */
     querySelectorAll(sel) {
       return body.querySelectorAll(sel);
     },
+    /** @param {string} sel */
     querySelector(sel) {
       return body.querySelector(sel);
     },
@@ -326,7 +426,9 @@ export function installDomHarness() {
 
   const OriginalFormData = globalThis.FormData;
   class TestFormData {
+    /** @param {TestElement} formEl */
     constructor(formEl) {
+      /** @type {Map<string, string>} */
       this.map = new Map();
       if (formEl && typeof formEl.querySelectorAll === 'function') {
         const inputs = formEl.querySelectorAll('input, textarea, select');
@@ -337,13 +439,14 @@ export function installDomHarness() {
         }
       }
     }
+    /** @param {string} name */
     get(name) {
-      return this.map.has(name) ? this.map.get(name) : null;
+      return this.map.get(name) ?? null;
     }
   }
 
-  globalThis.document = doc;
-  globalThis.FormData = TestFormData;
+  globalThis.document = /** @type {Document} */ (/** @type {unknown} */ (doc));
+  globalThis.FormData = /** @type {typeof FormData} */ (/** @type {unknown} */ (TestFormData));
 
   return {
     document: doc,

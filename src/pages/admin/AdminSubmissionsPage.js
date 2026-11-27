@@ -17,7 +17,9 @@ import { showToast } from '../../components/Toast.js';
 
 let reviewQueueTab = 'challenges'; // 'challenges' | 'written'
 let subFilter = 'pending';
+/** @type {string | null} */
 let selectedSubId = null;
+/** @type {string | null} */
 let selectedAttemptId = null;
 
 registerSessionCleanup(() => {
@@ -34,6 +36,10 @@ const FEEDBACK_SNIPPETS = [
   'Include a risk mitigation section before resubmitting.',
 ];
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderAdminSubmissionsPage({ currentPath, session, rerender }) {
   const [submissions, writtenAttempts] = await Promise.all([
     adminListSubmissions(),
@@ -47,6 +53,7 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
     selectedSubId = filtered[0]?.id || submissions[0]?.id || null;
   }
   const activeSub = submissions.find((s) => s.id === selectedSubId) || null;
+  /** @type {import('../../types/kord.d.ts').RubricCriterion[]} */
   const rubric = activeSub?.challenge?.rubric || [
     { id: 'r-1', label: 'Clarity & Structure', description: 'Meets brief structure.', maxPoints: 5 },
     { id: 'r-2', label: 'Evidence & Precision', description: 'Concrete metrics or proof.', maxPoints: 5 },
@@ -262,7 +269,7 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
 
               <form id="written-grade-form" class="form-stack">
                 ${(activeAttempt.questions || [])
-                  .filter((q) => isManualQuestionType(q.questionType))
+                  .filter((q) => isManualQuestionType(q.questionType || 'mcq'))
                   .map(
                     (q) => `
                   <div class="card" style="padding:12px;">
@@ -299,64 +306,77 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
 
   return {
     html: renderAdminLayout({ currentPath, innerHtml }),
+    /** @param {HTMLElement} root */
     bind(root) {
-      root.querySelectorAll('[data-queue-tab]').forEach((btn) => {
+      root.querySelectorAll('[data-queue-tab]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          reviewQueueTab = btn.dataset.queueTab;
+          reviewQueueTab = btn.dataset.queueTab || 'challenges';
           rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-sub-filter]').forEach((btn) => {
+      root.querySelectorAll('[data-sub-filter]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          subFilter = btn.dataset.subFilter;
+          subFilter = btn.dataset.subFilter || 'pending';
           rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-select-sub]').forEach((btn) => {
+      root.querySelectorAll('[data-select-sub]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          selectedSubId = btn.dataset.selectSub;
+          selectedSubId = btn.dataset.selectSub || null;
           rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-select-attempt]').forEach((btn) => {
+      root.querySelectorAll('[data-select-attempt]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          selectedAttemptId = btn.dataset.selectAttempt;
+          selectedAttemptId = btn.dataset.selectAttempt || null;
           rerender({ silent: true });
         });
       });
 
       root.querySelector('#open-signed-file')?.addEventListener('click', async (e) => {
-        const path = e.currentTarget.dataset.filePath;
+        const path = /** @type {HTMLElement} */ (e.currentTarget).dataset.filePath || '';
         try {
           const url = await getSignedEvidenceUrl(path);
           showToast(`Authorized private storage path ready: ${url}`, 'info');
         } catch (err) {
-          showToast(err?.message || 'Unable to generate signed evidence URL.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to generate signed evidence URL.', 'error');
         }
       });
 
-      const scoreInputs = [...root.querySelectorAll('.rubric-score-input')];
-      const rangeInputs = [...root.querySelectorAll('.rubric-range')];
-      const totalEl = root.querySelector('#rubric-total-display');
-      const rail = root.querySelector('#admin-rubric-rail');
+      const scoreInputs = [...root.querySelectorAll('.rubric-score-input')].map(
+        (n) => /** @type {HTMLInputElement} */ (n)
+      );
+      const rangeInputs = [...root.querySelectorAll('.rubric-range')].map(
+        (n) => /** @type {HTMLInputElement} */ (n)
+      );
+      const totalEl = /** @type {HTMLElement | null} */ (root.querySelector('#rubric-total-display'));
+      const rail = /** @type {HTMLElement | null} */ (root.querySelector('#admin-rubric-rail'));
 
       const computeTotal = () => {
         let sum = 0;
+        /** @type {Record<string, number>} */
         const scores = {};
         scoreInputs.forEach((inp) => {
           const max = Number(inp.max || 5);
           const val = Math.min(max, Math.max(0, Number(inp.value) || 0));
-          scores[inp.dataset.rubricId] = val;
+          const rid = inp.dataset.rubricId || '';
+          if (rid) scores[rid] = val;
           sum += val;
         });
         const pct = rubricMax > 0 ? Math.round((sum / rubricMax) * 100) : 0;
         if (totalEl) totalEl.textContent = `${sum}/${rubricMax} (${pct}%)`;
         if (rail) {
-          rail.querySelector('[data-rail-fill]').style.width = `${pct}%`;
-          rail.querySelector('[data-rail-detail]').textContent = `${sum}/${rubricMax} (${pct}%)`;
+          const fillEl = /** @type {HTMLElement | null} */ (rail.querySelector('[data-rail-fill]'));
+          const detailEl = /** @type {HTMLElement | null} */ (rail.querySelector('[data-rail-detail]'));
+          if (fillEl) fillEl.style.width = `${pct}%`;
+          if (detailEl) detailEl.textContent = `${sum}/${rubricMax} (${pct}%)`;
         }
         return { sum, scores };
       };
@@ -364,40 +384,51 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
 
       rangeInputs.forEach((rng) => {
         rng.addEventListener('input', () => {
-          const paired = root.querySelector(`.rubric-score-input[data-rubric-id="${rng.dataset.rubricRange}"]`);
+          const paired = /** @type {HTMLInputElement | null} */ (
+            root.querySelector(`.rubric-score-input[data-rubric-id="${rng.dataset.rubricRange}"]`)
+          );
           if (paired) paired.value = rng.value;
           computeTotal();
         });
       });
       scoreInputs.forEach((inp) => {
         inp.addEventListener('input', () => {
-          const paired = root.querySelector(`.rubric-range[data-rubric-range="${inp.dataset.rubricId}"]`);
+          const paired = /** @type {HTMLInputElement | null} */ (
+            root.querySelector(`.rubric-range[data-rubric-range="${inp.dataset.rubricId}"]`)
+          );
           if (paired) paired.value = inp.value;
           computeTotal();
         });
       });
 
-      const feedbackEl = root.querySelector('#review-feedback');
-      root.querySelectorAll('[data-snippet]').forEach((btn) => {
+      const feedbackEl = /** @type {HTMLTextAreaElement | null} */ (root.querySelector('#review-feedback'));
+      root.querySelectorAll('[data-snippet]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          const text = btn.dataset.snippet;
+          if (!feedbackEl) return;
+          const text = btn.dataset.snippet || '';
           feedbackEl.value = feedbackEl.value.trim() ? `${feedbackEl.value.trim()} ${text}` : text;
           feedbackEl.focus();
         });
       });
 
+      /** @type {import('../../types/kord.d.ts').SubmissionStatus} */
       let pendingDecision = 'approved';
-      root.querySelectorAll('[data-decision]').forEach((btn) => {
+      root.querySelectorAll('[data-decision]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          pendingDecision = btn.dataset.decision;
+          const decision = btn.dataset.decision;
+          if (decision === 'approved' || decision === 'needs_revision' || decision === 'pending') {
+            pendingDecision = decision;
+          }
         });
       });
 
       root.querySelector('#review-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        if (!activeSub) return;
+        if (!activeSub || !session?.user) return;
         const { sum, scores } = computeTotal();
-        const feedback = feedbackEl.value.trim();
+        const feedback = feedbackEl?.value.trim() || '';
         if (!feedback) {
           showToast('Please enter reviewer feedback before saving.', 'error');
           return;
@@ -420,18 +451,24 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
           );
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to save submission review.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to save submission review.', 'error');
         }
       });
 
       root.querySelector('#written-grade-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        if (!activeAttempt) return;
+        if (!activeAttempt || !session?.user) return;
+        /** @type {Record<string, number>} */
         const manualScores = {};
-        root.querySelectorAll('.written-mark-input').forEach((inp) => {
-          manualScores[inp.dataset.qId] = Number(inp.value || 0);
+        root.querySelectorAll('.written-mark-input').forEach((node) => {
+          const inp = /** @type {HTMLInputElement} */ (node);
+          const qId = inp.dataset.qId || '';
+          if (qId) manualScores[qId] = Number(inp.value || 0);
         });
-        const feedback = root.querySelector('#written-feedback')?.value.trim() || '';
+        const writtenFeedbackEl = /** @type {HTMLTextAreaElement | null} */ (
+          root.querySelector('#written-feedback')
+        );
+        const feedback = writtenFeedbackEl?.value.trim() || '';
         try {
           await adminGradeAttempt({
             attemptId: activeAttempt.id,
@@ -442,7 +479,7 @@ export async function renderAdminSubmissionsPage({ currentPath, session, rerende
           showToast('Written assessment graded and course progress updated!', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to publish written grade.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to publish written grade.', 'error');
         }
       });
     },

@@ -1,3 +1,4 @@
+/** @param {unknown} value */
 export function escapeHtml(value) {
   if (value === null || value === undefined) return '';
   return String(value)
@@ -8,6 +9,7 @@ export function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+/** @param {number | string | null | undefined} totalMinutes */
 export function formatMinutes(totalMinutes) {
   const mins = Math.max(0, Math.round(Number(totalMinutes) || 0));
   if (mins < 60) return `${mins}m`;
@@ -16,6 +18,7 @@ export function formatMinutes(totalMinutes) {
   return rem === 0 ? `${hrs}h` : `${hrs}h ${rem}m`;
 }
 
+/** @param {string | number | Date | null | undefined} iso */
 export function formatDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -27,6 +30,7 @@ export function formatDate(iso) {
   });
 }
 
+/** @param {string | number | Date | null | undefined} iso */
 export function formatDateTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -39,6 +43,7 @@ export function formatDateTime(iso) {
   });
 }
 
+/** @param {unknown} text */
 export function slugify(text) {
   return String(text || '')
     .toLowerCase()

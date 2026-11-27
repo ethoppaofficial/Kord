@@ -25,7 +25,11 @@ export function renderProgressRail({
   `;
 }
 
+/**
+ * @param {string} status
+ */
 export function renderStatusBadge(status) {
+  /** @type {Record<string, { cls: string; ic: string; text: string }>} */
   const map = {
     approved: { cls: 'status-green', ic: 'checkCircle', text: 'Approved' },
     verified: { cls: 'status-green', ic: 'checkCircle', text: 'Verified' },
@@ -57,6 +61,16 @@ export function renderStatusBadge(status) {
   return `<span class="status-tag ${cfg.cls}">${icon(cfg.ic, 13)} ${escapeHtml(cfg.text)}</span>`;
 }
 
+/**
+ * @param {import('../types/kord.d.ts').Skill} skill
+ * @param {{
+ *   index?: number;
+ *   completedCoursesCount?: number;
+ *   totalCoursesCount?: number;
+ *   averageCoursePct?: number;
+ *   userLevel?: string | null;
+ * }} [opts]
+ */
 export function renderSkillCard(
   skill,
   {
@@ -127,6 +141,14 @@ export function renderSkillCard(
   `;
 }
 
+/**
+ * @param {import('../types/kord.d.ts').Course} course
+ * @param {{
+ *   progress?: import('../types/kord.d.ts').CourseProgressSummary | null;
+ *   enrollment?: import('../types/kord.d.ts').CourseEnrollment | null;
+ *   index?: number;
+ * }} [opts]
+ */
 export function renderCourseCard(course, { progress = null, enrollment = null, index = 0 } = {}) {
   const phaseCount = (course.phases || []).length;
   const lessonCount = (course.phases || []).reduce(
@@ -202,9 +224,14 @@ export function renderCourseCard(course, { progress = null, enrollment = null, i
   `;
 }
 
+/**
+ * @param {import('../types/kord.d.ts').Opportunity} opp
+ * @param {{ showDetailsButton?: boolean; isSaved?: boolean }} [opts]
+ */
 export function renderOpportunityCard(opp, { showDetailsButton = true, isSaved = false } = {}) {
   const matched = opp.matchedSkills || [];
   const missing = opp.missingSkills || [];
+  const matchPercent = Number(opp.matchPercent || 0);
 
   return `
     <article class="card card-interactive" style="display:flex; flex-direction:column; gap:14px;">
@@ -224,7 +251,7 @@ export function renderOpportunityCard(opp, { showDetailsButton = true, isSaved =
           </h3>
         </div>
         <div style="text-align:right; flex-shrink:0;">
-          <div class="mono-num" style="font-size:1.35rem; font-weight:700; color:var(--color-navy); line-height:1;">${opp.matchPercent}%</div>
+          <div class="mono-num" style="font-size:1.35rem; font-weight:700; color:var(--color-navy); line-height:1;">${matchPercent}%</div>
           <div style="font-size:12px; font-weight:600; color:var(--color-blue); margin-top:4px;">${escapeHtml(opp.matchTier || 'Skill match')}</div>
         </div>
       </div>
@@ -233,9 +260,9 @@ export function renderOpportunityCard(opp, { showDetailsButton = true, isSaved =
 
       ${renderProgressRail({
         label: 'Match strength',
-        value: opp.matchPercent,
+        value: matchPercent,
         max: 100,
-        detail: `${opp.matchPercent}%`,
+        detail: `${matchPercent}%`,
       })}
 
       <div style="display:flex; flex-direction:column; gap:6px; font-size:13px;">
@@ -276,6 +303,9 @@ export function renderOpportunityCard(opp, { showDetailsButton = true, isSaved =
   `;
 }
 
+/**
+ * @param {{ title: string; message: string; actionHtml?: string }} params
+ */
 export function renderEmptyState({ title, message, actionHtml = '' }) {
   return `
     <div class="state-box">
@@ -286,6 +316,9 @@ export function renderEmptyState({ title, message, actionHtml = '' }) {
   `;
 }
 
+/**
+ * @param {{ title?: string; message?: string; retryAction?: boolean }} params
+ */
 export function renderErrorState({ title = 'Unable to load view', message, retryAction = false }) {
   return `
     <div class="state-box" style="background:var(--color-red-bg); border-color:var(--color-red-border);">

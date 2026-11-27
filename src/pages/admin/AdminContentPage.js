@@ -26,17 +26,23 @@ import { renderStatusBadge } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
 let activeTab = 'courses'; // 'catalog' | 'courses' | 'lessons'
+/** @type {string | null} */
 let selectedSkillId = null;
+/** @type {string | null} */
 let selectedCourseId = null;
+/** @type {string | null} */
 let selectedPhaseId = null;
 let courseFormMode = 'edit'; // 'edit' | 'create'
 let previewCourseOpen = false;
+/** @type {string | null} */
 let previewLessonId = null;
 let catalogCategoryFilter = 'All';
 let catalogCourseStatusFilter = 'all';
+/** @type {string | null} */
 let editingSkillId = null;
 
 // Stateful Visual Lesson Builder state (persists across block add/reorder rerenders)
+/** @type {string | null} */
 let editingLessonId = null;
 let lessonDraft = {
   title: '',
@@ -49,11 +55,14 @@ let lessonDraft = {
   publicationStatus: 'published',
   isRequired: true,
 };
+/** @type {import('../../types/kord.d.ts').LessonBlock[]} */
 let draftBlocks = [
   { id: 'blk-init-1', type: 'heading', text: 'Core Concept Overview' },
   { id: 'blk-init-2', type: 'paragraph', text: 'Explain the foundational principle clearly here.' },
 ];
+/** @type {import('../../types/kord.d.ts').VideoEntry[]} */
 let draftVideos = [];
+/** @type {import('../../types/kord.d.ts').FurtherReadingItem[]} */
 let draftResources = [];
 
 function resetLessonBuilder() {
@@ -91,6 +100,7 @@ registerSessionCleanup(() => {
   resetLessonBuilder();
 });
 
+/** @param {import('../../types/kord.d.ts').Lesson | null} lesson */
 function loadLessonIntoBuilder(lesson) {
   if (!lesson) {
     resetLessonBuilder();
@@ -115,6 +125,11 @@ function loadLessonIntoBuilder(lesson) {
   draftResources = structuredClone(lesson.furtherReading || []);
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').LessonBlock} blk
+ * @param {number} idx
+ * @param {number} total
+ */
 function renderDraftBlockEditor(blk, idx, total) {
   let fieldsHtml;
   if (blk.type === 'heading' || blk.type === 'paragraph') {
@@ -208,6 +223,10 @@ function renderDraftBlockEditor(blk, idx, total) {
   `;
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderAdminContentPage({ currentPath, rerender }) {
   const [categories, skills, courses] = await Promise.all([
     listCategories(),
@@ -216,11 +235,11 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
   ]);
 
   if (!selectedSkillId || !skills.some((s) => s.id === selectedSkillId)) {
-    selectedSkillId = skills.find((s) => s.courseCount > 0)?.id || skills[0]?.id || null;
+    selectedSkillId = skills.find((s) => (s.courseCount || 0) > 0)?.id || skills[0]?.id || null;
   }
 
   const skillCourses = courses.filter(
-    (c) => c.skillId === selectedSkillId || (c.associatedSkillIds || []).includes(selectedSkillId)
+    (c) => c.skillId === selectedSkillId || (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
   );
   if (!selectedCourseId || !courses.some((c) => c.id === selectedCourseId)) {
     selectedCourseId = skillCourses[0]?.id || courses[0]?.id || null;
@@ -332,7 +351,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
               activeCourse
                 ? `
               <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                ${renderStatusBadge(activeCourse.publicationStatus)}
+                ${renderStatusBadge(activeCourse.publicationStatus || 'draft')}
                 <button type="button" class="btn btn-secondary btn-sm" id="open-course-preview">Preview course</button>
                 ${
                   activeCourse.publicationStatus !== 'published'
@@ -362,7 +381,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
               ${
                 (activeCourse.versions || []).length > 0
                   ? `<div style="font-size:12px; color:var(--color-text-muted);">
-                      Latest snapshots: ${activeCourse.versions
+                      Latest snapshots: ${(activeCourse.versions || [])
                         .slice(0, 3)
                         .map((v) => `v${v.versionNumber} (${escapeHtml(v.changeNotes || 'Release')})`)
                         .join(' · ')}
@@ -435,7 +454,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                   ${
                     (ph.activities || []).length > 0
                       ? `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--color-border); font-size:12.5px; color:var(--color-text-secondary);">
-                          <strong>Practical activities:</strong> ${ph.activities.map((a) => escapeHtml(a.title)).join(' · ')}
+                          <strong>Practical activities:</strong> ${(ph.activities || []).map((a) => escapeHtml(a.title)).join(' · ')}
                         </div>`
                       : ''
                   }
@@ -521,12 +540,12 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                 <div class="checkbox-grid">
                   ${skills
                     .filter((s) => {
-                      const linked = editCourseObj?.associatedSkillIds || [selectedSkillId];
-                      return linked.includes(s.id) || s.category === skills.find((x) => x.id === selectedSkillId)?.category || s.courseCount > 0;
+                      const linked = editCourseObj?.associatedSkillIds || (selectedSkillId ? [selectedSkillId] : []);
+                      return linked.includes(s.id) || s.category === skills.find((x) => x.id === selectedSkillId)?.category || (s.courseCount || 0) > 0;
                     })
                     .slice(0, 30)
                     .map((s) => {
-                      const checked = (editCourseObj?.associatedSkillIds || [selectedSkillId]).includes(s.id);
+                      const checked = (editCourseObj?.associatedSkillIds || (selectedSkillId ? [selectedSkillId] : [])).includes(s.id);
                       return `
                         <label class="checkbox-item">
                           <input type="checkbox" name="associatedSkillIds" value="${escapeHtml(s.id)}" ${checked ? 'checked' : ''} />
@@ -894,12 +913,13 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           <div class="divider-list">
             ${filteredCatalogSkills
               .map((s) => {
+                const pubCnt = Number(s.courseCount || 0);
                 const draftCnt = Number(s.draftCourseCount || 0);
                 const courseSummary =
-                  s.courseCount > 0 && draftCnt > 0
-                    ? `${s.courseCount} published · ${draftCnt} draft`
-                    : s.courseCount > 0
-                      ? `${s.courseCount} published ${s.courseCount === 1 ? 'course' : 'courses'}`
+                  pubCnt > 0 && draftCnt > 0
+                    ? `${pubCnt} published · ${draftCnt} draft`
+                    : pubCnt > 0
+                      ? `${pubCnt} published ${pubCnt === 1 ? 'course' : 'courses'}`
                       : draftCnt > 0
                         ? `${draftCnt} in development (draft)`
                         : 'No courses yet';
@@ -1007,19 +1027,21 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
 
   return {
     html: renderAdminLayout({ currentPath, innerHtml }),
+    /** @param {HTMLElement} root */
     bind(root) {
-      root.querySelectorAll('[data-admin-tab]').forEach((btn) => {
+      root.querySelectorAll('[data-admin-tab]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          activeTab = btn.dataset.adminTab;
+          activeTab = btn.dataset.adminTab || 'courses';
           rerender({ silent: true });
         });
       });
 
       // Courses tab handlers
       root.querySelector('#admin-course-skill')?.addEventListener('change', (e) => {
-        selectedSkillId = e.target.value;
+        selectedSkillId = /** @type {HTMLSelectElement} */ (e.target).value;
         const nextCourses = courses.filter(
-          (c) => c.skillId === selectedSkillId || (c.associatedSkillIds || []).includes(selectedSkillId)
+          (c) => c.skillId === selectedSkillId || (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
         );
         selectedCourseId = nextCourses[0]?.id || null;
         selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
@@ -1027,41 +1049,44 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       });
 
       root.querySelector('#admin-active-course')?.addEventListener('change', (e) => {
-        selectedCourseId = e.target.value;
+        selectedCourseId = /** @type {HTMLSelectElement} */ (e.target).value;
         const nextC = courses.find((c) => c.id === selectedCourseId);
         selectedPhaseId = nextC?.phases?.[0]?.id || null;
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-course-form-mode]').forEach((btn) => {
+      root.querySelectorAll('[data-course-form-mode]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          courseFormMode = btn.dataset.courseFormMode;
+          courseFormMode = btn.dataset.courseFormMode || 'edit';
           rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-set-course-status]').forEach((btn) => {
+      root.querySelectorAll('[data-set-course-status]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', async () => {
           if (!activeCourse) return;
+          const nextStatus = btn.dataset.setCourseStatus || 'draft';
           try {
-            await adminSetCourseStatus(activeCourse.id, btn.dataset.setCourseStatus);
-            showToast(`Course status updated to ${btn.dataset.setCourseStatus}.`, 'success');
+            await adminSetCourseStatus(activeCourse.id, nextStatus);
+            showToast(`Course status updated to ${nextStatus}.`, 'success');
             rerender({ silent: true });
           } catch (err) {
-            showToast(err?.message || 'Cannot change course status.', 'error');
+            showToast(err instanceof Error ? err.message : 'Cannot change course status.', 'error');
           }
         });
       });
 
       root.querySelector('#create-course-version-btn')?.addEventListener('click', async () => {
         if (!activeCourse) return;
-        const notes = root.querySelector('#version-notes-input')?.value || '';
+        const notes = /** @type {HTMLInputElement | null} */ (root.querySelector('#version-notes-input'))?.value || '';
         try {
           const ver = await adminCreateCourseVersion(activeCourse.id, notes);
           showToast(`Version v${ver?.versionNumber || Number(activeCourse.version || 1) + 1} snapshot created.`, 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to create version snapshot.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to create version snapshot.', 'error');
         }
       });
 
@@ -1074,20 +1099,21 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         rerender({ silent: true });
       });
       root.querySelector('#course-preview-backdrop')?.addEventListener('click', (e) => {
-        if (e.target.id === 'course-preview-backdrop') {
+        if (/** @type {HTMLElement | null} */ (e.target)?.id === 'course-preview-backdrop') {
           previewCourseOpen = false;
           rerender({ silent: true });
         }
       });
       root.querySelector('#preview-lesson-select')?.addEventListener('change', (e) => {
-        previewLessonId = e.target.value;
+        previewLessonId = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-move-phase]').forEach((btn) => {
+      root.querySelectorAll('[data-move-phase]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', async () => {
           if (!activeCourse) return;
-          const phId = btn.dataset.movePhase;
+          const phId = btn.dataset.movePhase || '';
           const dir = Number(btn.dataset.dir);
           const ids = phases.map((p) => p.id);
           const idx = ids.indexOf(phId);
@@ -1099,12 +1125,13 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             showToast('Module order updated.', 'success');
             rerender({ silent: true });
           } catch (err) {
-            showToast(err?.message || 'Unable to reorder modules.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to reorder modules.', 'error');
           }
         });
       });
 
-      root.querySelectorAll('[data-toggle-phase-pub]').forEach((btn) => {
+      root.querySelectorAll('[data-toggle-phase-pub]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', async () => {
           if (!activeCourse) return;
           const ph = phases.find((p) => p.id === btn.dataset.togglePhasePub);
@@ -1119,17 +1146,17 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             showToast(`Module "${ph.title}" set to ${nextPub}.`, 'success');
             rerender({ silent: true });
           } catch (err) {
-            showToast(err?.message || 'Unable to update module status.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to update module status.', 'error');
           }
         });
       });
 
       root.querySelector('#admin-course-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const form = e.currentTarget;
+        const form = /** @type {HTMLFormElement} */ (e.currentTarget);
         const fd = new FormData(form);
         const associatedSkillIds = fd.getAll('associatedSkillIds').map(String).filter(Boolean);
-        const primarySkillId = associatedSkillIds[0] || editCourseObj?.skillId || selectedSkillId;
+        const primarySkillId = associatedSkillIds[0] || editCourseObj?.skillId || selectedSkillId || '';
         try {
           await adminUpsertCourse({
             id: editCourseObj?.id || undefined,
@@ -1160,14 +1187,14 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           courseFormMode = 'edit';
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to save course.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to save course.', 'error');
         }
       });
 
       root.querySelector('#admin-phase-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (!activeCourse) return;
-        const fd = new FormData(e.currentTarget);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
           await adminUpsertPhase({
             courseId: activeCourse.id,
@@ -1180,14 +1207,14 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           showToast('Module added to course.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to add module.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to add module.', 'error');
         }
       });
 
       root.querySelector('#admin-activity-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (!activeCourse) return;
-        const fd = new FormData(e.currentTarget);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
           await adminUpsertActivity({
             courseId: activeCourse.id,
@@ -1201,11 +1228,12 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           showToast('Practical activity added to module.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to add practical activity.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to add practical activity.', 'error');
         }
       });
 
-      root.querySelectorAll('[data-edit-lesson-btn]').forEach((btn) => {
+      root.querySelectorAll('[data-edit-lesson-btn]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
           const ph = phases.find((p) => p.id === btn.dataset.phaseId);
           const les = (ph?.lessons || []).find((l) => l.id === btn.dataset.editLessonBtn);
@@ -1218,22 +1246,23 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         });
       });
 
-      root.querySelectorAll('[data-del-lesson]').forEach((btn) => {
+      root.querySelectorAll('[data-del-lesson]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', async () => {
           if (!activeCourse) return;
           try {
-            await adminDeleteLesson(activeCourse.id, btn.dataset.phaseId, btn.dataset.delLesson);
+            await adminDeleteLesson(activeCourse.id, btn.dataset.phaseId || '', btn.dataset.delLesson || '');
             showToast('Lesson deleted.', 'info');
             rerender({ silent: true });
           } catch (err) {
-            showToast(err?.message || 'Unable to delete lesson.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to delete lesson.', 'error');
           }
         });
       });
 
       // Lesson Builder tab handlers
       root.querySelector('#builder-course-select')?.addEventListener('change', (e) => {
-        selectedCourseId = e.target.value;
+        selectedCourseId = /** @type {HTMLSelectElement} */ (e.target).value;
         const nextC = courses.find((c) => c.id === selectedCourseId);
         selectedPhaseId = nextC?.phases?.[0]?.id || null;
         resetLessonBuilder();
@@ -1241,13 +1270,13 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       });
 
       root.querySelector('#builder-phase-select')?.addEventListener('change', (e) => {
-        selectedPhaseId = e.target.value;
+        selectedPhaseId = /** @type {HTMLSelectElement} */ (e.target).value;
         resetLessonBuilder();
         rerender({ silent: true });
       });
 
       root.querySelector('#builder-lesson-select')?.addEventListener('change', (e) => {
-        const lid = e.target.value;
+        const lid = /** @type {HTMLSelectElement} */ (e.target).value;
         const found = phaseLessons.find((l) => l.id === lid) || null;
         loadLessonIntoBuilder(found);
         rerender({ silent: true });
@@ -1259,20 +1288,24 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       });
 
       // Sync top-level lesson draft fields live on input
-      root.querySelectorAll('[data-les-field]').forEach((el) => {
+      root.querySelectorAll('[data-les-field]').forEach((node) => {
+        const el = /** @type {HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement} */ (node);
         el.addEventListener('input', () => {
           const f = el.dataset.lesField;
-          lessonDraft[f] = f === 'estMinutes' ? Number(el.value || 25) : el.value;
+          if (!f) return;
+          /** @type {Record<string, string | number | boolean>} */ (lessonDraft)[f] =
+            f === 'estMinutes' ? Number(el.value || 25) : el.value;
         });
       });
 
       // Sync draft block edits live on input
-      root.querySelectorAll('[data-blk-field]').forEach((el) => {
+      root.querySelectorAll('[data-blk-field]').forEach((node) => {
+        const el = /** @type {HTMLInputElement | HTMLTextAreaElement} */ (node);
         el.addEventListener('input', () => {
           const idx = Number(el.dataset.blkIdx);
           const field = el.dataset.blkField;
           const blk = draftBlocks[idx];
-          if (!blk) return;
+          if (!blk || !field) return;
           if (field === 'itemsLines') {
             blk.items = el.value.split('\n').map((s) => s.trim()).filter(Boolean);
           } else if (field === 'optionsLines') {
@@ -1287,25 +1320,28 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           } else if (field === 'correctIndex') {
             blk.correctIndex = Number(el.value || 0);
           } else {
-            blk[field] = el.value;
+            /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (blk))[field] = el.value;
           }
         });
       });
 
       root.querySelector('#add-block-btn')?.addEventListener('click', () => {
-        const type = root.querySelector('#add-block-type')?.value || 'paragraph';
+        const type =
+          /** @type {HTMLSelectElement | null} */ (root.querySelector('#add-block-type'))?.value || 'paragraph';
         draftBlocks.push(createEmptyBlock(type));
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-del-blk]').forEach((btn) => {
+      root.querySelectorAll('[data-del-blk]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
           draftBlocks.splice(Number(btn.dataset.delBlk), 1);
           rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-move-blk]').forEach((btn) => {
+      root.querySelectorAll('[data-move-blk]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
           const idx = Number(btn.dataset.moveBlk);
           const target = idx + Number(btn.dataset.dir);
@@ -1316,11 +1352,15 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       });
 
       root.querySelector('#add-video-btn')?.addEventListener('click', () => {
-        const url = root.querySelector('#vid-url')?.value.trim();
-        const title = root.querySelector('#vid-title')?.value.trim() || 'Lesson Video';
-        const duration = root.querySelector('#vid-duration')?.value.trim() || '';
-        const viewingInstructions = root.querySelector('#vid-guide')?.value.trim() || '';
-        const transcript = root.querySelector('#vid-transcript')?.value.trim() || '';
+        const url = /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-url'))?.value.trim() || '';
+        const title =
+          /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-title'))?.value.trim() || 'Lesson Video';
+        const duration =
+          /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-duration'))?.value.trim() || '';
+        const viewingInstructions =
+          /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-guide'))?.value.trim() || '';
+        const transcript =
+          /** @type {HTMLTextAreaElement | null} */ (root.querySelector('#vid-transcript'))?.value.trim() || '';
 
         const res = normalizeVideoEntry({
           provider: 'youtube',
@@ -1330,8 +1370,8 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           viewingInstructions,
           transcript,
         });
-        if (!res.valid) {
-          showToast(res.error, 'error');
+        if (!res.valid || !res.video) {
+          showToast(res.error || 'Invalid YouTube URL.', 'error');
           return;
         }
         draftVideos.push(res.video);
@@ -1339,7 +1379,8 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-del-video]').forEach((btn) => {
+      root.querySelectorAll('[data-del-video]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
           draftVideos.splice(Number(btn.dataset.delVideo), 1);
           rerender({ silent: true });
@@ -1347,8 +1388,8 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
       });
 
       root.querySelector('#add-res-btn')?.addEventListener('click', () => {
-        const title = root.querySelector('#res-title')?.value.trim();
-        const url = root.querySelector('#res-url')?.value.trim();
+        const title = /** @type {HTMLInputElement | null} */ (root.querySelector('#res-title'))?.value.trim();
+        const url = /** @type {HTMLInputElement | null} */ (root.querySelector('#res-url'))?.value.trim();
         if (!title || !url || (!url.startsWith('https://') && !url.startsWith('http://'))) {
           showToast('Enter both a resource title and a valid https:// URL.', 'error');
           return;
@@ -1357,7 +1398,8 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-del-res]').forEach((btn) => {
+      root.querySelectorAll('[data-del-res]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
           draftResources.splice(Number(btn.dataset.delRes), 1);
           rerender({ silent: true });
@@ -1370,7 +1412,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           showToast('Select a valid course and module first.', 'error');
           return;
         }
-        const fd = new FormData(e.currentTarget);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
           await adminUpsertLesson({
             id: editingLessonId || undefined,
@@ -1392,24 +1434,25 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           resetLessonBuilder();
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to save lesson.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to save lesson.', 'error');
         }
       });
 
       // Catalog tab handlers
       root.querySelector('#admin-cat-filter')?.addEventListener('change', (e) => {
-        catalogCategoryFilter = e.target.value;
+        catalogCategoryFilter = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
       root.querySelector('#admin-course-status-filter')?.addEventListener('change', (e) => {
-        catalogCourseStatusFilter = e.target.value;
+        catalogCourseStatusFilter = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-edit-skill]').forEach((btn) => {
+      root.querySelectorAll('[data-edit-skill]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          editingSkillId = btn.dataset.editSkill;
+          editingSkillId = btn.dataset.editSkill || null;
           rerender({ silent: true });
         });
       });
@@ -1419,11 +1462,12 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-add-course-skill]').forEach((btn) => {
+      root.querySelectorAll('[data-add-course-skill]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          selectedSkillId = btn.dataset.addCourseSkill;
+          selectedSkillId = btn.dataset.addCourseSkill || null;
           const nextCourses = courses.filter(
-            (c) => c.skillId === selectedSkillId || (c.associatedSkillIds || []).includes(selectedSkillId)
+            (c) => c.skillId === selectedSkillId || (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
           );
           selectedCourseId = nextCourses[0]?.id || null;
           selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
@@ -1435,7 +1479,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
 
       root.querySelector('#admin-category-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const fd = new FormData(e.currentTarget);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
           await adminUpsertCategory({
             name: String(fd.get('name')),
@@ -1444,13 +1488,13 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           showToast('Category created dynamically!', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to create category.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to create category.', 'error');
         }
       });
 
       root.querySelector('#admin-skill-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const fd = new FormData(e.currentTarget);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
           await adminUpsertSkill({
             id: editingSkillId || undefined,
@@ -1467,11 +1511,12 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           editingSkillId = null;
           rerender({ silent: true });
         } catch (err) {
-          showToast(err?.message || 'Unable to save skill.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to save skill.', 'error');
         }
       });
 
-      root.querySelectorAll('[data-toggle-skill-pub]').forEach((btn) => {
+      root.querySelectorAll('[data-toggle-skill-pub]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', async () => {
           const skill = skills.find((s) => s.id === btn.dataset.toggleSkillPub);
           if (!skill) return;
@@ -1483,7 +1528,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             showToast(`Updated ${skill.title} status.`, 'success');
             rerender({ silent: true });
           } catch (err) {
-            showToast(err?.message || 'Unable to update skill status.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to update skill status.', 'error');
           }
         });
       });

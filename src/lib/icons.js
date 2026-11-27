@@ -10,6 +10,7 @@ export function kordLogoSvg() {
   `;
 }
 
+/** @type {Record<string, string>} */
 const ICONS = {
   compass: '<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
   layout: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>',
@@ -34,6 +35,10 @@ const ICONS = {
   trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
 };
 
+/**
+ * @param {string} name
+ * @param {number} [size]
+ */
 export function icon(name, size = 16) {
   const body = ICONS[name] || '';
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;

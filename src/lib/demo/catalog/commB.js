@@ -6,10 +6,12 @@ const RESOURCES = [
   { title: 'Conflict & Mediation Best Practices', source: 'gov.uk', url: 'https://www.acas.org.uk/', resourceType: 'Guidance' },
 ];
 
-function lessonSpec(t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) {
-  return { t, intro, o: [`Analyze ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} in realistic scenarios`], h, exp, def, ex, steps, cs, tip, chk, sum, tk };
-}
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
+const lessonSpec = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
+  t, intro, o: [`Analyze ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} in realistic scenarios`], h, exp, def, ex, steps, cs, tip, chk, sum, tk,
+});
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const COMM_B_SPECS = [
   {
     code: 'ns',
@@ -815,4 +817,5 @@ const COMM_B_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const COMM_B_BUILDERS = COMM_B_SPECS.map((cfg) => (helpers) => buildDomainCourse(cfg, helpers));

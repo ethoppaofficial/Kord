@@ -6,11 +6,13 @@ const RESOURCES = [
   { title: 'Structured Reasoning & Decision Frameworks', source: 'hbr.org', url: 'https://hbr.org/', resourceType: 'Articles' },
 ];
 
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
 const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   t, intro, o: [`Examine ${h.toLowerCase()}`, `Practice ${t.toLowerCase()} in realistic workplace dilemmas`],
   h, exp, def, ex, steps, cs, tip, chk, sum, tk,
 });
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const COMM_C_SPECS = [
   {
     code: 'cr',
@@ -482,4 +484,5 @@ const COMM_C_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const COMM_C_BUILDERS = COMM_C_SPECS.map((cfg) => (helpers) => buildDomainCourse(cfg, helpers));

@@ -5,16 +5,21 @@ import { recomputeCourseAndSkillStatus, recomputeDemoSkillLevel } from './progre
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import { gradeAssessmentAttempt, isManualQuestionType } from '../assessmentEngine.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').QuizAttemptResultItem[]} [results]
+ * @param {boolean} [solutionsReleased]
+ */
 function sanitizeReturnedResults(results = [], solutionsReleased = false) {
   if (solutionsReleased) return results;
   return (results || []).map((r) => ({
     ...r,
     correctIndex: null,
-    answerConfig: {},
-    explanation: null,
+    answerConfig: null,
+    explanation: '',
   }));
 }
 
+/** @param {string} courseId */
 export async function listAssessmentsForCourse(courseId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -74,6 +79,10 @@ export async function listAllQuizzes() {
   }));
 }
 
+/**
+ * @param {string | null | undefined} userId
+ * @returns {Promise<import('../../types/kord.d.ts').QuizAttempt[]>}
+ */
 export async function getUserAllQuizAttempts(userId) {
   if (!userId) return [];
   if (!isDemoMode && supabase) {
@@ -101,13 +110,16 @@ export async function getUserAllQuizAttempts(userId) {
 
   return (getDemoState().quizAttempts || [])
     .filter((a) => a.userId === userId)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 /**
  * Learner-safe assessment loader.
  * NEVER returns correctIndex, answerConfig, or explanation before submission.
  * Returns empty questions list if learner is not enrolled in a course-scoped assessment.
+ *
+ * @param {string} quizId
+ * @param {{ userId?: string | null; includeDrafts?: boolean }} [opts]
  */
 export async function getQuizForLearner(quizId, { userId = null, includeDrafts = false } = {}) {
   if (!isDemoMode && supabase) {
@@ -119,7 +131,9 @@ export async function getQuizForLearner(quizId, { userId = null, includeDrafts =
       .eq('id', quizId)
       .single();
     if (error || !quiz) return null;
-    if (!includeDrafts && quiz.course_id && quiz.courses?.publication_status !== 'published') {
+    const courseRel = Array.isArray(quiz.courses) ? quiz.courses[0] || null : quiz.courses || null;
+    const skillRel = Array.isArray(quiz.skills) ? quiz.skills[0] || null : quiz.skills || null;
+    if (!includeDrafts && quiz.course_id && courseRel?.publication_status !== 'published') {
       return null;
     }
 
@@ -133,9 +147,23 @@ export async function getQuizForLearner(quizId, { userId = null, includeDrafts =
     return {
       id: quiz.id,
       skillId: quiz.skill_id,
-      skill: quiz.skills || null,
+      skill: skillRel
+        ? /** @type {Partial<import('../../types/kord.d.ts').Skill>} */ ({
+            id: skillRel.id,
+            slug: skillRel.slug,
+            title: skillRel.title,
+            publicationStatus: skillRel.publication_status,
+          })
+        : null,
       courseId: quiz.course_id,
-      course: quiz.courses || null,
+      course: courseRel
+        ? /** @type {Partial<import('../../types/kord.d.ts').Course>} */ ({
+            id: courseRel.id,
+            slug: courseRel.slug,
+            title: courseRel.title,
+            publicationStatus: courseRel.publication_status,
+          })
+        : null,
       phaseId: quiz.phase_id,
       lessonId: quiz.lesson_id,
       quizType: quiz.quiz_type,
@@ -209,7 +237,7 @@ export async function getQuizForLearner(quizId, { userId = null, includeDrafts =
     questions: hasAccess
       ? (quiz.questions || [])
           .slice()
-          .sort((a, b) => a.position - b.position)
+          .sort((a, b) => (a.position || 0) - (b.position || 0))
           .map((q) => ({
             id: q.id,
             position: q.position,
@@ -224,6 +252,11 @@ export async function getQuizForLearner(quizId, { userId = null, includeDrafts =
   };
 }
 
+/**
+ * @param {string} userId
+ * @param {string} quizId
+ * @returns {Promise<import('../../types/kord.d.ts').QuizAttempt[]>}
+ */
 export async function getQuizAttempts(userId, quizId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -250,9 +283,15 @@ export async function getQuizAttempts(userId, quizId) {
 
   return (getDemoState().quizAttempts || [])
     .filter((a) => a.userId === userId && a.quizId === quizId)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
+/**
+ * @param {string} userId
+ * @param {string} quizId
+ * @param {{ restartExpired?: boolean }} [opts]
+ * @returns {Promise<{ sessionId: string; quizId: string; startedAt: string; expiresAt?: string | null; serverNow?: string; expired?: boolean } | null>}
+ */
 export async function startQuizSession(userId, quizId, { restartExpired = false } = {}) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.rpc('start_quiz_session', {
@@ -322,7 +361,7 @@ export async function startQuizSession(userId, quizId, { restartExpired = false 
         s.status === 'active' &&
         !s.completedAttemptId
     )
-    .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
 
   const latestActive = existingSessions[0] || null;
   if (latestActive) {
@@ -351,7 +390,17 @@ export async function startQuizSession(userId, quizId, { restartExpired = false 
 
   const limitMins = Number(quiz.timeLimitMinutes || 0);
   const expiresAt = limitMins > 0 ? new Date(nowMs + limitMins * 60000).toISOString() : null;
-  let createdSession = null;
+  /** @type {import('../../types/kord.d.ts').QuizSession} */
+  const createdSession = {
+    id: `qs-${nowMs}-${Math.random().toString(36).slice(2, 6)}`,
+    userId,
+    quizId,
+    status: 'active',
+    startedAt: nowIso,
+    expiresAt,
+    completedAttemptId: null,
+    createdAt: nowIso,
+  };
 
   updateDemoState((draft) => {
     draft.quizSessions = draft.quizSessions || [];
@@ -359,16 +408,6 @@ export async function startQuizSession(userId, quizId, { restartExpired = false 
       const target = draft.quizSessions.find((s) => s.id === latestActive.id);
       if (target) target.status = 'expired';
     }
-    createdSession = {
-      id: `qs-${nowMs}-${Math.random().toString(36).slice(2, 6)}`,
-      userId,
-      quizId,
-      status: 'active',
-      startedAt: nowIso,
-      expiresAt,
-      completedAttemptId: null,
-      createdAt: nowIso,
-    };
     draft.quizSessions.push(createdSession);
     return draft;
   });
@@ -383,6 +422,12 @@ export async function startQuizSession(userId, quizId, { restartExpired = false 
   };
 }
 
+/**
+ * @param {string} userId
+ * @param {string} quizId
+ * @param {Record<string, unknown>} answersMap
+ * @param {string | null} [idempotencyKey]
+ */
 export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = null) {
   const effectiveKey =
     idempotencyKey || buildIdempotencyKey('quiz-submit', userId, quizId, JSON.stringify(answersMap));
@@ -489,7 +534,7 @@ export async function submitQuiz(userId, quizId, answersMap, idempotencyKey = nu
               s.status === 'active' &&
               !s.completedAttemptId
           )
-          .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0];
+          .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())[0];
         if (!activeSession) {
           throw new Error('Active assessment session required before submitting a timed assessment.');
         }
@@ -582,23 +627,27 @@ export async function adminListAllQuizzes() {
       .select('*, skills!quizzes_skill_id_fkey(title, slug), courses!quizzes_course_id_fkey(title, slug)')
       .order('title');
     if (error) throw error;
-    return (data || []).map((q) => ({
-      id: q.id,
-      skillId: q.skill_id,
-      courseId: q.course_id,
-      phaseId: q.phase_id,
-      lessonId: q.lesson_id,
-      quizType: q.quiz_type,
-      title: q.title,
-      description: q.description,
-      passPercent: q.pass_percent,
-      timeLimitMinutes: q.time_limit_minutes,
-      maxAttempts: q.max_attempts,
-      shuffleQuestions: Boolean(q.shuffle_questions),
-      requiresManualReview: Boolean(q.requires_manual_review),
-      skillTitle: q.skills?.title || 'Skill',
-      courseTitle: q.courses?.title || '',
-    }));
+    return (data || []).map((q) => {
+      const skillRel = Array.isArray(q.skills) ? q.skills[0] || null : q.skills || null;
+      const courseRel = Array.isArray(q.courses) ? q.courses[0] || null : q.courses || null;
+      return {
+        id: q.id,
+        skillId: q.skill_id,
+        courseId: q.course_id,
+        phaseId: q.phase_id,
+        lessonId: q.lesson_id,
+        quizType: q.quiz_type,
+        title: q.title,
+        description: q.description,
+        passPercent: q.pass_percent,
+        timeLimitMinutes: q.time_limit_minutes,
+        maxAttempts: q.max_attempts,
+        shuffleQuestions: Boolean(q.shuffle_questions),
+        requiresManualReview: Boolean(q.requires_manual_review),
+        skillTitle: skillRel?.title || 'Skill',
+        courseTitle: courseRel?.title || '',
+      };
+    });
   }
 
   const state = getDemoState();
@@ -611,6 +660,7 @@ export async function adminListAllQuizzes() {
   }));
 }
 
+/** @param {Partial<import('../../types/kord.d.ts').Quiz> & { skillId: string; title: string }} payload */
 export async function adminUpsertAssessment(payload) {
   const key = buildIdempotencyKey('admin-quiz', payload.id || payload.title, payload.skillId, payload.courseId || '');
   return runIdempotent(key, async () => {
@@ -685,24 +735,31 @@ export async function adminUpsertAssessment(payload) {
   });
 }
 
+/** @param {string} quizId */
 export async function adminGetQuizQuestions(quizId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.rpc('admin_get_quiz_questions', { p_quiz_id: quizId });
     if (error) throw error;
-    return (data || []).map((q) => ({
-      id: q.id,
-      quizId: q.quiz_id,
-      position: q.position,
-      questionType: q.question_type || 'multiple_choice',
-      difficulty: q.difficulty || 'medium',
-      marks: Number(q.marks || 1),
-      prompt: q.prompt,
-      contextText: q.context_text || '',
-      options: q.options || [],
-      correctIndex: q.correct_index,
-      answerConfig: q.answer_config || {},
-      explanation: q.explanation,
-    }));
+    return (/** @type {Record<string, unknown>[]} */ (data || [])).map((q) => {
+      const cfg = /** @type {import('../../types/kord.d.ts').QuizAnswerKey} */ (q.answer_config || {});
+      return {
+        id: String(q.id || ''),
+        quizId: String(q.quiz_id || ''),
+        position: Number(q.position || 1),
+        questionType: String(q.question_type || 'multiple_choice'),
+        difficulty: String(q.difficulty || 'medium'),
+        marks: Number(q.marks || 1),
+        prompt: String(q.prompt || ''),
+        contextText: String(q.context_text || ''),
+        options: /** @type {string[]} */ (q.options || []),
+        correctIndex: /** @type {number | null} */ (q.correct_index ?? null),
+        correctIndices: cfg.correctIndices || null,
+        acceptedAnswers: cfg.acceptedAnswers || null,
+        correctOrder: cfg.correctOrder || null,
+        answerConfig: cfg,
+        explanation: String(q.explanation || ''),
+      };
+    });
   }
 
   const state = getDemoState();
@@ -725,10 +782,17 @@ export async function adminGetQuizQuestions(quizId) {
   });
 }
 
+/**
+ * @param {Partial<import('../../types/kord.d.ts').QuizQuestion> &
+ *   Partial<import('../../types/kord.d.ts').QuizAnswerKey> & {
+ *     quizId: string;
+ *     prompt: string;
+ *   }} payload
+ */
 export async function adminUpsertQuestion({
   id,
   quizId,
-  position = null,
+  position = undefined,
   questionType = 'multiple_choice',
   difficulty = 'medium',
   marks = 1,
@@ -743,6 +807,7 @@ export async function adminUpsertQuestion({
 }) {
   const key = buildIdempotencyKey('admin-question', id || quizId, questionType, prompt);
   return runIdempotent(key, async () => {
+    /** @type {Record<string, unknown>} */
     const answerConfig = {};
     if (Array.isArray(correctIndices)) answerConfig.correctIndices = correctIndices;
     if (Array.isArray(acceptedAnswers)) answerConfig.acceptedAnswers = acceptedAnswers;
@@ -816,6 +881,10 @@ export async function adminUpsertQuestion({
   });
 }
 
+/**
+ * @param {string} quizId
+ * @param {string} questionId
+ */
 export async function adminDeleteQuestion(quizId, questionId) {
   const key = buildIdempotencyKey('admin-q-del', quizId, questionId);
   return runIdempotent(key, async () => {
@@ -855,42 +924,47 @@ export async function adminListPendingAssessmentAttempts() {
     const filtered = (data || []).filter(
       (a) => a.review_status === 'pending_review' || a.review_status === 'reviewed'
     );
-    const uniqueQuizIds = Array.from(new Set(filtered.map((a) => a.quiz_id).filter(Boolean)));
+    const uniqueQuizIds = Array.from(new Set(filtered.map((a) => String(a.quiz_id || '')).filter(Boolean)));
+    /** @type {Map<string, Awaited<ReturnType<typeof adminGetQuizQuestions>>>} */
     const questionsByQuizId = new Map();
     if (uniqueQuizIds.length > 0) {
       const questionLists = await Promise.all(
-        uniqueQuizIds.map(async (qid) => [qid, await adminGetQuizQuestions(qid)])
+        uniqueQuizIds.map(async (qid) => /** @type {const} */ ([qid, await adminGetQuizQuestions(qid)]))
       );
       questionLists.forEach(([qid, qList]) => questionsByQuizId.set(qid, qList));
     }
-    return filtered.map((a) => ({
-      id: a.id,
-      userId: a.user_id,
-      quizId: a.quiz_id,
-      learnerName: a.profiles?.full_name || 'Learner',
-      learnerEmail: a.profiles?.email || '',
-      quizTitle: a.quizzes?.title || 'Assessment',
-      passPercent: a.quizzes?.pass_percent || 70,
-      courseId: a.quizzes?.course_id || null,
-      skillId: a.quizzes?.skill_id || null,
-      answers: a.answers || {},
-      score: a.score,
-      total: a.total,
-      percentage: a.percentage,
-      passed: a.passed,
-      reviewStatus: a.review_status,
-      manualScores: a.manual_scores || {},
-      manualFeedback: a.manual_feedback || '',
-      questions: questionsByQuizId.get(a.quiz_id) || [],
-      createdAt: a.created_at,
-    }));
+    return filtered.map((a) => {
+      const profileRel = Array.isArray(a.profiles) ? a.profiles[0] || null : a.profiles || null;
+      const quizRel = Array.isArray(a.quizzes) ? a.quizzes[0] || null : a.quizzes || null;
+      return {
+        id: a.id,
+        userId: a.user_id,
+        quizId: a.quiz_id,
+        learnerName: profileRel?.full_name || 'Learner',
+        learnerEmail: profileRel?.email || '',
+        quizTitle: quizRel?.title || 'Assessment',
+        passPercent: quizRel?.pass_percent || 70,
+        courseId: quizRel?.course_id || null,
+        skillId: quizRel?.skill_id || null,
+        answers: a.answers || {},
+        score: a.score,
+        total: a.total,
+        percentage: a.percentage,
+        passed: a.passed,
+        reviewStatus: a.review_status,
+        manualScores: a.manual_scores || {},
+        manualFeedback: a.manual_feedback || '',
+        questions: questionsByQuizId.get(a.quiz_id) || [],
+        createdAt: a.created_at,
+      };
+    });
   }
 
   const state = getDemoState();
   return (state.quizAttempts || [])
     .filter((a) => a.reviewStatus === 'pending_review' || a.reviewStatus === 'reviewed')
     .slice()
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .map((a) => {
       const learner = (state.users || []).find((u) => u.id === a.userId);
       const quiz = (state.quizzes || []).find((q) => q.id === a.quizId);
@@ -907,6 +981,14 @@ export async function adminListPendingAssessmentAttempts() {
     });
 }
 
+/**
+ * @param {{
+ *   attemptId: string;
+ *   reviewerId: string;
+ *   manualScores: Record<string, number | string>;
+ *   feedback: string;
+ * }} payload
+ */
 export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, feedback }) {
   const cleanFeedback = String(feedback || '').trim();
   if (!cleanFeedback) {
@@ -925,8 +1007,11 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       return data;
     }
 
+    /** @type {string | null} */
     let targetUserId = null;
+    /** @type {string | null} */
     let targetCourseId = null;
+    /** @type {string | null} */
     let targetSkillId = null;
 
     updateDemoState((draft) => {
@@ -951,9 +1036,10 @@ export async function adminGradeAttempt({ attemptId, reviewerId, manualScores, f
       });
 
       let manualSum = 0;
+      /** @type {Record<string, number>} */
       const cleanManualScores = {};
       (quiz.questions || []).forEach((q) => {
-        if (isManualQuestionType(q.questionType)) {
+        if (isManualQuestionType(q.questionType || 'mcq')) {
           const rawPresent = manualScores && Object.prototype.hasOwnProperty.call(manualScores, q.id) && manualScores[q.id] !== null && manualScores[q.id] !== '';
           if (!rawPresent) {
             throw new Error(`Manual score for question "${q.prompt}" is required.`);

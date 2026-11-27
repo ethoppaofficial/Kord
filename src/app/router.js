@@ -1,3 +1,7 @@
+/**
+ * @param {import('../types/kord.d.ts').RouteDefinition[]} routes
+ * @param {string} pathname
+ */
 export function matchRoute(routes, pathname) {
   const cleanPath = pathname.length > 1 ? pathname.replace(/\/+$/, '') : '/';
   const pathParts = cleanPath.split('/').filter(Boolean);
@@ -6,6 +10,7 @@ export function matchRoute(routes, pathname) {
     const routeParts = route.pattern.split('/').filter(Boolean);
     if (routeParts.length !== pathParts.length) continue;
 
+    /** @type {Record<string, string>} */
     const params = {};
     let matched = true;
     for (let i = 0; i < routeParts.length; i++) {

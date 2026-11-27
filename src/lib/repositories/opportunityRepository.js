@@ -6,6 +6,7 @@ import { getUserSkills } from './skillsRepository.js';
 import { listSkills } from './contentRepository.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 
+/** @param {number} pct */
 export function getMatchTier(pct) {
   if (pct >= 80) return 'Strong match';
   if (pct >= 60) return 'Good match';
@@ -13,6 +14,7 @@ export function getMatchTier(pct) {
   return 'Early match';
 }
 
+/** @returns {Promise<import('../../types/kord.d.ts').Opportunity[]>} */
 export async function listOpportunities() {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -20,7 +22,7 @@ export async function listOpportunities() {
       .select('*')
       .order('created_at', { ascending: false });
     if (error) throw error;
-    return data.map((o) => ({
+    return (data || []).map((o) => ({
       id: o.id,
       title: o.title,
       organization: o.organization,
@@ -42,6 +44,16 @@ export async function listOpportunities() {
   return getDemoState().opportunities;
 }
 
+/**
+ * @param {string} userId
+ * @param {string} skillId
+ * @param {{
+ *   quizzes: Array<{ id: string; skillId: string; quizType?: string }>;
+ *   quizAttempts: Array<{ userId: string; quizId: string; percentage?: number }>;
+ *   challenges: Array<{ id: string; skillId: string }>;
+ *   submissions: Array<{ userId: string; challengeId: string; status: string; rubricTotal?: number | null; rubricMax?: number }>;
+ * }} state
+ */
 function getSkillEvidenceForUser(userId, skillId, state) {
   const quizzes = state.quizzes.filter((q) => q.skillId === skillId);
   const quizIds = new Set(quizzes.map((q) => q.id));
@@ -58,20 +70,36 @@ function getSkillEvidenceForUser(userId, skillId, state) {
       s.userId === userId &&
       chalIds.has(s.challengeId) &&
       s.status === 'approved' &&
-      s.rubricTotal !== null &&
-      s.rubricMax
+      s.rubricTotal != null &&
+      Boolean(s.rubricMax)
   );
   const bestReviewedPct =
     reviewedSubs.length > 0
-      ? Math.max(...reviewedSubs.map((s) => Math.round((s.rubricTotal / s.rubricMax) * 100)))
+      ? Math.max(...reviewedSubs.map((s) => Math.round((Number(s.rubricTotal) / Number(s.rubricMax)) * 100)))
       : 0;
 
   return { bestQuizPct, bestReviewedPct };
 }
 
+/**
+ * @param {{
+ *   skill: { id: string; slug: string; title: string; skillCheckQuizId?: string | null; challengeId?: string | null };
+ *   neededLevel: string;
+ *   userLevel: string | null;
+ *   bestQuizPct: number;
+ *   bestReviewedPct: number;
+ * }} params
+ */
 function computeSkillRowScore({ skill, neededLevel, userLevel, bestQuizPct, bestReviewedPct }) {
-  const neededRank = PROGRESSION_RANK[neededLevel] || 2;
-  const userRank = userLevel ? PROGRESSION_RANK[userLevel] || 0 : 0;
+  /** @type {Record<string, number>} */
+  const rankMap = PROGRESSION_RANK;
+  /** @type {Record<string, string>} */
+  const labelMap = PROGRESSION_LABEL;
+  /** @type {Record<string, number>} */
+  const weightMap = PROGRESSION_WEIGHT;
+
+  const neededRank = rankMap[neededLevel] || 2;
+  const userRank = userLevel ? rankMap[userLevel] || 0 : 0;
 
   if (!userLevel || userRank < neededRank) {
     return {
@@ -81,9 +109,9 @@ function computeSkillRowScore({ skill, neededLevel, userLevel, bestQuizPct, best
       skillCheckQuizId: skill.skillCheckQuizId || null,
       challengeId: skill.challengeId || null,
       neededLevel,
-      neededLabel: PROGRESSION_LABEL[neededLevel] || 'Practising',
+      neededLabel: labelMap[neededLevel] || 'Practising',
       userLevel: userLevel || null,
-      userLabel: userLevel ? PROGRESSION_LABEL[userLevel] : 'Not started',
+      userLabel: userLevel ? labelMap[userLevel] || 'Declared' : 'Not started',
       levelPart: 0,
       evidencePart: 0,
       skillScore: 0,
@@ -93,7 +121,7 @@ function computeSkillRowScore({ skill, neededLevel, userLevel, bestQuizPct, best
     };
   }
 
-  const weight = PROGRESSION_WEIGHT[userLevel] || 0.3;
+  const weight = weightMap[userLevel] || 0.3;
   const levelPart = weight * 0.7;
   const evidenceAvg = (bestQuizPct + bestReviewedPct) / 2 / 100;
   const evidencePart = evidenceAvg * 0.3;
@@ -106,9 +134,9 @@ function computeSkillRowScore({ skill, neededLevel, userLevel, bestQuizPct, best
     skillCheckQuizId: skill.skillCheckQuizId || null,
     challengeId: skill.challengeId || null,
     neededLevel,
-    neededLabel: PROGRESSION_LABEL[neededLevel] || 'Practising',
+    neededLabel: labelMap[neededLevel] || 'Practising',
     userLevel,
-    userLabel: PROGRESSION_LABEL[userLevel] || 'Declared',
+    userLabel: labelMap[userLevel] || 'Declared',
     levelPart: Number(levelPart.toFixed(2)),
     evidencePart: Number(evidencePart.toFixed(2)),
     skillScore,
@@ -118,6 +146,7 @@ function computeSkillRowScore({ skill, neededLevel, userLevel, bestQuizPct, best
   };
 }
 
+/** @param {string | null | undefined} userId */
 export async function listRankedOpportunities(userId) {
   const [opportunities, skills, userSkills] = await Promise.all([
     listOpportunities(),
@@ -125,6 +154,14 @@ export async function listRankedOpportunities(userId) {
     userId ? getUserSkills(userId) : Promise.resolve([]),
   ]);
 
+  /**
+   * @type {{
+   *   quizzes: Array<{ id: string; skillId: string; quizType?: string }>;
+   *   challenges: Array<{ id: string; skillId: string }>;
+   *   quizAttempts: Array<{ userId: string; quizId: string; percentage?: number }>;
+   *   submissions: Array<{ userId: string; challengeId: string; status: string; rubricTotal?: number | null; rubricMax?: number }>;
+   * } | null}
+   */
   let evidenceState = null;
   if (!isDemoMode && supabase) {
     const [
@@ -165,12 +202,12 @@ export async function listRankedOpportunities(userId) {
         skillId: c.skill_id,
       })),
       quizAttempts: (attemptsRes.data || []).map((a) => ({
-        userId,
+        userId: userId || '',
         quizId: a.quiz_id,
         percentage: a.percentage,
       })),
       submissions: (submissionsRes.data || []).map((s) => ({
-        userId,
+        userId: userId || '',
         challengeId: s.challenge_id,
         status: s.status,
         rubricTotal: s.rubric_total,
@@ -191,15 +228,17 @@ export async function listRankedOpportunities(userId) {
           ? opp.requiredSkills
           : (opp.requiredSkillSlugs || []).map((slug) => ({ slug, neededLevel: 'practising' }));
 
-      const breakdown = [];
-      const matchedSkills = [];
-      const missingSkills = [];
+      const breakdown = /** @type {ReturnType<typeof computeSkillRowScore>[]} */ ([]);
+      const matchedSkills = /** @type {import('../../types/kord.d.ts').OpportunityMatchSkill[]} */ ([]);
+      const missingSkills = /** @type {import('../../types/kord.d.ts').OpportunityMatchSkill[]} */ ([]);
 
       reqDefs.forEach((def) => {
         const rawSkill = skillBySlug.get(def.slug) || {
           id: def.slug,
           slug: def.slug,
           title: def.slug,
+          skillCheckQuizId: null,
+          challengeId: null,
         };
         const skillQuiz =
           evidenceState &&
@@ -247,7 +286,8 @@ export async function listRankedOpportunities(userId) {
       let projectedTargetLabel = 'Demonstrated';
 
       if (focusRow && breakdown.length > 0) {
-        const currentRank = focusRow.userLevel ? PROGRESSION_RANK[focusRow.userLevel] || 0 : 0;
+        const rankByLevel = /** @type {Record<string, number>} */ (PROGRESSION_RANK);
+        const currentRank = focusRow.userLevel ? rankByLevel[focusRow.userLevel] || 0 : 0;
         const targetLevel = currentRank >= 3 ? 'verified' : 'demonstrated';
         projectedTargetLabel = PROGRESSION_LABEL[targetLevel];
         const simulatedRow = computeSkillRowScore({
@@ -284,11 +324,25 @@ export async function listRankedOpportunities(userId) {
     .sort((a, b) => b.matchPercent - a.matchPercent);
 }
 
+/**
+ * @param {string} oppId
+ * @param {string | null | undefined} userId
+ */
 export async function getOpportunityByIdForUser(oppId, userId) {
   const ranked = await listRankedOpportunities(userId);
   return ranked.find((o) => o.id === oppId) || null;
 }
 
+/**
+ * @param {Partial<import('../../types/kord.d.ts').Opportunity> & {
+ *   title: string;
+ *   organization: string;
+ *   opportunityType: string;
+ *   workMode: string;
+ *   location: string;
+ *   summary: string;
+ * }} payload
+ */
 export async function adminUpsertOpportunity(payload) {
   const key = buildIdempotencyKey('admin-opp', payload.id || payload.title, payload.organization);
   return runIdempotent(key, async () => {
@@ -392,6 +446,7 @@ export async function adminUpsertOpportunity(payload) {
   });
 }
 
+/** @param {string} id */
 export async function adminDeleteOpportunity(id) {
   const key = buildIdempotencyKey('admin-opp-del', id);
   return runIdempotent(key, async () => {

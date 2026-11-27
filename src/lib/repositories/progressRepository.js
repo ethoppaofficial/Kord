@@ -7,12 +7,17 @@ import {
   computeOverallSkillCourseProgress,
 } from '../progressionEngine.js';
 
+/** @param {import('../../types/kord.d.ts').Course} course */
 function getCourseLinkedSkillIds(course) {
   return Array.from(
     new Set([course.skillId, ...(course.associatedSkillIds || [])].filter(Boolean))
   );
 }
 
+/**
+ * @param {string} userId
+ * @returns {Promise<import('../../types/kord.d.ts').CourseEnrollment[]>}
+ */
 export async function getCourseEnrollments(userId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -34,6 +39,10 @@ export async function getCourseEnrollments(userId) {
   return (getDemoState().courseEnrollments || []).filter((e) => e.userId === userId);
 }
 
+/**
+ * @param {string} userId
+ * @param {string} courseId
+ */
 export async function enrollInCourse(userId, courseId) {
   const key = buildIdempotencyKey('course-enroll', userId, courseId);
   return runIdempotent(key, async () => {
@@ -45,6 +54,7 @@ export async function enrollInCourse(userId, courseId) {
       return data;
     }
 
+    /** @type {string[]} */
     let skillIds = [];
     updateDemoState((draft) => {
       const activeUserId = getDemoCurrentUserId();
@@ -94,6 +104,11 @@ export async function enrollInCourse(userId, courseId) {
   });
 }
 
+/**
+ * @param {string} userId
+ * @param {string} courseId
+ * @param {'active' | 'paused'} status
+ */
 export async function setCourseEnrollmentStatus(userId, courseId, status) {
   const key = buildIdempotencyKey('course-enroll-status', userId, courseId, status);
   return runIdempotent(key, async () => {
@@ -137,6 +152,11 @@ export async function setCourseEnrollmentStatus(userId, courseId, status) {
   });
 }
 
+/**
+ * @param {string} userId
+ * @param {string | null} [courseId]
+ * @returns {Promise<import('../../types/kord.d.ts').LessonProgressEntry[]>}
+ */
 export async function getLessonProgress(userId, courseId = null) {
   if (!isDemoMode && supabase) {
     let query = supabase.from('lesson_progress').select('*').eq('user_id', userId);
@@ -161,6 +181,11 @@ export async function getLessonProgress(userId, courseId = null) {
   );
 }
 
+/**
+ * @param {string} userId
+ * @param {string | null} [courseId]
+ * @returns {Promise<import('../../types/kord.d.ts').ActivityProgressEntry[]>}
+ */
 export async function getActivityProgress(userId, courseId = null) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase
@@ -173,7 +198,7 @@ export async function getActivityProgress(userId, courseId = null) {
         id: ap.id,
         userId: ap.user_id,
         activityId: ap.activity_id,
-        courseId: ap.activities?.phases?.course_id || null,
+        courseId: ap.activities?.phases?.course_id || '',
         notes: ap.notes || '',
         completed: Boolean(ap.completed),
         minutesSpent: ap.minutes_spent,
@@ -188,6 +213,12 @@ export async function getActivityProgress(userId, courseId = null) {
   );
 }
 
+/**
+ * @param {string} userId
+ * @param {string} lessonId
+ * @param {string} courseId
+ * @param {string} notes
+ */
 export async function saveLessonNotes(userId, lessonId, courseId, notes) {
   const key = buildIdempotencyKey('lesson-notes', userId, lessonId, notes);
   return runIdempotent(key, async () => {
@@ -247,6 +278,13 @@ export async function saveLessonNotes(userId, lessonId, courseId, notes) {
   });
 }
 
+/**
+ * @param {string} userId
+ * @param {string} courseId
+ * @param {string} lessonId
+ * @param {number} estMinutes
+ * @param {boolean} completed
+ */
 export async function toggleLessonComplete(userId, courseId, lessonId, estMinutes, completed) {
   const key = buildIdempotencyKey('lesson-complete', userId, lessonId, String(completed));
   return runIdempotent(key, async () => {
@@ -317,6 +355,14 @@ export async function toggleLessonComplete(userId, courseId, lessonId, estMinute
   });
 }
 
+/**
+ * @param {string} userId
+ * @param {string} courseId
+ * @param {string} activityId
+ * @param {number} estMinutes
+ * @param {boolean} completed
+ * @param {string | undefined} [notes]
+ */
 export async function togglePhaseActivityComplete(
   userId,
   courseId,
@@ -402,6 +448,11 @@ export async function togglePhaseActivityComplete(
   });
 }
 
+/**
+ * @param {import('../../types/kord.d.ts').DemoState} state
+ * @param {string} userId
+ * @param {import('../../types/kord.d.ts').Course} course
+ */
 function computeCourseProgressFromState(state, userId, course) {
   const userLessonProgress = (state.lessonProgress || []).filter(
     (lp) => lp.userId === userId && lp.courseId === course.id
@@ -426,6 +477,10 @@ function computeCourseProgressFromState(state, userId, course) {
   });
 }
 
+/**
+ * @param {string} userId
+ * @param {string} skillId
+ */
 export async function recomputeDemoSkillLevel(userId, skillId) {
   if (!userId || !skillId) return null;
   if (!isDemoMode && supabase) return null;
@@ -434,6 +489,7 @@ export async function recomputeDemoSkillLevel(userId, skillId) {
   const publishedCoursesForSkill = (state.courses || []).filter(
     (c) => c.publicationStatus === 'published' && getCourseLinkedSkillIds(c).includes(skillId)
   );
+  /** @type {Record<string, import('../../types/kord.d.ts').CourseProgressSummary>} */
   const courseProgressById = {};
   publishedCoursesForSkill.forEach((c) => {
     courseProgressById[c.id] = computeCourseProgressFromState(state, userId, c);
@@ -481,7 +537,7 @@ export async function recomputeDemoSkillLevel(userId, skillId) {
   );
 
   const hasCompletedLesson = (state.lessonProgress || []).some(
-    (lp) => lp.userId === userId && lp.completed && publishedLessonIdsForSkill.has(lp.lessonId)
+    (lp) => lp.userId === userId && lp.completed && lp.lessonId && publishedLessonIdsForSkill.has(lp.lessonId)
   );
   const hasCompletedActivity = (state.activityProgress || []).some(
     (ap) => ap.userId === userId && ap.completed && publishedActivityIdsForSkill.has(ap.activityId)
@@ -502,6 +558,7 @@ export async function recomputeDemoSkillLevel(userId, skillId) {
     (us) => us.userId === userId && us.skillId === skillId
   );
 
+  /** @type {import('../../types/kord.d.ts').SkillLevel | null} */
   let targetLevel = null;
   if (
     (overall.totalPublishedCourses > 0 && overall.allCoursesVerified) ||
@@ -517,6 +574,7 @@ export async function recomputeDemoSkillLevel(userId, skillId) {
   }
 
   if (targetLevel) {
+    const resolvedLevel = targetLevel;
     updateDemoState((draft) => {
       draft.userSkills = draft.userSkills || [];
       const rec = draft.userSkills.find(
@@ -528,11 +586,11 @@ export async function recomputeDemoSkillLevel(userId, skillId) {
           id: `us-${Date.now()}`,
           userId,
           skillId,
-          level: targetLevel,
+          level: resolvedLevel,
           updatedAt: now,
         });
-      } else if (rec.level !== targetLevel) {
-        rec.level = targetLevel;
+      } else if (rec.level !== resolvedLevel) {
+        rec.level = resolvedLevel;
         rec.updatedAt = now;
       }
       return draft;
@@ -549,6 +607,9 @@ export async function recomputeDemoSkillLevel(userId, skillId) {
  * - Any approved practical capstone or standalone challenge -> skill 'demonstrated'
  * - ALL published courses linked to a skill completed with practical approval -> skill 'verified'
  * Note: In live Supabase mode progression is recalculated automatically inside server-side SECURITY DEFINER RPCs.
+ *
+ * @param {string} userId
+ * @param {string} courseId
  */
 export async function recomputeCourseAndSkillStatus(userId, courseId) {
   if (!userId || !courseId) return null;
@@ -609,6 +670,7 @@ export async function recomputeCourseAndSkillStatus(userId, courseId) {
   });
 
   const linkedSkillIds = getCourseLinkedSkillIds(targetCourse);
+  /** @type {ReturnType<typeof computeOverallSkillCourseProgress> | null} */
   let lastOverall = null;
 
   for (const sid of linkedSkillIds) {
@@ -624,6 +686,12 @@ export const getUserEnrollments = getCourseEnrollments;
 export const getUserActivityProgress = getLessonProgress;
 export const enrollInSkill = enrollInCourse;
 export const setEnrollmentStatus = setCourseEnrollmentStatus;
+/**
+ * @param {string} userId
+ * @param {string} lessonId
+ * @param {string} notes
+ * @param {string} [courseId]
+ */
 export const saveActivityNotes = (userId, lessonId, notes, courseId = '') =>
   saveLessonNotes(userId, lessonId, courseId, notes);
 export const toggleActivityComplete = toggleLessonComplete;

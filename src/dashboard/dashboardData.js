@@ -3,6 +3,7 @@ import { getDemoState } from '../lib/demo/demoStore.js';
 import { listRankedOpportunities } from '../lib/repositories/opportunityRepository.js';
 import { computeCourseProgress } from '../lib/progressionEngine.js';
 
+/** @param {Date} date */
 function startOfIsoWeek(date) {
   const d = new Date(date);
   const day = d.getDay();
@@ -12,9 +13,11 @@ function startOfIsoWeek(date) {
   return d;
 }
 
+/** @param {Array<{ completedAt?: string | null; minutes: number }>} [completedEntries] */
 export function buildTimeSeries(completedEntries = []) {
   const now = new Date();
   const currentWeekStart = startOfIsoWeek(now);
+  /** @type {import('../types/kord.d.ts').DashboardWeeklyMinute[]} */
   const weeks = [];
   for (let i = 8; i >= 0; i--) {
     const ws = new Date(currentWeekStart);
@@ -53,22 +56,29 @@ export function buildTimeSeries(completedEntries = []) {
   return { weeklyMinutes: weeks, hourlyDistribution: hourlyBuckets };
 }
 
+/**
+ * @param {Record<string, any>} [data]
+ * @param {import('../types/kord.d.ts').Opportunity[]} [recommendations]
+ * @returns {import('../types/kord.d.ts').DashboardData}
+ */
 export function normalizeDashboardPayload(data = {}, recommendations = []) {
   const defaults = buildTimeSeries([]);
   const rawLearning = data?.learning || {};
   const rawUnderstanding = data?.understanding || {};
   const rawDemonstrating = data?.demonstrating || {};
+  /** @type {import('../types/kord.d.ts').DashboardWeeklyMinute[]} */
   const weeklyMinutes =
     Array.isArray(data?.weeklyMinutes) && data.weeklyMinutes.length > 0
-      ? data.weeklyMinutes.map((w) => ({
+      ? data.weeklyMinutes.map((/** @type {any} */ w) => ({
           key: w.key || '',
           label: w.label || '',
           minutes: Number(w.minutes || 0),
         }))
       : defaults.weeklyMinutes;
+  /** @type {import('../types/kord.d.ts').DashboardHourlyBucket[]} */
   const hourlyDistribution =
     Array.isArray(data?.hourlyDistribution) && data.hourlyDistribution.length > 0
-      ? data.hourlyDistribution.map((b) => ({
+      ? data.hourlyDistribution.map((/** @type {any} */ b) => ({
           label: b.label || '',
           start: Number(b.start || 0),
           end: Number(b.end || 0),
@@ -110,6 +120,10 @@ export function normalizeDashboardPayload(data = {}, recommendations = []) {
   };
 }
 
+/**
+ * @param {string} userId
+ * @returns {Promise<import('../types/kord.d.ts').DashboardData>}
+ */
 export async function getDashboardData(userId) {
   if (!isDemoMode && supabase) {
     const { data, error } = await supabase.rpc('get_dashboard');
@@ -124,6 +138,7 @@ export async function getDashboardData(userId) {
   const pausedCourses = enrollments.filter((e) => e.status === 'paused').length;
   const completedCourses = enrollments.filter((e) => e.status === 'completed').length;
 
+  /** @type {Map<string, import('../types/kord.d.ts').Lesson>} */
   const lessonById = new Map();
   (state.courses || []).forEach((c) =>
     (c.phases || []).forEach((p) =>
@@ -137,7 +152,7 @@ export async function getDashboardData(userId) {
   const completedActivitiesCount = userActivityProgress.filter((ap) => ap.completed).length;
 
   const completedEntries = completedProgress.map((lp) => {
-    const lesson = lessonById.get(lp.lessonId);
+    const lesson = lp.lessonId ? lessonById.get(lp.lessonId) : undefined;
     return {
       completedAt: lp.completedAt || lp.updatedAt,
       minutes: Number(lp.minutesSpent || lesson?.estMinutes || 20),
@@ -159,6 +174,7 @@ export async function getDashboardData(userId) {
   const pendingSubmissions = subs.filter((s) => s.status === 'pending').length;
   const needsRevisionSubmissions = subs.filter((s) => s.status === 'needs_revision').length;
 
+  /** @type {import('../types/kord.d.ts').DashboardEnrolledCourse[]} */
   const enrolledCourses = enrollments
     .map((enr) => {
       const course = (state.courses || []).find((c) => c.id === enr.courseId);
@@ -187,7 +203,7 @@ export async function getDashboardData(userId) {
         progress,
       };
     })
-    .filter(Boolean);
+    .filter((item) => item !== null);
 
   const skillLevels = (state.userSkills || [])
     .filter((us) => us.userId === userId)

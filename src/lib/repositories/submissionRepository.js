@@ -10,6 +10,11 @@ import {
   isValidUrl,
 } from '../validators.js';
 
+/**
+ * @param {string} userId
+ * @param {string | null} [challengeId]
+ * @returns {Promise<import('../../types/kord.d.ts').Submission[]>}
+ */
 export async function getUserSubmissions(userId, challengeId = null) {
   if (!isDemoMode && supabase) {
     let query = supabase
@@ -20,14 +25,29 @@ export async function getUserSubmissions(userId, challengeId = null) {
     if (challengeId) query = query.eq('challenge_id', challengeId);
     const { data, error } = await query;
     if (error) throw error;
-    return data.map(mapSubmission);
+    return (data || []).map(mapSubmission);
   }
 
   return (getDemoState().submissions || [])
     .filter((s) => s.userId === userId && (!challengeId || s.challengeId === challengeId))
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
+/**
+ * @param {{
+ *   userId: string;
+ *   challengeId: string;
+ *   courseId?: string | null;
+ *   evidenceUrl?: string | null;
+ *   repoUrl?: string | null;
+ *   file?: File | null;
+ *   submissionText?: string;
+ *   explanation: string;
+ *   rubricMax?: number;
+ *   challenge?: import('../../types/kord.d.ts').Challenge | null;
+ *   idempotencyKey?: string;
+ * }} payload
+ */
 export async function submitChallengeEvidence({
   userId,
   challengeId,
@@ -62,8 +82,8 @@ export async function submitChallengeEvidence({
   }
   if (challenge) {
     const formErrors = validateSubmissionForm({
-      evidenceUrl,
-      repoUrl,
+      evidenceUrl: evidenceUrl || undefined,
+      repoUrl: repoUrl || undefined,
       file,
       submissionText,
       explanation: cleanExplanation,
@@ -158,8 +178,8 @@ export async function submitChallengeEvidence({
       if (!resolvedChallenge) throw new Error('Practical challenge not found.');
 
       const resolvedErrors = validateSubmissionForm({
-        evidenceUrl,
-        repoUrl,
+        evidenceUrl: evidenceUrl || undefined,
+        repoUrl: repoUrl || undefined,
         file,
         submissionText,
         explanation: cleanExplanation,
@@ -239,6 +259,7 @@ export async function submitChallengeEvidence({
   );
 }
 
+/** @param {string | null | undefined} filePath */
 export async function getSignedEvidenceUrl(filePath) {
   if (!filePath) return null;
   if (!isDemoMode && supabase) {
@@ -267,7 +288,7 @@ export async function adminListSubmissions() {
   const state = getDemoState();
   return (state.submissions || [])
     .slice()
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .map((sub) => {
       const learner = (state.users || []).find((u) => u.id === sub.userId);
       const challenge = (state.challenges || []).find((c) => c.id === sub.challengeId);
@@ -286,6 +307,17 @@ export async function adminListSubmissions() {
     });
 }
 
+/**
+ * @param {{
+ *   submissionId: string;
+ *   reviewerId: string;
+ *   status: import('../../types/kord.d.ts').SubmissionStatus;
+ *   rubricScores: Record<string, number>;
+ *   rubricTotal: number;
+ *   rubricMax: number;
+ *   feedback: string;
+ * }} payload
+ */
 export async function adminReviewSubmission({
   submissionId,
   reviewerId,
@@ -315,8 +347,11 @@ export async function adminReviewSubmission({
       return mapSubmission(data);
     }
 
+    /** @type {string | null} */
     let targetUserId = null;
+    /** @type {string | null} */
     let targetSkillId = null;
+    /** @type {string | null} */
     let targetCourseId = null;
 
     updateDemoState((draft) => {
@@ -337,6 +372,7 @@ export async function adminReviewSubmission({
       const challenge = (draft.challenges || []).find((c) => c.id === sub.challengeId);
       let validatedTotal = 0;
       let validatedMax = 0;
+      /** @type {Record<string, number>} */
       const cleanScores = {};
 
       if (challenge && Array.isArray(challenge.rubric) && challenge.rubric.length > 0) {
@@ -407,25 +443,29 @@ export async function adminReviewSubmission({
   });
 }
 
+/**
+ * @param {Record<string, unknown>} s
+ * @returns {import('../../types/kord.d.ts').Submission}
+ */
 function mapSubmission(s) {
   return {
-    id: s.id,
-    userId: s.user_id,
-    challengeId: s.challenge_id,
-    courseId: s.course_id || null,
-    evidenceUrl: s.evidence_url,
-    repoUrl: s.repo_url || null,
-    filePath: s.file_path,
-    fileName: s.file_name,
-    submissionText: s.submission_text || '',
-    explanation: s.explanation,
-    status: s.status,
-    rubricScores: s.rubric_scores || {},
-    rubricTotal: s.rubric_total,
-    rubricMax: s.rubric_max,
-    feedback: s.feedback || '',
-    reviewedBy: s.reviewed_by,
-    reviewedAt: s.reviewed_at,
-    createdAt: s.created_at,
+    id: String(s.id || ''),
+    userId: String(s.user_id || ''),
+    challengeId: String(s.challenge_id || ''),
+    courseId: s.course_id ? String(s.course_id) : null,
+    evidenceUrl: s.evidence_url ? String(s.evidence_url) : null,
+    repoUrl: s.repo_url ? String(s.repo_url) : null,
+    filePath: s.file_path ? String(s.file_path) : null,
+    fileName: s.file_name ? String(s.file_name) : null,
+    submissionText: String(s.submission_text || ''),
+    explanation: String(s.explanation || ''),
+    status: String(s.status || 'pending'),
+    rubricScores: /** @type {Record<string, number>} */ (s.rubric_scores || {}),
+    rubricTotal: s.rubric_total != null ? Number(s.rubric_total) : null,
+    rubricMax: s.rubric_max != null ? Number(s.rubric_max) : undefined,
+    feedback: String(s.feedback || ''),
+    reviewedBy: s.reviewed_by ? String(s.reviewed_by) : null,
+    reviewedAt: s.reviewed_at ? String(s.reviewed_at) : null,
+    createdAt: String(s.created_at || ''),
   };
 }

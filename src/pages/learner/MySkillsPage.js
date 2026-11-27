@@ -21,7 +21,14 @@ import { escapeHtml, formatDate } from '../../lib/formatters.js';
 import { renderStatusBadge, renderEmptyState, renderProgressRail } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderMySkillsPage({ session, rerender }) {
+  if (!session?.user) {
+    return { html: '', bind() {} };
+  }
   const userId = session.user.id;
   const [
     skills,
@@ -47,6 +54,7 @@ export async function renderMySkillsPage({ session, rerender }) {
     getUserSkills(userId),
   ]);
 
+  /** @type {Record<string, import('../../types/kord.d.ts').CourseProgressSummary>} */
   const courseProgressById = {};
   allCourses.forEach((course) => {
     const enr = enrollments.find((e) => e.courseId === course.id) || null;
@@ -170,7 +178,8 @@ export async function renderMySkillsPage({ session, rerender }) {
                     publishedCourses: skillCourses,
                     courseProgressById,
                   });
-                  const pct = Math.round((PROGRESSION_WEIGHT[us.level] || 0.3) * 100);
+                  const weightMap = /** @type {Record<string, number>} */ (PROGRESSION_WEIGHT);
+                  const pct = Math.round((weightMap[us.level] || 0.3) * 100);
                   return `
                     <article class="card pop-in" style="display:flex; flex-direction:column; gap:12px;">
                       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
@@ -238,21 +247,23 @@ export async function renderMySkillsPage({ session, rerender }) {
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       root.querySelector('#declare-skill-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const form = e.currentTarget;
-        const btn = form.querySelector('button[type="submit"]');
+        const form = /** @type {HTMLFormElement | null} */ (e.currentTarget);
+        const btn = /** @type {HTMLButtonElement | null} */ (form?.querySelector('button[type="submit"]') || null);
         if (btn?.disabled) return;
         if (btn) btn.disabled = true;
-        const skillId = root.querySelector('#declare-select').value;
+        const selectEl = /** @type {HTMLSelectElement | null} */ (root.querySelector('#declare-select'));
+        const skillId = selectEl?.value || '';
         try {
           await declareUserSkill(userId, skillId);
           showToast('Skill declared! Enroll in its courses to advance your level.', 'success');
           rerender({ silent: true });
         } catch (err) {
           if (btn) btn.disabled = false;
-          showToast(err?.message || 'Unable to declare skill.', 'error');
+          showToast(err instanceof Error && err.message ? err.message : 'Unable to declare skill.', 'error');
         }
       });
     },

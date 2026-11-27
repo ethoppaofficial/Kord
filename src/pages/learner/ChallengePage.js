@@ -8,8 +8,16 @@ import { renderCourseBreadcrumbs, renderCourseOutlineDrawer, bindCourseOutlineDr
 import { renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderChallengePage({ params, session, navigate, rerender }) {
+  if (!session?.user) {
+    return { html: renderErrorState({ title: 'Sign in required', message: 'Please sign in to access challenges.' }), bind() {} };
+  }
   const userId = session.user.id;
+  /** @type {Awaited<ReturnType<typeof resolveCourseHierarchy>> | null} */
   let courseCtx = null;
 
   if (params.slug) {
@@ -19,17 +27,19 @@ export async function renderChallengePage({ params, session, navigate, rerender 
       requireEnrollment: true,
     });
     if (courseCtx.status !== 'ok') {
-      return renderHierarchyGuard({
-        ctx: courseCtx,
-        userId,
-        targetUrlAfterEnroll: `/courses/${params.slug}/challenges/${params.challengeId}`,
-        navigate,
-      });
+      return (
+        renderHierarchyGuard({
+          ctx: courseCtx,
+          userId,
+          targetUrlAfterEnroll: `/courses/${params.slug}/challenges/${params.challengeId}`,
+          navigate,
+        }) || { html: '', bind() {} }
+      );
     }
   }
 
   const challenge = await getChallengeById(params.challengeId);
-  if (!challenge || (courseCtx && challenge.courseId !== courseCtx.course.id)) {
+  if (!challenge || (courseCtx?.status === 'ok' && challenge.courseId !== courseCtx.course.id)) {
     return {
       html: renderErrorState({
         title: 'Challenge not found',
@@ -48,12 +58,14 @@ export async function renderChallengePage({ params, session, navigate, rerender 
       requireEnrollment: true,
     });
     if (courseCtx.status === 'enrollment_required') {
-      return renderHierarchyGuard({
-        ctx: courseCtx,
-        userId,
-        targetUrlAfterEnroll: `/courses/${challenge.course.slug}/challenges/${params.challengeId}`,
-        navigate,
-      });
+      return (
+        renderHierarchyGuard({
+          ctx: courseCtx,
+          userId,
+          targetUrlAfterEnroll: `/courses/${challenge.course.slug}/challenges/${params.challengeId}`,
+          navigate,
+        }) || { html: '', bind() {} }
+      );
     }
   }
 
@@ -265,75 +277,86 @@ export async function renderChallengePage({ params, session, navigate, rerender 
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
       bindCourseOutlineDrawer(root);
-      const form = root.querySelector('#challenge-form');
-      const urlEl = root.querySelector('#evidence-url');
-      const repoUrlEl = root.querySelector('#evidence-repo-url');
-      const fileEl = root.querySelector('#evidence-file');
-      const subTextEl = root.querySelector('#submission-text');
-      const dropzone = root.querySelector('#evidence-dropzone');
-      const dropLabel = root.querySelector('#dropzone-label');
-      const dropMeta = root.querySelector('#dropzone-meta');
-      const clearBtn = root.querySelector('#clear-file-btn');
-      const expEl = root.querySelector('#evidence-explanation');
-      const counterEl = root.querySelector('#explanation-counter');
-      const checkEvidenceEl = root.querySelector('#check-evidence');
-      const checkExpEl = root.querySelector('#check-explanation');
-      const submitBtn = root.querySelector('#challenge-submit');
+      const form = /** @type {HTMLFormElement | null} */ (root.querySelector('#challenge-form'));
+      const urlEl = /** @type {HTMLInputElement | null} */ (root.querySelector('#evidence-url'));
+      const repoUrlEl = /** @type {HTMLInputElement | null} */ (root.querySelector('#evidence-repo-url'));
+      const fileEl = /** @type {HTMLInputElement | null} */ (root.querySelector('#evidence-file'));
+      const subTextEl = /** @type {HTMLTextAreaElement | null} */ (root.querySelector('#submission-text'));
+      const dropzone = /** @type {HTMLElement | null} */ (root.querySelector('#evidence-dropzone'));
+      const dropLabel = /** @type {HTMLElement | null} */ (root.querySelector('#dropzone-label'));
+      const dropMeta = /** @type {HTMLElement | null} */ (root.querySelector('#dropzone-meta'));
+      const clearBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#clear-file-btn'));
+      const expEl = /** @type {HTMLTextAreaElement | null} */ (root.querySelector('#evidence-explanation'));
+      const counterEl = /** @type {HTMLElement | null} */ (root.querySelector('#explanation-counter'));
+      const checkEvidenceEl = /** @type {HTMLElement | null} */ (root.querySelector('#check-evidence'));
+      const checkExpEl = /** @type {HTMLElement | null} */ (root.querySelector('#check-explanation'));
+      const submitBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#challenge-submit'));
 
+      /** @type {File | null} */
       let selectedFile = null;
 
       const updateReadiness = () => {
-        const hasValidUrl = urlEl.value.trim().length > 0 && isValidUrl(urlEl.value.trim());
-        const hasValidRepo = repoUrlEl.value.trim().length > 0 && isValidUrl(repoUrlEl.value.trim());
-        const hasText = subTextEl.value.trim().length >= 20;
+        const urlVal = urlEl?.value.trim() || '';
+        const repoVal = repoUrlEl?.value.trim() || '';
+        const hasValidUrl = urlVal.length > 0 && isValidUrl(urlVal);
+        const hasValidRepo = repoVal.length > 0 && isValidUrl(repoVal);
+        const hasText = (subTextEl?.value.trim().length || 0) >= 20;
         const hasEvidence = Boolean(selectedFile) || hasValidUrl || hasValidRepo || hasText;
-        const expLen = expEl.value.trim().length;
+        const expLen = expEl?.value.trim().length || 0;
         const hasExplanation = expLen >= 20;
 
-        counterEl.textContent = `${expLen} / 20 min chars`;
-        counterEl.style.color = hasExplanation ? 'var(--color-green)' : 'var(--color-text-muted)';
+        if (counterEl) {
+          counterEl.textContent = `${expLen} / 20 min chars`;
+          counterEl.style.color = hasExplanation ? 'var(--color-green)' : 'var(--color-text-muted)';
+        }
 
-        checkEvidenceEl.textContent = hasEvidence ? '✓ Deliverable ready' : '○ Deliverable attached (link, file, or text)';
-        checkEvidenceEl.style.color = hasEvidence ? 'var(--color-green)' : 'var(--color-text-muted)';
-        checkEvidenceEl.style.fontWeight = hasEvidence ? '600' : '400';
+        if (checkEvidenceEl) {
+          checkEvidenceEl.textContent = hasEvidence ? '✓ Deliverable ready' : '○ Deliverable attached (link, file, or text)';
+          checkEvidenceEl.style.color = hasEvidence ? 'var(--color-green)' : 'var(--color-text-muted)';
+          checkEvidenceEl.style.fontWeight = hasEvidence ? '600' : '400';
+        }
 
-        checkExpEl.textContent = hasExplanation ? '✓ Explanation ready' : '○ Explanation (20+ chars)';
-        checkExpEl.style.color = hasExplanation ? 'var(--color-green)' : 'var(--color-text-muted)';
-        checkExpEl.style.fontWeight = hasExplanation ? '600' : '400';
+        if (checkExpEl) {
+          checkExpEl.textContent = hasExplanation ? '✓ Explanation ready' : '○ Explanation (20+ chars)';
+          checkExpEl.style.color = hasExplanation ? 'var(--color-green)' : 'var(--color-text-muted)';
+          checkExpEl.style.fontWeight = hasExplanation ? '600' : '400';
+        }
       };
 
+      /** @param {File | null | undefined} file */
       const setFile = (file) => {
         selectedFile = file || null;
         if (selectedFile) {
-          dropzone.classList.add('has-file');
-          dropLabel.textContent = selectedFile.name;
-          dropMeta.textContent = `${Math.max(1, Math.round(selectedFile.size / 1024))} KB · Ready to upload`;
-          clearBtn.style.display = 'inline-flex';
+          dropzone?.classList.add('has-file');
+          if (dropLabel) dropLabel.textContent = selectedFile.name;
+          if (dropMeta) dropMeta.textContent = `${Math.max(1, Math.round(selectedFile.size / 1024))} KB · Ready to upload`;
+          if (clearBtn) clearBtn.style.display = 'inline-flex';
         } else {
-          dropzone.classList.remove('has-file');
-          dropLabel.textContent = 'Drop a file here or click to browse';
-          dropMeta.textContent = 'Stored in private user-scoped evidence storage';
-          clearBtn.style.display = 'none';
-          fileEl.value = '';
+          dropzone?.classList.remove('has-file');
+          if (dropLabel) dropLabel.textContent = 'Drop a file here or click to browse';
+          if (dropMeta) dropMeta.textContent = 'Stored in private user-scoped evidence storage';
+          if (clearBtn) clearBtn.style.display = 'none';
+          if (fileEl) fileEl.value = '';
         }
         updateReadiness();
       };
 
-      dropzone?.addEventListener('click', () => fileEl.click());
-      dropzone?.addEventListener('keydown', (e) => {
+      dropzone?.addEventListener('click', () => fileEl?.click());
+      dropzone?.addEventListener('keydown', (/** @type {KeyboardEvent} */ e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          fileEl.click();
+          fileEl?.click();
         }
       });
-      dropzone?.addEventListener('dragover', (e) => {
+      dropzone?.addEventListener('dragover', (/** @type {DragEvent} */ e) => {
         e.preventDefault();
         dropzone.classList.add('is-dragover');
       });
       dropzone?.addEventListener('dragleave', () => dropzone.classList.remove('is-dragover'));
-      dropzone?.addEventListener('drop', (e) => {
+      dropzone?.addEventListener('drop', (/** @type {DragEvent} */ e) => {
         e.preventDefault();
         dropzone.classList.remove('is-dragover');
         const dropped = e.dataTransfer?.files?.[0];
@@ -347,32 +370,39 @@ export async function renderChallengePage({ params, session, navigate, rerender 
       subTextEl?.addEventListener('input', updateReadiness);
       expEl?.addEventListener('input', updateReadiness);
 
-      form?.addEventListener('submit', async (e) => {
+      form?.addEventListener('submit', async (/** @type {SubmitEvent} */ e) => {
         e.preventDefault();
-        const submissionText = subTextEl.value.trim();
+        const submissionText = subTextEl?.value.trim() || '';
         const payload = {
-          evidenceUrl: urlEl.value.trim(),
-          repoUrl: repoUrlEl.value.trim(),
+          evidenceUrl: urlEl?.value.trim() || '',
+          repoUrl: repoUrlEl?.value.trim() || '',
           file: selectedFile,
           submissionText,
-          explanation: expEl.value.trim(),
+          explanation: expEl?.value.trim() || '',
           challenge,
         };
 
+        /** @type {Record<string, string>} */
         const errors = validateSubmissionForm(payload);
         if (!errors.file && payload.file) {
           const contentErr = await validateEvidenceFileContent(payload.file, challenge);
           if (contentErr) errors.file = contentErr;
         }
-        root.querySelector('[data-error-for="evidence"]').textContent = errors.evidence || '';
-        root.querySelector('[data-error-for="evidenceUrl"]').textContent = errors.evidenceUrl || '';
-        root.querySelector('[data-error-for="repoUrl"]').textContent = errors.repoUrl || '';
-        root.querySelector('[data-error-for="file"]').textContent = errors.file || '';
-        root.querySelector('[data-error-for="explanation"]').textContent = errors.explanation || '';
+        const setFieldErr = (/** @type {string} */ key, /** @type {string} */ msg) => {
+          const el = root.querySelector(`[data-error-for="${key}"]`);
+          if (el) el.textContent = msg;
+        };
+        setFieldErr('evidence', errors.evidence || '');
+        setFieldErr('evidenceUrl', errors.evidenceUrl || '');
+        setFieldErr('repoUrl', errors.repoUrl || '');
+        setFieldErr('file', errors.file || '');
+        setFieldErr('explanation', errors.explanation || '');
         if (Object.keys(errors).length > 0) return;
 
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Submitting…';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Submitting…';
+        }
         try {
           await submitChallengeEvidence({
             userId,
@@ -389,9 +419,11 @@ export async function renderChallengePage({ params, session, navigate, rerender 
           showToast('Evidence submitted for administrator review.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err.message || 'Submission failed.', 'error');
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Submit evidence for review';
+          showToast(err instanceof Error ? err.message : 'Submission failed.', 'error');
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit evidence for review';
+          }
         }
       });
     },

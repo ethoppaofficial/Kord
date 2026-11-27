@@ -6,6 +6,7 @@ const RESOURCES = [
   { title: 'Consumer Financial Protection Bureau: Budgeting & Savings Tools', source: 'consumerfinance.gov', url: 'https://www.consumerfinance.gov/consumer-tools/', resourceType: 'Guide' },
 ];
 
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
 const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   t,
   intro,
@@ -22,6 +23,7 @@ const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   tk,
 });
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const CAREER_SPECS = [
   {
     code: 'cvm',
@@ -835,6 +837,7 @@ const CAREER_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const CAREER_COURSE_BUILDERS = CAREER_SPECS.map(
   (spec) => (helpers) => buildDomainCourse(spec, helpers)
 );

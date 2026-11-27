@@ -10,18 +10,41 @@ import {
 import { createAuthService } from '../src/lib/repositories/authRepository.js';
 import { mountApp } from '../src/app/app.js';
 
+/** @typedef {import('../src/types/kord.d.ts').AppSupabaseClient} AppSupabaseClient */
+/** @typedef {import('../src/types/kord.d.ts').SupabaseAuthUserLike} SupabaseAuthUserLike */
+/** @typedef {import('../src/types/kord.d.ts').SupabaseAuthSessionLike} SupabaseAuthSessionLike */
+
+/** @type {ReturnType<typeof installDomHarness> | null} */
 let harness = null;
+/** @type {Array<ReturnType<typeof mountApp>>} */
 const mountedApps = [];
 
+/**
+ * @param {string} fullPath
+ * @param {string} [origin]
+ */
 function setUrl(fullPath, origin = 'http://localhost:3000') {
   const [pathPart, hashPart = ''] = fullPath.split('#');
   const [pathname, search = ''] = pathPart.split('?');
-  window.location.origin = origin;
+  /** @type {{ origin: string }} */ (/** @type {unknown} */ (window.location)).origin = origin;
   window.location.pathname = pathname || '/';
   window.location.search = search ? `?${search}` : '';
   window.location.hash = hashPart ? `#${hashPart}` : '';
 }
 
+/**
+ * @typedef {{ provider: string; options: { redirectTo?: string; queryParams?: Record<string, string> } }} OAuthCallParams
+ * @typedef {{ data: { session: SupabaseAuthSessionLike | null }; error: { message: string } | null }} ExchangeResultShape
+ * @typedef {{ data: { url?: string | null; provider?: string } | null; error: { message: string } | null }} OAuthResultShape
+ * @param {{
+ *   initialSessionUser?: SupabaseAuthUserLike | null;
+ *   oauthResult?: ((params: OAuthCallParams) => OAuthResultShape | Promise<OAuthResultShape>) | OAuthResultShape | null;
+ *   exchangeResult?: ((code: string, options?: unknown) => ExchangeResultShape | Promise<ExchangeResultShape>) | ExchangeResultShape | null;
+ *   role?: string;
+ *   accountStatus?: string;
+ *   profileExists?: boolean;
+ * }} [opts]
+ */
 function createMockSupabaseForOAuth({
   initialSessionUser = null,
   oauthResult = null,
@@ -30,8 +53,11 @@ function createMockSupabaseForOAuth({
   accountStatus = 'active',
   profileExists = true,
 } = {}) {
+  /** @type {SupabaseAuthUserLike | null} */
   let activeUser = initialSessionUser;
+  /** @type {OAuthCallParams[]} */
   const oauthCalls = [];
+  /** @type {Array<{ code: string; options?: unknown }>} */
   const exchangeCalls = [];
   let signOutCount = 0;
 
@@ -43,6 +69,7 @@ function createMockSupabaseForOAuth({
           error: null,
         };
       },
+      /** @param {OAuthCallParams} params */
       async signInWithOAuth(params) {
         oauthCalls.push(params);
         if (typeof oauthResult === 'function') {
@@ -52,12 +79,16 @@ function createMockSupabaseForOAuth({
           oauthResult || {
             data: {
               provider: params.provider,
-              url: `https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=${encodeURIComponent(params.options.redirectTo)}`,
+              url: `https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=${encodeURIComponent(params.options?.redirectTo || '')}`,
             },
             error: null,
           }
         );
       },
+      /**
+       * @param {string} code
+       * @param {unknown} [options]
+       */
       async exchangeCodeForSession(code, options) {
         exchangeCalls.push({ code, options });
         const res =
@@ -109,7 +140,7 @@ function createMockSupabaseForOAuth({
   };
 
   return {
-    client,
+    client: /** @type {AppSupabaseClient} */ (/** @type {unknown} */ (client)),
     getOAuthCalls: () => oauthCalls,
     getExchangeCalls: () => exchangeCalls,
     getSignOutCount: () => signOutCount,
@@ -130,9 +161,10 @@ beforeEach(() => {
 
 afterEach(() => {
   while (mountedApps.length > 0) {
-    mountedApps.pop().destroy();
+    mountedApps.pop()?.destroy();
   }
   harness?.cleanup();
+  harness = null;
   setUrl('/');
 });
 
@@ -219,10 +251,15 @@ test('Explicit environment-aware redirect resolver allows approved origins and r
 });
 
 test('Password recovery calls resetPasswordForEmail with allowlisted redirectTo and never leaks account existence', async () => {
+  /** @type {Array<{ email: string; options?: { redirectTo?: string } }>} */
   const resetCalls = [];
   const auth = createAuthService({
-    supabaseClient: {
+    supabaseClient: /** @type {AppSupabaseClient} */ (/** @type {unknown} */ ({
       auth: {
+        /**
+         * @param {string} email
+         * @param {{ redirectTo?: string }} [options]
+         */
         async resetPasswordForEmail(email, options) {
           resetCalls.push({ email, options });
           return { data: {}, error: null };
@@ -231,7 +268,7 @@ test('Password recovery calls resetPasswordForEmail with allowlisted redirectTo 
           return { data: { subscription: { unsubscribe() {} } } };
         },
       },
-    },
+    })),
     isDemo: false,
   });
 
@@ -240,7 +277,7 @@ test('Password recovery calls resetPasswordForEmail with allowlisted redirectTo 
   const unknownRes = await auth.recoverPassword('nonexistent@example.com');
 
   assert.equal(resetCalls.length, 2);
-  assert.equal(resetCalls[0].options.redirectTo, 'http://localhost:3000/reset-password');
+  assert.equal(resetCalls[0].options?.redirectTo, 'http://localhost:3000/reset-password');
   assert.equal(knownRes.note, unknownRes.note);
   assert.match(knownRes.note, /If an account exists for that email/i);
 
@@ -251,6 +288,7 @@ test('Password recovery calls resetPasswordForEmail with allowlisted redirectTo 
 });
 
 test('Continue with Google appears on both Sign In and Create Account pages, guards duplicate clicks, and handles errors', async () => {
+  /** @type {((value: OAuthResultShape) => void) | undefined} */
   let resolveOAuth;
   let rejectNext = false;
   const mock = createMockSupabaseForOAuth({
@@ -265,11 +303,12 @@ test('Continue with Google appears on both Sign In and Create Account pages, gua
   });
 
   const auth = createAuthService({ supabaseClient: mock.client, isDemo: false });
+  assert.ok(harness, 'DOM harness installed');
 
   // 1. Login page Google button
   setUrl('/login', 'https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app');
   const rootLogin = harness.createRoot();
-  const loginApp = mountApp(rootLogin, { auth });
+  const loginApp = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootLogin)), { auth });
   mountedApps.push(loginApp);
   await loginApp.ready;
 
@@ -288,6 +327,7 @@ test('Continue with Google appears on both Sign In and Create Account pages, gua
   );
   assert.equal(mock.getOAuthCalls()[0].options.queryParams?.prompt, 'select_account');
 
+  assert.ok(resolveOAuth);
   resolveOAuth({
     data: { provider: 'google', url: 'https://accounts.google.com/o/oauth2/v2/auth' },
     error: null,
@@ -299,13 +339,13 @@ test('Continue with Google appears on both Sign In and Create Account pages, gua
   rejectNext = true;
   setUrl('/signup', 'http://localhost:3000');
   const rootSignup = harness.createRoot();
-  const signupApp = mountApp(rootSignup, { auth });
+  const signupApp = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootSignup)), { auth });
   mountedApps.push(signupApp);
   await signupApp.ready;
 
   const signupGoogleBtn = rootSignup.querySelector('#signup-google-btn');
   const signupGoogleErr = rootSignup.querySelector('#signup-google-error');
-  assert.ok(signupGoogleBtn, 'Continue with Google button renders on /signup');
+  assert.ok(signupGoogleBtn && signupGoogleErr, 'Continue with Google button renders on /signup');
 
   await signupGoogleBtn.click();
   await flushMicrotasks();
@@ -335,10 +375,11 @@ test('/auth/callback exchanges Google PKCE code, hydrates Google metadata, strip
     role: 'learner',
   });
   const auth = createAuthService({ supabaseClient: mock.client, isDemo: false });
+  assert.ok(harness, 'DOM harness installed');
 
   setUrl('/auth/callback?code=oauth-pkce-code-123&state=opaque-state-xyz');
   const rootEl = harness.createRoot();
-  const ctrl = mountApp(rootEl, { auth });
+  const ctrl = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootEl)), { auth });
   mountedApps.push(ctrl);
   await ctrl.ready;
 
@@ -350,6 +391,8 @@ test('/auth/callback exchanges Google PKCE code, hydrates Google metadata, strip
 });
 
 test('/auth/callback handles cancelled OAuth, missing params, and suspended Google accounts safely', async () => {
+  assert.ok(harness, 'DOM harness installed');
+
   // 1. Cancelled OAuth preserves an existing unrelated session and shows recovery links
   const existingUser = {
     id: 'supa-existing-1',
@@ -361,7 +404,7 @@ test('/auth/callback handles cancelled OAuth, missing params, and suspended Goog
 
   setUrl('/auth/callback?error=access_denied&error_description=User+denied+access');
   const rootCancelled = harness.createRoot();
-  const appCancelled = mountApp(rootCancelled, { auth: cancelledAuth });
+  const appCancelled = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootCancelled)), { auth: cancelledAuth });
   mountedApps.push(appCancelled);
   await appCancelled.ready;
 
@@ -377,7 +420,7 @@ test('/auth/callback handles cancelled OAuth, missing params, and suspended Goog
   const missingAuth = createAuthService({ supabaseClient: missingMock.client, isDemo: false });
   setUrl('/auth/callback');
   const rootMissing = harness.createRoot();
-  const appMissing = mountApp(rootMissing, { auth: missingAuth });
+  const appMissing = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootMissing)), { auth: missingAuth });
   mountedApps.push(appMissing);
   await appMissing.ready;
 
@@ -405,7 +448,7 @@ test('/auth/callback handles cancelled OAuth, missing params, and suspended Goog
   const suspendedAuth = createAuthService({ supabaseClient: suspendedMock.client, isDemo: false });
   setUrl('/auth/callback?code=suspended-code-1');
   const rootSuspended = harness.createRoot();
-  const appSuspended = mountApp(rootSuspended, { auth: suspendedAuth });
+  const appSuspended = mountApp(/** @type {HTMLElement} */ (/** @type {unknown} */ (rootSuspended)), { auth: suspendedAuth });
   mountedApps.push(appSuspended);
   await appSuspended.ready;
 

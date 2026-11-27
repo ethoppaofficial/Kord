@@ -15,6 +15,9 @@ function detectNodeTestRuntime() {
   }
 }
 
+/**
+ * @param {{ env?: Record<string, unknown>; isNodeTest?: boolean }} [opts]
+ */
 export function resolveSupabaseRuntimeConfig({
   env = import.meta.env || {},
   isNodeTest = detectNodeTestRuntime(),
@@ -72,6 +75,7 @@ const DEFAULT_PRODUCTION_ORIGIN = 'https://kord-lcec.vercel.app';
 
 const APPROVED_AUTH_CALLBACK_PATHS = new Set(['/reset-password', '/auth/callback']);
 
+/** @param {unknown} rawOrigin */
 export function normalizeApprovedOrigin(rawOrigin) {
   const value = String(rawOrigin || '').trim();
   if (!value) return null;
@@ -93,6 +97,7 @@ export function normalizeApprovedOrigin(rawOrigin) {
   }
 }
 
+/** @param {{ env?: Record<string, unknown> }} [opts] */
 export function getAllowedAuthOrigins({ env = import.meta.env || {} } = {}) {
   const allowed = new Set([
     ...APPROVED_LOCAL_ORIGINS,
@@ -109,6 +114,10 @@ export function getAllowedAuthOrigins({ env = import.meta.env || {} } = {}) {
   return allowed;
 }
 
+/**
+ * @param {string} targetPath
+ * @param {{ env?: Record<string, unknown>; currentOrigin?: string }} [opts]
+ */
 export function resolveAuthRedirectUrl(
   targetPath,
   { env = import.meta.env || {}, currentOrigin } = {}

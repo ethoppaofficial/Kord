@@ -22,6 +22,7 @@ import { CREATIVE_COURSE_BUILDERS } from './catalog/creativeCourses.js';
 import { TECH_COURSE_BUILDERS } from './catalog/techCourses.js';
 import { CAREER_COURSE_BUILDERS } from './catalog/careerCourses.js';
 
+/** @type {import('../../types/kord.d.ts').CourseBuilderHelpers['buildLesson']} */
 function buildLesson({
   id,
   position,
@@ -56,6 +57,7 @@ function buildLesson({
   };
 }
 
+/** @type {import('../../types/kord.d.ts').CourseBuilderHelpers['buildActivity']} */
 function buildActivity({
   id,
   phaseId,
@@ -84,12 +86,17 @@ function buildActivity({
 }
 
 export function createFlagshipCurriculumSeed() {
+  /** @type {import('../../types/kord.d.ts').Course[]} */
   const courses = [];
+  /** @type {import('../../types/kord.d.ts').Quiz[]} */
   const quizzes = [];
+  /** @type {Record<string, import('../../types/kord.d.ts').QuizAnswerKey>} */
   const privateQuizAnswers = {};
+  /** @type {import('../../types/kord.d.ts').Challenge[]} */
   const challenges = [];
 
-  function addAssessment({
+  /** @type {import('../../types/kord.d.ts').CourseBuilderHelpers['addAssessment']} */
+  const addAssessment = ({
     id,
     skillId,
     courseId,
@@ -104,7 +111,7 @@ export function createFlagshipCurriculumSeed() {
     shuffleQuestions = false,
     requiresManualReview = false,
     questions = [],
-  }) {
+  }) => {
     const cleanQuestions = questions.map((q, idx) => {
       const qId = q.id || `${id}-q-${idx + 1}`;
       privateQuizAnswers[qId] = {

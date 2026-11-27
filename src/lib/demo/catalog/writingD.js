@@ -6,10 +6,12 @@ const RESOURCES = [
   { title: 'Gov.uk Content Design & Digital Formatting', source: 'gov.uk', url: 'https://www.gov.uk/guidance/content-design', resourceType: 'Documentation' },
 ];
 
-function L(t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) {
-  return { t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} cleanly`], h, exp, def, ex, steps, cs, tip, chk, sum, tk };
-}
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
+const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk, o) => ({
+  t, intro, o: o || [`Explain ${h.toLowerCase()}`, `Apply ${t.toLowerCase()} cleanly`], h, exp, def, ex, steps, cs, tip, chk, sum, tk,
+});
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const SPECS = [
   {
     code: 'ew',
@@ -796,4 +798,5 @@ const SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const WRITING_D_BUILDERS = SPECS.map((spec) => (helpers) => buildDomainCourse(spec, helpers));

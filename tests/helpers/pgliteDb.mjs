@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** @typedef {import('@electric-sql/pglite').PGlite} PGliteInstance */
+/** @typedef {import('@electric-sql/pglite').Transaction} PGliteTransaction */
+
+/** @type {typeof import('@electric-sql/pglite').PGlite | null} */
 let cachedPgliteCtor = null;
 async function getPgliteCtor() {
   if (cachedPgliteCtor) return cachedPgliteCtor;
@@ -105,6 +109,7 @@ $$;
 grant execute on function storage.foldername(text), storage.extension(text) to anon, authenticated, service_role, supabase_admin;
 `;
 
+/** @param {string} sql */
 function sanitizeForPglite(sql) {
   // PGlite ships built-in gen_random_uuid() in pg_catalog without pgcrypto shared lib
   return sql.replace(/^\s*create\s+extension\s+if\s+not\s+exists\s+"?pgcrypto"?\s*;\s*$/gim, '-- pgcrypto built-in');
@@ -114,7 +119,7 @@ export async function createSupabasePglite() {
   const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, 'window');
   const savedWindow = globalThis.window;
   if (hadWindow) {
-    delete globalThis.window;
+    delete /** @type {{ window?: unknown }} */ (globalThis).window;
   }
   try {
     const PGlite = await getPgliteCtor();
@@ -136,6 +141,7 @@ export function getMigrationFiles() {
     .sort();
 }
 
+/** @param {PGliteInstance} db */
 export async function applyAllMigrations(db) {
   const files = getMigrationFiles();
   for (const file of files) {
@@ -145,6 +151,7 @@ export async function applyAllMigrations(db) {
   return files;
 }
 
+/** @param {PGliteInstance} db */
 export async function applyStandaloneSql(db) {
   const orderedStandalone = [
     '01_schema.sql',
@@ -163,6 +170,13 @@ export async function applyStandaloneSql(db) {
 
 const VALID_ROLES = new Set(['anon', 'authenticated', 'service_role', 'postgres', 'supabase_admin']);
 
+/**
+ * @template T
+ * @param {PGliteInstance} db
+ * @param {{ role?: string; userId?: string | null }} actor
+ * @param {(tx: PGliteTransaction) => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
 export async function asActor(db, { role = 'authenticated', userId = null } = {}, fn) {
   if (!VALID_ROLES.has(role)) {
     throw new Error(`Invalid test role: ${role}`);
@@ -175,6 +189,11 @@ export async function asActor(db, { role = 'authenticated', userId = null } = {}
   });
 }
 
+/**
+ * @param {PGliteInstance} db
+ * @param {{ id?: string | null; email: string; confirmed?: boolean; firstName?: string; fullName?: string; role?: string | null }} options
+ * @returns {Promise<{ id: string; email: string; first_name: string; full_name: string; role: string }>}
+ */
 export async function createAuthUser(
   db,
   {
@@ -186,6 +205,7 @@ export async function createAuthUser(
     role = null,
   }
 ) {
+  /** @type {Record<string, string>} */
   const meta = {};
   if (firstName) meta.first_name = firstName;
   if (fullName) meta.full_name = fullName;
@@ -201,12 +221,14 @@ export async function createAuthUser(
       JSON.stringify(meta),
     ]
   );
-  const created = res.rows[0];
+  const created = /** @type {{ id: string; email: string }} */ (res.rows[0]);
   if (role && role !== 'learner') {
     await asActor(db, { role: 'service_role' }, async (tx) => {
       await tx.query(`select public.admin_assign_profile_role($1::uuid, $2)`, [created.id, role]);
     });
   }
   const profileRes = await db.query(`select * from public.profiles where id = $1::uuid`, [created.id]);
-  return profileRes.rows[0];
+  return /** @type {{ id: string; email: string; first_name: string; full_name: string; role: string }} */ (
+    profileRes.rows[0]
+  );
 }

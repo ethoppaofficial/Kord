@@ -23,6 +23,10 @@ import { icon } from '../../lib/icons.js';
 import { renderProgressRail, renderStatusBadge, renderErrorState } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
+/**
+ * @param {import('../../types/kord.d.ts').RouteContext} ctx
+ * @returns {Promise<import('../../types/kord.d.ts').PageView>}
+ */
 export async function renderSkillDetailPage({ params, session, navigate, rerender }) {
   const skill = await getSkillBySlug(params.slug);
   if (!skill) {
@@ -61,6 +65,7 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
   const userSkill = userSkills.find((us) => us.skillId === skill.id) || null;
   const courses = skill.courses || [];
 
+  /** @type {Record<string, import('../../types/kord.d.ts').CourseProgressSummary>} */
   const courseProgressById = {};
   courses.forEach((course) => {
     const enr = enrollments.find((e) => e.courseId === course.id) || null;
@@ -321,27 +326,31 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
         </aside>
       </div>
     `,
+    /** @param {HTMLElement} root */
     bind(root) {
-      root.querySelectorAll('[data-enroll-course]').forEach((btn) => {
+      root.querySelectorAll('[data-enroll-course]').forEach((node) => {
+        const btn = /** @type {HTMLButtonElement} */ (node);
         btn.addEventListener('click', async () => {
-          if (btn.disabled) return;
+          if (!userId || btn.disabled) return;
+          const courseId = btn.dataset.enrollCourse || '';
+          if (!courseId) return;
           btn.disabled = true;
           btn.textContent = 'Enrolling…';
           try {
-            await enrollInCourse(userId, btn.dataset.enrollCourse);
+            await enrollInCourse(userId, courseId);
             showToast('Enrolled in course!', 'success');
-            navigate(`/courses/${btn.dataset.courseSlug}`);
+            navigate(`/courses/${btn.dataset.courseSlug || ''}`);
           } catch (err) {
             btn.disabled = false;
             btn.textContent = 'Enroll in course';
-            showToast(err?.message || 'Unable to enroll.', 'error');
+            showToast(err instanceof Error && err.message ? err.message : 'Unable to enroll.', 'error');
           }
         });
       });
 
       root.querySelector('#declare-btn')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        if (btn.disabled) return;
+        const btn = /** @type {HTMLButtonElement | null} */ (e.currentTarget);
+        if (!userId || !btn || btn.disabled) return;
         btn.disabled = true;
         try {
           await declareUserSkill(userId, skill.id);
@@ -349,7 +358,7 @@ export async function renderSkillDetailPage({ params, session, navigate, rerende
           rerender({ silent: true });
         } catch (err) {
           btn.disabled = false;
-          showToast(err?.message || 'Unable to declare skill.', 'error');
+          showToast(err instanceof Error && err.message ? err.message : 'Unable to declare skill.', 'error');
         }
       });
     },

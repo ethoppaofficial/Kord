@@ -1,6 +1,21 @@
 import { DEFAULT_CATEGORIES } from '../constants.js';
 import { slugify } from '../formatters.js';
 
+/**
+ * @param {{
+ *   id?: string;
+ *   title: string;
+ *   categoryId: string;
+ *   categoryName: string;
+ *   level?: string;
+ *   summary: string;
+ *   outcomes?: string[];
+ *   expectations?: string;
+ *   prerequisites?: string[];
+ *   supportedByCourseSlug?: string | null;
+ * }} input
+ * @returns {import('../../types/kord.d.ts').Skill}
+ */
 function makeSkill({ id, title, categoryId, categoryName, level = 'Beginner', summary, outcomes, expectations, prerequisites = [], supportedByCourseSlug = null }) {
   return {
     id: id || `skill-${slugify(title)}`,
@@ -27,6 +42,7 @@ function makeSkill({ id, title, categoryId, categoryName, level = 'Beginner', su
 
 const CATEGORY_MAP = new Map(DEFAULT_CATEGORIES.map((c) => [c.id, c.name]));
 
+/** @type {Array<{ categoryId: string; items: Array<{ id?: string; title: string; level?: string; summary: string; outcomes?: string[]; expectations?: string; prerequisites?: string[]; supportedByCourseSlug?: string | null }> }>} */
 const SKILL_GROUPS = [
   {
     categoryId: 'cat-communication',
@@ -164,7 +180,9 @@ const SKILL_GROUPS = [
   },
 ];
 
+/** @returns {import('../../types/kord.d.ts').Skill[]} */
 export function createCatalogSkills() {
+  /** @type {import('../../types/kord.d.ts').Skill[]} */
   const out = [];
   SKILL_GROUPS.forEach((group) => {
     const categoryName = CATEGORY_MAP.get(group.categoryId) || 'General';

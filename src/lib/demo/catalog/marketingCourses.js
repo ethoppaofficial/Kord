@@ -6,6 +6,7 @@ const RESOURCES = [
   { title: 'Google Ads Help: Search Campaign Fundamentals', source: 'support.google.com', url: 'https://support.google.com/google-ads', resourceType: 'Guide' },
 ];
 
+/** @type {import('../../../types/kord.d.ts').DomainLessonHelper} */
 const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   t,
   intro,
@@ -22,6 +23,7 @@ const L = (t, intro, h, exp, def, ex, steps, cs, tip, chk, sum, tk) => ({
   tk,
 });
 
+/** @type {import('../../../types/kord.d.ts').DomainCourseConfig[]} */
 const MARKETING_SPECS = [
   {
     code: 'smm',
@@ -1344,4 +1346,5 @@ const MARKETING_SPECS = [
   },
 ];
 
+/** @type {import('../../../types/kord.d.ts').CourseBuilderFn[]} */
 export const MARKETING_COURSE_BUILDERS = MARKETING_SPECS.map((spec) => (helpers) => buildDomainCourse(spec, helpers));

@@ -1,5 +1,13 @@
 import { escapeHtml } from './formatters.js';
 
+/**
+ * @param {string} title
+ * @param {string} eyebrow
+ * @param {string} c1
+ * @param {string} c2
+ * @param {string} accent
+ * @param {string} [motif]
+ */
 function buildSvgDataUri(title, eyebrow, c1, c2, accent, motif = 'grid') {
   const safeTitle = String(title || 'Kord Course')
     .replace(/&/g, '&amp;')
@@ -54,6 +62,7 @@ function buildSvgDataUri(title, eyebrow, c1, c2, accent, motif = 'grid') {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
+/** @type {Record<string, string>} */
 export const COURSE_THUMBNAILS = {
   'frontend-development-foundations': buildSvgDataUri(
     'Frontend Development Foundations',
@@ -89,6 +98,7 @@ export const COURSE_THUMBNAILS = {
   ),
 };
 
+/** @type {Record<string, { c1: string; c2: string; accent: string; label: string }>} */
 const CATEGORY_THEMES = {
   'cat-communication': { c1: '#1e1b4b', c2: '#9a3412', accent: '#fbbf24', label: 'Communication & Interpersonal' },
   'cat-writing': { c1: '#1c1917', c2: '#7c2d12', accent: '#fdba74', label: 'Writing & Content Creation' },
@@ -99,6 +109,7 @@ const CATEGORY_THEMES = {
   'cat-career': { c1: '#14532d', c2: '#1e3a8a', accent: '#86efac', label: 'Career & Professional' },
 };
 
+/** @param {Partial<import('../types/kord.d.ts').Course> | null | undefined} course */
 function getThemeForCourse(course) {
   const catId = String(course?.categoryId || '').toLowerCase();
   if (CATEGORY_THEMES[catId]) return CATEGORY_THEMES[catId];
@@ -120,9 +131,10 @@ function getThemeForCourse(course) {
   return { c1: '#0f172a', c2: '#1e3a8a', accent: '#93c5fd', label: course?.difficulty || 'Course' };
 }
 
+/** @param {Partial<import('../types/kord.d.ts').Course> | null | undefined} course */
 export function resolveCourseThumbnail(course) {
   if (!course) return '';
-  if (COURSE_THUMBNAILS[course.slug]) return COURSE_THUMBNAILS[course.slug];
+  if (course.slug && COURSE_THUMBNAILS[course.slug]) return COURSE_THUMBNAILS[course.slug];
   const raw = String(course.thumbnailUrl || '').trim();
   if (raw.startsWith('https://') || raw.startsWith('data:image/')) {
     return raw;
@@ -130,6 +142,10 @@ export function resolveCourseThumbnail(course) {
   return '';
 }
 
+/**
+ * @param {Partial<import('../types/kord.d.ts').Course> | null | undefined} course
+ * @param {{ height?: string; alt?: string }} [opts]
+ */
 export function renderCourseThumbnailHtml(course, { height = '176px', alt = '' } = {}) {
   const src = resolveCourseThumbnail(course);
   const titleText = alt || `${course?.title || 'Course'} cover`;

@@ -15,6 +15,17 @@ const ALLOWED_YOUTUBE_HOSTS = new Set([
   'www.youtube-nocookie.com',
 ]);
 
+/**
+ * @typedef {{
+ *   key: string;
+ *   label: string;
+ *   parseUrl: (rawUrl: unknown) => { valid: false; error: string } | { valid: true; provider: string; videoId: string; originalUrl: string; embedUrl: string };
+ *   buildEmbedUrl: (videoId: unknown) => string | null;
+ *   buildWatchUrl: (videoId: unknown) => string;
+ * }} VideoProviderAdapter
+ */
+
+/** @type {Record<string, VideoProviderAdapter>} */
 export const VIDEO_PROVIDERS = {
   youtube: {
     key: 'youtube',
@@ -82,6 +93,7 @@ export function listSupportedVideoProviders() {
   return Object.values(VIDEO_PROVIDERS).map((p) => ({ key: p.key, label: p.label }));
 }
 
+/** @param {import('../types/kord.d.ts').VideoEntry | null | undefined} input */
 export function normalizeVideoEntry(input) {
   const providerKey = input?.provider || 'youtube';
   const adapter = VIDEO_PROVIDERS[providerKey];
@@ -126,6 +138,10 @@ export function normalizeVideoEntry(input) {
   };
 }
 
+/**
+ * @param {import('../types/kord.d.ts').VideoEntry | null | undefined} video
+ * @param {number} [index]
+ */
 export function renderVideoPlayerHtml(video, index = 0) {
   const adapter = VIDEO_PROVIDERS[video?.provider || 'youtube'];
   const embedUrl = video?.embedUrl || (adapter ? adapter.buildEmbedUrl(video?.videoId) : null);
