@@ -14,8 +14,8 @@ function sanitizeReturnedResults(results = [], solutionsReleased = false) {
   return (results || []).map((r) => ({
     ...r,
     correctIndex: null,
-    answerConfig: null,
-    explanation: '',
+    answerConfig: {},
+    explanation: null,
   }));
 }
 

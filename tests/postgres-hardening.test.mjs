@@ -23,10 +23,11 @@ async function setupMigratedDb() {
 /** @param {PGliteInstance} db */
 async function seedAdminAndLearners(db) {
   const admin = await createAuthUser(db, {
-    email: 'ethoppaofficial@gmail.com',
+    email: 'admin.operator@example.com',
     confirmed: true,
     firstName: 'Admin',
     fullName: 'Kord Admin',
+    role: 'admin',
   });
   const learnerA = await createAuthUser(db, {
     email: 'learner.a@example.com',
@@ -109,14 +110,14 @@ test('PostgreSQL Auth & Profiles: role escalation blocked, unconfirmed admin den
   });
   assert.equal(unconfirmedAdmin.role, 'learner');
 
-  // Confirmed designated admin email receives 'admin' (via on conflict update when confirmed)
+  // Confirmed signup also remains 'learner' unconditionally (no hardcoded email auto-promotion)
   await db.query(`delete from auth.users where id = $1::uuid`, [unconfirmedAdmin.id]);
   const confirmedAdmin = await createAuthUser(db, {
     email: 'ethoppaofficial@gmail.com',
     confirmed: true,
     firstName: 'Confirmed',
   });
-  assert.equal(confirmedAdmin.role, 'admin');
+  assert.equal(confirmedAdmin.role, 'learner');
 
   const learner = await createAuthUser(db, {
     email: 'normal.learner@example.com',
@@ -360,6 +361,7 @@ test('PostgreSQL Progression: quizzes never grant demonstrated, 0-challenge cour
       else answers[q.id] = q.correct_index;
     }
     await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
+      await tx.query(`select public.start_quiz_session($1::uuid)`, [qz.id]);
       const res = await tx.query(
         `select public.submit_quiz($1::uuid, $2::jsonb, $3) as payload`,
         [qz.id, JSON.stringify(answers), `pass-${qz.id}`]
@@ -466,8 +468,9 @@ test('PostgreSQL Progression: quizzes never grant demonstrated, 0-challenge cour
   ).rows[0].id;
   const theoryCourseId = (
     await db.query(
-      `insert into public.courses (skill_id, slug, title, description, publication_status, completion_rules)
-       values ($1::uuid, 'theory-only-course', 'Theory Only Course', 'Theory course without challenges', 'published',
+      `insert into public.courses (skill_id, slug, title, description, publication_status, outcomes, completion_rules)
+       values ($1::uuid, 'theory-only-course', 'Theory Only Course', 'Theory course without challenges', 'draft',
+         '["Understand theory foundations"]'::jsonb,
          '{"requireAllRequiredLessons":true,"requireAllActivities":false,"requireAllAssessments":false,"requireChallengeSubmission":false,"requireChallengeApproval":false}'::jsonb)
        returning id`,
       [theorySkillId]
@@ -481,10 +484,12 @@ test('PostgreSQL Progression: quizzes never grant demonstrated, 0-challenge cour
   ).rows[0].id;
   const theoryLessonId = (
     await db.query(
-      `insert into public.lessons (phase_id, position, title, publication_status, is_required, est_minutes) values ($1::uuid, 1, 'Theory Lesson', 'published', true, 10) returning id`,
+      `insert into public.lessons (phase_id, position, title, publication_status, is_required, est_minutes, blocks)
+       values ($1::uuid, 1, 'Theory Lesson', 'published', true, 10, '[{"id":"blk-1","type":"paragraph","text":"Theory lesson material."}]'::jsonb) returning id`,
       [theoryPhaseId]
     )
   ).rows[0].id;
+  await db.query(`update public.courses set publication_status = 'published' where id = $1::uuid`, [theoryCourseId]);
 
   await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
     await tx.query(`select public.enroll_in_course($1::uuid)`, [theoryCourseId]);
@@ -1007,8 +1012,9 @@ test('PostgreSQL get_dashboard() SQL Contract: all 7 test cases + cross-user & a
   ).rows[0].id;
   const theoryCourseId = (
     await db.query(
-      `insert into public.courses (skill_id, slug, title, description, publication_status, completion_rules)
-       values ($1::uuid, 'dash-theory-course', 'Dash Theory Course', 'Dash theory course', 'published',
+      `insert into public.courses (skill_id, slug, title, description, publication_status, outcomes, completion_rules)
+       values ($1::uuid, 'dash-theory-course', 'Dash Theory Course', 'Dash theory course', 'draft',
+         '["Complete dashboard theory"]'::jsonb,
          '{"requireAllRequiredLessons":true,"requireAllActivities":false,"requireAllAssessments":false,"requireChallengeSubmission":false,"requireChallengeApproval":false}'::jsonb) returning id`,
       [theorySkillId]
     )
@@ -1017,8 +1023,13 @@ test('PostgreSQL get_dashboard() SQL Contract: all 7 test cases + cross-user & a
     await db.query(`insert into public.phases (course_id, position, title, publication_status) values ($1::uuid, 1, 'P1', 'published') returning id`, [theoryCourseId])
   ).rows[0].id;
   const tLessonId = (
-    await db.query(`insert into public.lessons (phase_id, position, title, publication_status, is_required, est_minutes) values ($1::uuid, 1, 'L1', 'published', true, 30) returning id`, [tPhaseId])
+    await db.query(
+      `insert into public.lessons (phase_id, position, title, publication_status, is_required, est_minutes, blocks)
+       values ($1::uuid, 1, 'L1', 'published', true, 30, '[{"id":"blk-1","type":"paragraph","text":"Dashboard theory lesson."}]'::jsonb) returning id`,
+      [tPhaseId]
+    )
   ).rows[0].id;
+  await db.query(`update public.courses set publication_status = 'published' where id = $1::uuid`, [theoryCourseId]);
 
   await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
     await tx.query(`select public.enroll_in_course($1::uuid)`, [c2.id]);
@@ -1053,7 +1064,9 @@ test('PostgreSQL get_dashboard() SQL Contract: all 7 test cases + cross-user & a
   }
 
   await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
+    await tx.query(`select public.start_quiz_session($1::uuid)`, [q1.id]);
     await tx.query(`select public.submit_quiz($1::uuid, $2::jsonb, 'dash-fail')`, [q1.id, JSON.stringify(wrongAns)]);
+    await tx.query(`select public.start_quiz_session($1::uuid)`, [q1.id]);
     await tx.query(`select public.submit_quiz($1::uuid, $2::jsonb, 'dash-pass')`, [q1.id, JSON.stringify(rightAns)]);
 
     const d = (await tx.query(`select public.get_dashboard() as d`)).rows[0].d;

@@ -13,6 +13,7 @@ import {
 import {
   getQuizForLearner,
   getUserAllQuizAttempts,
+  startQuizSession,
   submitQuiz,
   adminGradeAttempt,
 } from '../src/lib/repositories/quizRepository.js';
@@ -268,6 +269,7 @@ test('Scenario 5 & 6: Learner cannot access answer keys early or manipulate quiz
     return draft;
   });
 
+  await startQuizSession(learner.user.id, quizMeta.id);
   const failedRes = await submitQuiz(learner.user.id, quizMeta.id, wrongAnswers, 'attempt-fail-1');
   assert.equal(failedRes.passed, false);
   assert.equal(failedRes.solutionsReleased, false);
@@ -298,6 +300,7 @@ test('Scenario 5 & 6: Learner cannot access answer keys early or manipulate quiz
     else if (q.questionType === 'ordering') rightAnswers[q.id] = key.correctOrder;
     else rightAnswers[q.id] = key.correctIndex;
   }
+  await startQuizSession(learner.user.id, quizMeta.id);
   const passedRes = await submitQuiz(learner.user.id, quizMeta.id, rightAnswers, 'attempt-pass-2');
   assert.equal(passedRes.passed, true);
   assert.equal(passedRes.solutionsReleased, true);
@@ -343,6 +346,7 @@ test('Scenario 7 & 8: Course remains awaiting practical assessment until admin a
       else if (q.questionType === 'ordering') ans[q.id] = key.correctOrder;
       else ans[q.id] = key.correctIndex;
     }
+    await startQuizSession(learner.user.id, qz.id);
     await submitQuiz(learner.user.id, qz.id, ans, `pass-${qz.id}`);
   }
 

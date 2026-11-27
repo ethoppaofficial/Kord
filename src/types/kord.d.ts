@@ -426,11 +426,11 @@ export interface QuizAttemptResultItem {
   pendingReview: boolean;
   correctIndex: number | null;
   answerConfig: {
-    correctIndices: number[] | null;
-    acceptedAnswers: string[] | null;
-    correctOrder: number[] | null;
+    correctIndices?: number[] | null;
+    acceptedAnswers?: string[] | null;
+    correctOrder?: number[] | null;
   } | null;
-  explanation: string;
+  explanation: string | null;
 }
 
 export interface QuizAttempt {

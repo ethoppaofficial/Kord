@@ -27,8 +27,8 @@ import { registerSessionCleanup, runSessionCleanup } from '../src/lib/sessionLif
 import { buildIdempotencyKey, runIdempotent } from '../src/lib/idempotency.js';
 import { mountApp } from '../src/app/app.js';
 
-const ADMIN_EMAIL = 'ethoppaofficial@gmail.com';
-const ADMIN_PASS = 'admin@2026';
+const ADMIN_EMAIL = 'demo.admin@kord.local';
+const ADMIN_PASS = 'demo-local-preview';
 const LEARNER_EMAIL = 'maya.lin@example.com';
 const LEARNER_PASS = 'password123';
 
@@ -143,7 +143,7 @@ test('Scenario 1: Administrator logs in normally and accesses Admin Console only
   assert.ok(rootEl.innerHTML.includes('Administrator console'));
   assert.ok(rootEl.innerHTML.includes('Pending reviews'));
   assert.ok(!rootEl.innerHTML.includes('href="/explore"'), 'Admin nav must not include learner Explore link');
-  assert.equal(getDemoCurrentUserId(), 'user-admin-ethoppa');
+  assert.equal(getDemoCurrentUserId(), 'user-admin-demo');
   const rawPersisted = globalThis.localStorage.getItem('kord_app_state_v5');
   assert.ok(rawPersisted);
   const persistedShared = JSON.parse(rawPersisted);

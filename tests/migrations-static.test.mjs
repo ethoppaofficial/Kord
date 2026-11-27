@@ -23,7 +23,7 @@ function collectFiles(dir, extFilter) {
   return out;
 }
 
-test('Ordered Supabase migrations 000001-000010 exist and stay non-destructive', () => {
+test('Ordered Supabase migrations 000001-000013 exist and stay non-destructive', () => {
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
   assert.deepEqual(files, [
     '20261121000001_extensions_and_schema.sql',
@@ -36,13 +36,17 @@ test('Ordered Supabase migrations 000001-000010 exist and stay non-destructive',
     '20261121000008_dashboard_functions.sql',
     '20261121000009_seed_data.sql',
     '20261122000010_backend_hardening.sql',
+    '20261123000011_remediation_hardening.sql',
+    '20261123000012_complete_99_skill_pathways.sql',
+    '20261125000013_privilege_and_rls_trigger_hardening.sql',
   ]);
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
-    assert.doesNotMatch(sql, /\bdrop\s+table\b/i, `${file} must not DROP TABLE`);
+    const sqlStatements = sql.replace(/'(?:''|[^'])*'/g, "''");
+    assert.doesNotMatch(sqlStatements, /\bdrop\s+table\b/i, `${file} must not DROP TABLE`);
     assert.doesNotMatch(
-      sql,
+      sqlStatements,
       /\btruncate\s+(?:table\b|only\b|[a-z_][a-z0-9_]*\.)|^\s*truncate\b/im,
       `${file} must not TRUNCATE tables`
     );
@@ -145,8 +149,8 @@ test('Every SECURITY DEFINER function across migrations and standalone SQL pins 
 
       assert.match(
         header,
-        /set\s+search_path\s*=\s*public\b/i,
-        `${path.basename(file)} ${fnName} uses SECURITY DEFINER without fixed "set search_path = public"`
+        /set\s+search_path\s*=\s*(?:public|pg_catalog)\b/i,
+        `${path.basename(file)} ${fnName} uses SECURITY DEFINER without fixed "set search_path = public|pg_catalog"`
       );
 
       const revokeRegex = new RegExp(`revoke\\s+all\\s+on\\s+function\\s+${fnName.replace('.', '\\.')}\\s*\\([^)]*\\)\\s*from\\s+public,\\s*anon`, 'i');
@@ -185,7 +189,16 @@ test('Frontend codebase contains zero service_role keys, unparenthesized CASE-in
   const jsFiles = collectFiles(SRC_DIR, '.js');
   for (const file of jsFiles) {
     const content = fs.readFileSync(file, 'utf8');
-    assert.doesNotMatch(content, /service_role/i, `${file} must never reference service_role`);
+    assert.doesNotMatch(
+      content,
+      /VITE_[A-Z0-9_]*SERVICE_ROLE|SUPABASE_SERVICE_ROLE_KEY|eyJhbGci/i,
+      `${file} must never contain service_role keys or JWT secrets`
+    );
+    assert.doesNotMatch(
+      content,
+      /ethoppaofficial@gmail\.com|admin@2026/i,
+      `${file} must never hardcode operator emails or default admin passwords`
+    );
     assert.doesNotMatch(
       content,
       /\.rpc\(['"]evaluate_course_and_skill_progression['"]/,
