@@ -1,10 +1,31 @@
 import { supabase, isDemoMode } from '../supabase.js';
-import { getDemoState, updateDemoState } from '../demo/demoStore.js';
+import { getDemoState, getDemoCurrentUserId, updateDemoState } from '../demo/demoStore.js';
 import { appendDemoAuditLog } from '../demo/demoAudit.js';
 import { slugify } from '../formatters.js';
 import { buildIdempotencyKey, runIdempotent } from '../idempotency.js';
 import { normalizeVideoEntry } from '../videoProvider.js';
 import { validateRubricWeights, DEFAULT_ALLOWED_MIME_TYPES } from '../validators.js';
+import {
+  CONTENT_PACKAGE_SCHEMA_VERSION,
+  parseContentPackageJson,
+  buildDryRunImportPlan,
+  buildCourseExportPackage,
+  buildCourseCurriculumSnapshot,
+  validateLessonInstructionalContent,
+} from '../contentPackage.js';
+
+/**
+ * @param {import('../../types/kord.d.ts').DemoState} state
+ * @returns {import('../../types/kord.d.ts').KordUser}
+ */
+function requireDemoActiveAdmin(state) {
+  const uid = getDemoCurrentUserId();
+  const user = uid ? (state.users || []).find((u) => u.id === uid) || null : null;
+  if (!user || user.role !== 'admin' || (user.accountStatus || 'active') !== 'active') {
+    throw new Error('Administrator access required.');
+  }
+  return user;
+}
 
 /**
  * @param {import('../../types/kord.d.ts').Course | null | undefined} course
@@ -40,11 +61,13 @@ export function validateCourseForPublish(course, { assessments = null, challenge
     if (publishedLessons.length === 0) {
       errors.push('Course must contain at least 1 published lesson before publishing.');
     } else {
-      const emptyLesson = publishedLessons.find(
-        (l) => !l.title || !Array.isArray(l.blocks) || l.blocks.length < 1
-      );
-      if (emptyLesson) {
-        errors.push(`Lesson "${emptyLesson.title || 'Untitled'}" needs structured instructional blocks.`);
+      for (const l of publishedLessons) {
+        const lessonCheck = validateLessonInstructionalContent(l);
+        if (!lessonCheck.valid) {
+          errors.push(
+            `Lesson "${l.title || 'Untitled'}": ${lessonCheck.errors[0]?.message || 'needs structured instructional content.'}`
+          );
+        }
       }
     }
   }
@@ -435,7 +458,10 @@ export async function getCourseBySlug(slug, { includeDrafts = false } = {}) {
           courseId: v.course_id,
           versionNumber: v.version_number,
           changeNotes: v.change_notes,
+          snapshotType: v.snapshot_type || 'manual',
           snapshot: v.snapshot || {},
+          snapshotData: v.snapshot_data || null,
+          sourceImportId: v.source_import_id || null,
           createdAt: v.created_at,
         })),
       assessments: (assessments || []).map((/** @type {any} */ a) => ({
@@ -933,6 +959,7 @@ export async function adminCreateCourseVersion(courseId, changeNotes = '') {
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course) throw new Error('Course not found');
       const nextVersion = Number(course.version || 1) + 1;
+      const snapshotData = buildCourseCurriculumSnapshot(course);
       course.version = nextVersion;
       course.updatedAt = nowIso;
 
@@ -941,15 +968,29 @@ export async function adminCreateCourseVersion(courseId, changeNotes = '') {
         courseId,
         versionNumber: nextVersion,
         changeNotes: cleanNotes,
+        snapshotType: 'manual',
         snapshot: {
           title: course.title,
           difficulty: course.difficulty,
           phaseCount: (course.phases || []).length,
           lessonCount: (course.phases || []).reduce((sum, p) => sum + (p.lessons || []).length, 0),
         },
+        snapshotData,
         createdAt: nowIso,
       };
       draft.courseVersions.unshift(createdVersion);
+      appendDemoAuditLog(draft, {
+        action: 'course_snapshot_created',
+        targetTable: 'course_versions',
+        targetId: createdVersion.id,
+        beforeData: null,
+        afterData: {
+          courseId,
+          versionNumber: nextVersion,
+          snapshotType: 'manual',
+          changeNotes: cleanNotes,
+        },
+      });
       return draft;
     });
     return createdVersion;
@@ -1576,6 +1617,801 @@ export async function adminUpsertChallenge(payload) {
     });
     return savedChallenge;
   });
+}
+
+/**
+ * Maps a Supabase `content_imports` row into a typed ContentImportRecord.
+ *
+ * @param {Record<string, any>} row
+ * @returns {import('../../types/kord.d.ts').ContentImportRecord}
+ */
+function mapContentImportRecord(row) {
+  return {
+    id: row.id,
+    courseId: row.course_id,
+    actorId: row.actor_id || null,
+    actorEmail: row.actor_email || null,
+    operationType: row.operation_type || 'import',
+    packageVersion: row.package_version || CONTENT_PACKAGE_SCHEMA_VERSION,
+    status: row.status,
+    processedCount: Number(row.processed_count || 0),
+    createdCount: Number(row.created_count || 0),
+    updatedCount: Number(row.updated_count || 0),
+    unchangedCount: Number(row.unchanged_count || 0),
+    rejectedCount: Number(row.rejected_count || 0),
+    snapshotVersionId: row.snapshot_version_id || null,
+    idempotencyKey: row.idempotency_key || null,
+    changeNotes: row.change_notes || '',
+    errorSummary: row.error_summary || null,
+    details: row.details || {},
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Exports the full curriculum (modules, lessons, resources) for a course as a
+ * versioned JSON package without learner PII or assessment keys.
+ *
+ * @param {string} courseId
+ * @returns {Promise<{ packageData: import('../../types/kord.d.ts').ContentPackage; jsonString: string; filename: string }>}
+ */
+export async function adminExportCourseContent(courseId) {
+  if (isDemoMode || !supabase) {
+    requireDemoActiveAdmin(getDemoState());
+  }
+  const course = await getCourseById(courseId, { includeDrafts: true });
+  if (!course) {
+    throw new Error('Course not found.');
+  }
+  const packageData = buildCourseExportPackage(course);
+  const jsonString = JSON.stringify(packageData, null, 2);
+  const safeSlug = slugify(course.slug || course.title || course.id);
+  const filename = `course-${safeSlug}-v${Number(course.version || 1)}.json`;
+  return { packageData, jsonString, filename };
+}
+
+/**
+ * Records a rejected or failed bulk import attempt cleanly for audit history.
+ *
+ * @param {{
+ *   courseId: string;
+ *   status: 'rejected' | 'failed';
+ *   packageVersion?: string;
+ *   processedCount?: number;
+ *   rejectedCount?: number;
+ *   errorSummary: string;
+ *   details?: Record<string, unknown>;
+ * }} params
+ */
+async function recordImportFailureEvent({
+  courseId,
+  status,
+  packageVersion = CONTENT_PACKAGE_SCHEMA_VERSION,
+  processedCount = 0,
+  rejectedCount = 0,
+  errorSummary,
+  details = {},
+}) {
+  const cleanSummary = String(errorSummary || 'Import validation failed').slice(0, 1000);
+  if (!isDemoMode && supabase) {
+    try {
+      await supabase.rpc('admin_log_content_import_event', {
+        p_course_id: courseId,
+        p_status: status,
+        p_package_version: packageVersion,
+        p_processed_count: processedCount,
+        p_rejected_count: rejectedCount,
+        p_error_summary: cleanSummary,
+        p_details: details,
+      });
+    } catch {
+      // Never mask the primary import error if event logging also fails
+    }
+    return;
+  }
+
+  try {
+    updateDemoState((draft) => {
+      const admin = requireDemoActiveAdmin(draft);
+      draft.contentImports = draft.contentImports || [];
+      const importId = `imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      draft.contentImports.unshift({
+        id: importId,
+        courseId,
+        actorId: admin.id,
+        actorEmail: admin.email || null,
+        operationType: 'import',
+        packageVersion,
+        status,
+        processedCount: Math.max(0, Number(processedCount || 0)),
+        createdCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
+        rejectedCount: Math.max(0, Number(rejectedCount || 0)),
+        snapshotVersionId: null,
+        idempotencyKey: null,
+        changeNotes: '',
+        errorSummary: cleanSummary,
+        details,
+        createdAt: new Date().toISOString(),
+      });
+      appendDemoAuditLog(draft, {
+        actorId: admin.id,
+        action: status === 'rejected' ? 'bulk_content_import_rejected' : 'bulk_content_import_failed',
+        targetTable: 'courses',
+        targetId: courseId,
+        beforeData: null,
+        afterData: { importId, status, rejectedCount, errorSummary: cleanSummary },
+      });
+      return draft;
+    });
+  } catch {
+    // Keep failure path non-blocking
+  }
+}
+
+/**
+ * Performs a read-only dry-run validation & diff preview of a JSON content package
+ * against the target course. Writes nothing to curriculum tables.
+ *
+ * @param {{ courseId: string; rawJsonText: string; logRejection?: boolean }} params
+ * @returns {Promise<{ parsed: boolean; parseErrors: import('../../types/kord.d.ts').DryRunValidationIssue[]; plan: import('../../types/kord.d.ts').DryRunImportPlan | null }>}
+ */
+export async function adminPreviewCourseContentImport({ courseId, rawJsonText, logRejection = false }) {
+  if (isDemoMode || !supabase) {
+    requireDemoActiveAdmin(getDemoState());
+  }
+  const course = await getCourseById(courseId, { includeDrafts: true });
+  if (!course) {
+    throw new Error('Target course not found.');
+  }
+
+  const parsedResult = parseContentPackageJson(rawJsonText);
+  if (!parsedResult.valid) {
+    if (logRejection) {
+      await recordImportFailureEvent({
+        courseId: course.id,
+        status: 'rejected',
+        processedCount: 0,
+        rejectedCount: parsedResult.errors.length,
+        errorSummary: parsedResult.errors.map((e) => e.message).join(' | '),
+        details: { parseErrors: parsedResult.errors },
+      });
+    }
+    return {
+      parsed: false,
+      parseErrors: parsedResult.errors,
+      plan: null,
+    };
+  }
+
+  const plan = buildDryRunImportPlan({
+    packageData: parsedResult.packageData,
+    targetCourse: course,
+  });
+
+  if (logRejection && !plan.valid) {
+    await recordImportFailureEvent({
+      courseId: course.id,
+      status: 'rejected',
+      packageVersion: plan.schemaVersion,
+      processedCount: plan.totalProcessed,
+      rejectedCount: plan.counts.rejected + plan.packageErrors.length,
+      errorSummary:
+        plan.packageErrors[0]?.message ||
+        plan.lessons.find((l) => l.errors.length > 0)?.errors[0]?.message ||
+        'Package rejected during dry-run validation.',
+      details: {
+        counts: plan.counts,
+        packageErrors: plan.packageErrors,
+      },
+    });
+  }
+
+  return {
+    parsed: true,
+    parseErrors: [],
+    plan,
+  };
+}
+
+/**
+ * Atomically commits validated New & Updated lessons from a bulk JSON import package.
+ * Automatically captures a pre_import curriculum snapshot before applying changes,
+ * preserves existing lesson IDs, never auto-publishes new/draft lessons, and never
+ * touches learner progress, enrollments, completions, or quiz attempts.
+ *
+ * @param {{ courseId: string; rawJsonText: string; changeNotes?: string; idempotencyKey?: string }} params
+ * @returns {Promise<import('../../types/kord.d.ts').BulkImportCommitResult>}
+ */
+export async function adminCommitCourseContentImport({
+  courseId,
+  rawJsonText,
+  changeNotes = '',
+  idempotencyKey,
+}) {
+  if (isDemoMode || !supabase) {
+    requireDemoActiveAdmin(getDemoState());
+  }
+
+  const cleanNotes = String(changeNotes || '').trim();
+  if (cleanNotes.length > 2000) {
+    throw new Error('Change notes cannot exceed 2,000 characters.');
+  }
+
+  const preview = await adminPreviewCourseContentImport({
+    courseId,
+    rawJsonText,
+    logRejection: true,
+  });
+
+  if (!preview.parsed || !preview.plan) {
+    const firstErr = preview.parseErrors[0]?.message || 'Malformed JSON content package.';
+    throw new Error(firstErr);
+  }
+
+  const plan = preview.plan;
+  if (!plan.valid) {
+    const firstErr =
+      plan.packageErrors[0]?.message ||
+      plan.lessons.find((l) => l.errors.length > 0)?.errors[0]?.message ||
+      'Import package failed validation and was rejected.';
+    throw new Error(firstErr);
+  }
+
+  const actionableResults = plan.lessons.filter(
+    (l) => (l.classification === 'new' || l.classification === 'updated') && l.normalizedLesson !== null
+  );
+  if (actionableResults.length === 0) {
+    throw new Error('No new or modified lessons detected in this package.');
+  }
+
+  const resolvedIdempotencyKey =
+    String(idempotencyKey || '').trim() ||
+    buildIdempotencyKey('bulk-import', courseId, Date.now(), Math.random().toString(36).slice(2, 8));
+
+  const payloadLessons = actionableResults.map((item) => {
+    const les = /** @type {import('../../types/kord.d.ts').Lesson} */ (item.normalizedLesson);
+    return {
+      ...(item.classification === 'updated' && item.lessonId ? { id: item.lessonId } : { isNew: true }),
+      phaseId: item.phaseId,
+      position: les.position,
+      title: les.title,
+      introduction: les.introduction || '',
+      objectives: les.objectives || [],
+      estMinutes: Number(les.estMinutes || 25),
+      blocks: les.blocks || [],
+      videos: les.videos || [],
+      summary: les.summary || '',
+      takeaways: les.takeaways || [],
+      furtherReading: les.furtherReading || [],
+      completionCriteria: les.completionCriteria || '',
+      isRequired: les.isRequired !== false,
+    };
+  });
+
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase.rpc('admin_bulk_import_course_content', {
+      p_course_id: courseId,
+      p_package_version: plan.schemaVersion,
+      p_lessons: payloadLessons,
+      p_change_notes: cleanNotes,
+      p_idempotency_key: resolvedIdempotencyKey,
+      p_unchanged_count: plan.counts.unchanged,
+      p_rejected_count: plan.counts.rejected,
+    });
+    if (error) {
+      await recordImportFailureEvent({
+        courseId,
+        status: 'failed',
+        packageVersion: plan.schemaVersion,
+        processedCount: plan.totalProcessed,
+        rejectedCount: plan.counts.rejected,
+        errorSummary: error.message || 'Database rejected bulk import commit.',
+        details: { code: error.code || null },
+      });
+      throw new Error(error.message || 'Bulk import failed in database.');
+    }
+    return /** @type {import('../../types/kord.d.ts').BulkImportCommitResult} */ (data);
+  }
+
+  try {
+    /** @type {import('../../types/kord.d.ts').BulkImportCommitResult | null} */
+    let commitResult = null;
+    const nowIso = new Date().toISOString();
+
+    updateDemoState((draft) => {
+      const admin = requireDemoActiveAdmin(draft);
+      draft.courseVersions = draft.courseVersions || [];
+      draft.contentImports = draft.contentImports || [];
+
+      const existingReplay = draft.contentImports.find(
+        (imp) =>
+          imp.courseId === courseId &&
+          imp.idempotencyKey === resolvedIdempotencyKey &&
+          imp.status === 'committed'
+      );
+      if (existingReplay) {
+        const ver = draft.courseVersions.find((v) => v.id === existingReplay.snapshotVersionId);
+        commitResult = {
+          importId: existingReplay.id,
+          snapshotVersionId: existingReplay.snapshotVersionId,
+          snapshotVersionNumber: ver?.versionNumber || null,
+          processedCount: existingReplay.processedCount,
+          createdCount: existingReplay.createdCount,
+          updatedCount: existingReplay.updatedCount,
+          unchangedCount: existingReplay.unchangedCount,
+          rejectedCount: existingReplay.rejectedCount,
+          idempotentReplay: true,
+        };
+        return draft;
+      }
+
+      const course = (draft.courses || []).find((c) => c.id === courseId);
+      if (!course) {
+        throw new Error('Target course not found.');
+      }
+
+      // Atomic Step 1: Capture pre_import full curriculum snapshot before mutating lessons
+      const preSnapshotData = buildCourseCurriculumSnapshot(course);
+      const nextVersionNum = Number(course.version || 1) + 1;
+      const snapshotVersionId = `cv-${courseId}-v${nextVersionNum}-${Math.random().toString(36).slice(2, 6)}`;
+      const importId = `imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+      course.version = nextVersionNum;
+      course.updatedAt = nowIso;
+
+      draft.courseVersions.unshift({
+        id: snapshotVersionId,
+        courseId,
+        versionNumber: nextVersionNum,
+        changeNotes: cleanNotes
+          ? `Pre-import snapshot: ${cleanNotes}`
+          : 'Pre-import automatic backup',
+        snapshotType: 'pre_import',
+        snapshot: {
+          title: course.title,
+          publicationStatus: course.publicationStatus,
+          difficulty: course.difficulty,
+          phaseCount: (course.phases || []).length,
+          lessonCount: (course.phases || []).reduce((sum, p) => sum + (p.lessons || []).length, 0),
+        },
+        snapshotData: preSnapshotData,
+        sourceImportId: importId,
+        createdAt: nowIso,
+      });
+
+      appendDemoAuditLog(draft, {
+        actorId: admin.id,
+        action: 'course_snapshot_created',
+        targetTable: 'course_versions',
+        targetId: snapshotVersionId,
+        beforeData: null,
+        afterData: {
+          courseId,
+          versionNumber: nextVersionNum,
+          snapshotType: 'pre_import',
+        },
+      });
+
+      // Atomic Step 2: Apply updates in-place (preserving IDs & published status) and create new lessons as draft
+      let createdCount = 0;
+      let updatedCount = 0;
+
+      for (const item of actionableResults) {
+        const les = /** @type {import('../../types/kord.d.ts').Lesson} */ (item.normalizedLesson);
+        const phase = (course.phases || []).find((p) => p.id === item.phaseId);
+        if (!phase) {
+          throw new Error(`Module "${item.phaseId}" not found in course "${course.title}".`);
+        }
+        phase.lessons = phase.lessons || [];
+
+        if (item.classification === 'updated' && item.lessonId) {
+          const existing = phase.lessons.find((l) => l.id === item.lessonId);
+          if (!existing) {
+            throw new Error(`Lesson "${item.lessonId}" not found in module "${phase.title}".`);
+          }
+          const preservedStatus =
+            (existing.publicationStatus || 'published') === 'published' ? 'published' : 'draft';
+          Object.assign(existing, {
+            position: Number(les.position || existing.position || 1),
+            title: les.title,
+            introduction: les.introduction || '',
+            objectives: structuredClone(les.objectives || []),
+            estMinutes: Number(les.estMinutes || 25),
+            blocks: structuredClone(les.blocks || []),
+            videos: structuredClone(les.videos || []),
+            summary: les.summary || '',
+            takeaways: structuredClone(les.takeaways || []),
+            furtherReading: structuredClone(les.furtherReading || []),
+            completionCriteria: les.completionCriteria || '',
+            publicationStatus: preservedStatus,
+            isRequired: les.isRequired !== false,
+          });
+          updatedCount += 1;
+        } else {
+          const newId = `les-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+          phase.lessons.push({
+            id: newId,
+            phaseId: phase.id,
+            position: Number(les.position || phase.lessons.length + 1),
+            title: les.title,
+            introduction: les.introduction || '',
+            objectives: structuredClone(les.objectives || []),
+            estMinutes: Number(les.estMinutes || 25),
+            blocks: structuredClone(les.blocks || []),
+            videos: structuredClone(les.videos || []),
+            summary: les.summary || '',
+            takeaways: structuredClone(les.takeaways || []),
+            furtherReading: structuredClone(les.furtherReading || []),
+            completionCriteria: les.completionCriteria || '',
+            publicationStatus: 'draft',
+            isRequired: les.isRequired !== false,
+          });
+          createdCount += 1;
+        }
+
+        phase.lessons.sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      }
+
+      const processedCount = createdCount + updatedCount + plan.counts.unchanged + plan.counts.rejected;
+      draft.contentImports.unshift({
+        id: importId,
+        courseId,
+        actorId: admin.id,
+        actorEmail: admin.email || null,
+        operationType: 'import',
+        packageVersion: plan.schemaVersion,
+        status: 'committed',
+        processedCount,
+        createdCount,
+        updatedCount,
+        unchangedCount: plan.counts.unchanged,
+        rejectedCount: plan.counts.rejected,
+        snapshotVersionId,
+        idempotencyKey: resolvedIdempotencyKey,
+        changeNotes: cleanNotes,
+        errorSummary: null,
+        details: { touchedLessons: actionableResults.length },
+        createdAt: nowIso,
+      });
+
+      appendDemoAuditLog(draft, {
+        actorId: admin.id,
+        action: 'bulk_content_import_committed',
+        targetTable: 'courses',
+        targetId: courseId,
+        beforeData: null,
+        afterData: {
+          importId,
+          snapshotVersionId,
+          createdCount,
+          updatedCount,
+          unchangedCount: plan.counts.unchanged,
+          changeNotes: cleanNotes,
+        },
+      });
+
+      commitResult = {
+        importId,
+        snapshotVersionId,
+        snapshotVersionNumber: nextVersionNum,
+        processedCount,
+        createdCount,
+        updatedCount,
+        unchangedCount: plan.counts.unchanged,
+        rejectedCount: plan.counts.rejected,
+        idempotentReplay: false,
+      };
+      return draft;
+    });
+
+    if (!commitResult) {
+      throw new Error('Bulk import failed unexpectedly.');
+    }
+    return commitResult;
+  } catch (err) {
+    await recordImportFailureEvent({
+      courseId,
+      status: 'failed',
+      packageVersion: plan.schemaVersion,
+      processedCount: plan.totalProcessed,
+      rejectedCount: plan.counts.rejected,
+      errorSummary: err instanceof Error ? err.message : 'Bulk import transaction aborted.',
+    });
+    throw err;
+  }
+}
+
+/**
+ * Lists recent content import and snapshot recovery audit records.
+ *
+ * @param {{ courseId?: string | null; limit?: number }} [opts]
+ * @returns {Promise<import('../../types/kord.d.ts').ContentImportRecord[]>}
+ */
+export async function adminListCourseImportHistory({ courseId = null, limit = 30 } = {}) {
+  if (!isDemoMode && supabase) {
+    let query = supabase
+      .from('content_imports')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (courseId) {
+      query = query.eq('course_id', courseId);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data || []).map(mapContentImportRecord);
+  }
+
+  const state = getDemoState();
+  requireDemoActiveAdmin(state);
+  return (state.contentImports || [])
+    .filter((rec) => !courseId || rec.courseId === courseId)
+    .slice(0, limit);
+}
+
+/**
+ * Restores a course's phases and lessons from a saved curriculum snapshot,
+ * automatically saving a pre_restore safety backup first while preserving all
+ * learner progress, enrollments, completions, and quiz attempts.
+ *
+ * @param {{ courseId: string; versionId: string; restoreNotes?: string }} params
+ * @returns {Promise<import('../../types/kord.d.ts').RestoreSnapshotResult>}
+ */
+export async function adminRestoreCourseSnapshot({ courseId, versionId, restoreNotes = '' }) {
+  const cleanNotes = String(restoreNotes || '').trim();
+  if (cleanNotes.length > 2000) {
+    throw new Error('Restore notes cannot exceed 2,000 characters.');
+  }
+
+  if (!isDemoMode && supabase) {
+    const { data, error } = await supabase.rpc('admin_restore_course_snapshot', {
+      p_course_id: courseId,
+      p_version_id: versionId,
+      p_restore_notes: cleanNotes,
+    });
+    if (error) throw new Error(error.message || 'Unable to restore course snapshot.');
+    return /** @type {import('../../types/kord.d.ts').RestoreSnapshotResult} */ (data);
+  }
+
+  /** @type {import('../../types/kord.d.ts').RestoreSnapshotResult | null} */
+  let result = null;
+  const nowIso = new Date().toISOString();
+
+  updateDemoState((draft) => {
+    const admin = requireDemoActiveAdmin(draft);
+    draft.courseVersions = draft.courseVersions || [];
+    draft.contentImports = draft.contentImports || [];
+
+    const course = (draft.courses || []).find((c) => c.id === courseId);
+    if (!course) throw new Error('Course not found.');
+
+    const targetVersion = draft.courseVersions.find(
+      (v) => v.id === versionId && v.courseId === courseId
+    );
+    if (!targetVersion) throw new Error('Course version snapshot not found.');
+
+    const snap = targetVersion.snapshotData;
+    if (!snap || typeof snap !== 'object' || !Array.isArray(snap.phases)) {
+      throw new Error('Selected course version does not contain a restorable full curriculum snapshot.');
+    }
+
+    // Step 1: Capture pre_restore safety snapshot BEFORE reverting
+    const safetySnapshot = buildCourseCurriculumSnapshot(course);
+    const safetyVersionNumber = Number(course.version || 1) + 1;
+    const safetyVersionId = `cv-${courseId}-v${safetyVersionNumber}-${Math.random().toString(36).slice(2, 6)}`;
+    const restoreImportId = `imp-restore-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    course.version = safetyVersionNumber;
+    course.updatedAt = nowIso;
+
+    draft.courseVersions.unshift({
+      id: safetyVersionId,
+      courseId,
+      versionNumber: safetyVersionNumber,
+      changeNotes: `Pre-restore automatic backup before reverting to v${targetVersion.versionNumber}`,
+      snapshotType: 'pre_restore',
+      snapshot: {
+        title: course.title,
+        publicationStatus: course.publicationStatus,
+        difficulty: course.difficulty,
+        phaseCount: (course.phases || []).length,
+        lessonCount: (course.phases || []).reduce((sum, p) => sum + (p.lessons || []).length, 0),
+      },
+      snapshotData: safetySnapshot,
+      sourceImportId: restoreImportId,
+      createdAt: nowIso,
+    });
+
+    appendDemoAuditLog(draft, {
+      actorId: admin.id,
+      action: 'course_snapshot_created',
+      targetTable: 'course_versions',
+      targetId: safetyVersionId,
+      beforeData: null,
+      afterData: {
+        courseId,
+        versionNumber: safetyVersionNumber,
+        snapshotType: 'pre_restore',
+      },
+    });
+
+    // Step 2: Restore phases and lessons from snapshot while retaining existing phase activities
+    const currentPhases = course.phases || [];
+    const existingActivitiesByPhaseId = new Map(
+      currentPhases.map((p) => [p.id, structuredClone(p.activities || [])])
+    );
+    /** @type {Set<string>} */
+    const restoredLessonIds = new Set();
+    let restoredLessonsCount = 0;
+
+    /** @type {import('../../types/kord.d.ts').Phase[]} */
+    const restoredPhases = snap.phases.map((sp) => {
+      /** @type {import('../../types/kord.d.ts').Lesson[]} */
+      const lessons = (sp.lessons || []).map((sl, lIdx) => {
+        const lid = String(sl.id || `les-restored-${lIdx + 1}`);
+        restoredLessonIds.add(lid);
+        restoredLessonsCount += 1;
+        return {
+          id: lid,
+          phaseId: sp.id,
+          position: Number(sl.position || lIdx + 1),
+          title: sl.title,
+          introduction: sl.introduction || '',
+          objectives: structuredClone(sl.objectives || []),
+          estMinutes: Number(sl.estMinutes || 25),
+          blocks: structuredClone(sl.blocks || []),
+          videos: structuredClone(sl.videos || []),
+          summary: sl.summary || '',
+          takeaways: structuredClone(sl.takeaways || []),
+          furtherReading: structuredClone(sl.furtherReading || []),
+          completionCriteria: sl.completionCriteria || '',
+          publicationStatus: sl.publicationStatus || 'draft',
+          isRequired: sl.isRequired !== false,
+        };
+      });
+
+      lessons.sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      return {
+        id: sp.id,
+        position: Number(sp.position || 1),
+        title: sp.title,
+        summary: sp.summary || '',
+        objectives: structuredClone(sp.objectives || []),
+        difficulty: sp.difficulty || 'Beginner',
+        estHours: Number(sp.estHours || 2),
+        publicationStatus: sp.publicationStatus || 'published',
+        activities: existingActivitiesByPhaseId.get(sp.id) || [],
+        lessons,
+      };
+    });
+
+    // Step 3: Preserve any post-snapshot lessons referenced by learner progress/quizzes/activities as archived
+    let archivedExtraLessonsCount = 0;
+    let deletedExtraLessonsCount = 0;
+
+    for (const origPhase of currentPhases) {
+      const targetPhase = restoredPhases.find((rp) => rp.id === origPhase.id) || null;
+      for (const extra of origPhase.lessons || []) {
+        if (restoredLessonIds.has(extra.id)) continue;
+        const hasProgress = (draft.lessonProgress || []).some((lp) => lp.lessonId === extra.id);
+        const hasQuiz = (draft.quizzes || []).some((q) => q.lessonId === extra.id);
+        const hasActivity = (origPhase.activities || []).some((a) => a.lessonId === extra.id);
+
+        if (hasProgress || hasQuiz || hasActivity) {
+          const archivedCopy = {
+            ...structuredClone(extra),
+            publicationStatus: 'archived',
+          };
+          if (targetPhase) {
+            const targetLessons = targetPhase.lessons || (targetPhase.lessons = []);
+            const maxPos = targetLessons.reduce((m, l) => Math.max(m, Number(l.position || 0)), 0);
+            archivedCopy.position = maxPos + 1;
+            targetLessons.push(archivedCopy);
+          } else {
+            restoredPhases.push({
+              ...structuredClone(origPhase),
+              publicationStatus: 'archived',
+              lessons: [{ ...archivedCopy, position: 1 }],
+            });
+          }
+          archivedExtraLessonsCount += 1;
+        } else {
+          deletedExtraLessonsCount += 1;
+        }
+      }
+    }
+
+    course.phases = restoredPhases.sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+
+    // Step 4: Restore course metadata safely
+    if (snap.course) {
+      if (snap.course.title) course.title = snap.course.title;
+      if (snap.course.description !== undefined) course.description = snap.course.description;
+      if (snap.course.targetAudience !== undefined) course.targetAudience = snap.course.targetAudience;
+      if (Array.isArray(snap.course.outcomes)) course.outcomes = structuredClone(snap.course.outcomes);
+      if (snap.course.difficulty) course.difficulty = snap.course.difficulty;
+      if (snap.course.estimatedDurationWeeks !== undefined) {
+        course.estimatedDurationWeeks = Number(snap.course.estimatedDurationWeeks);
+      }
+      if (snap.course.recommendedWeeklyHours !== undefined) {
+        course.recommendedWeeklyHours = Number(snap.course.recommendedWeeklyHours);
+      }
+      if (snap.course.recommendedSchedule !== undefined) {
+        course.recommendedSchedule = snap.course.recommendedSchedule;
+      }
+      if (Array.isArray(snap.course.prerequisites)) {
+        course.prerequisites = structuredClone(snap.course.prerequisites);
+      }
+      if (snap.course.thumbnailUrl !== undefined) course.thumbnailUrl = snap.course.thumbnailUrl;
+      if (snap.course.authorName !== undefined) course.authorName = snap.course.authorName;
+      if (snap.course.completionRules) {
+        course.completionRules = structuredClone(snap.course.completionRules);
+      }
+      if (snap.course.publicationStatus) course.publicationStatus = snap.course.publicationStatus;
+    }
+
+    draft.contentImports.unshift({
+      id: restoreImportId,
+      courseId,
+      actorId: admin.id,
+      actorEmail: admin.email || null,
+      operationType: 'restore',
+      packageVersion: CONTENT_PACKAGE_SCHEMA_VERSION,
+      status: 'restored',
+      processedCount: restoredLessonsCount,
+      createdCount: 0,
+      updatedCount: restoredLessonsCount,
+      unchangedCount: 0,
+      rejectedCount: 0,
+      snapshotVersionId: safetyVersionId,
+      idempotencyKey: null,
+      changeNotes: cleanNotes || `Restored snapshot v${targetVersion.versionNumber}`,
+      errorSummary: null,
+      details: {
+        restoredFromVersionId: versionId,
+        restoredFromVersionNumber: targetVersion.versionNumber,
+        archivedExtraLessonsCount,
+        deletedExtraLessonsCount,
+      },
+      createdAt: nowIso,
+    });
+
+    appendDemoAuditLog(draft, {
+      actorId: admin.id,
+      action: 'course_snapshot_restored',
+      targetTable: 'courses',
+      targetId: courseId,
+      beforeData: null,
+      afterData: {
+        restoreImportId,
+        restoredFromVersionId: versionId,
+        restoredFromVersionNumber: targetVersion.versionNumber,
+        safetySnapshotVersionId: safetyVersionId,
+        restoredLessonsCount,
+        archivedExtraLessonsCount,
+        deletedExtraLessonsCount,
+      },
+    });
+
+    result = {
+      restoreImportId,
+      restoredFromVersionId: versionId,
+      restoredVersionNumber: targetVersion.versionNumber,
+      safetySnapshotVersionId: safetyVersionId,
+      safetySnapshotVersionNumber: safetyVersionNumber,
+      restoredLessonsCount,
+      archivedExtraLessonsCount,
+      deletedExtraLessonsCount,
+    };
+    return draft;
+  });
+
+  if (!result) {
+    throw new Error('Unable to restore course snapshot.');
+  }
+  return result;
 }
 
 /**

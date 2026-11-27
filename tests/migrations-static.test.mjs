@@ -23,7 +23,7 @@ function collectFiles(dir, extFilter) {
   return out;
 }
 
-test('Ordered Supabase migrations 000001-000013 exist and stay non-destructive', () => {
+test('Ordered Supabase migrations 000001-000014 exist and stay non-destructive', () => {
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
   assert.deepEqual(files, [
     '20261121000001_extensions_and_schema.sql',
@@ -39,6 +39,7 @@ test('Ordered Supabase migrations 000001-000013 exist and stay non-destructive',
     '20261123000011_remediation_hardening.sql',
     '20261123000012_complete_99_skill_pathways.sql',
     '20261125000013_privilege_and_rls_trigger_hardening.sql',
+    '20261127000014_content_import_export_recovery.sql',
   ]);
 
   for (const file of files) {
@@ -176,8 +177,13 @@ test('Standalone SQL files and Supabase CLI configuration stay synchronized with
   const s6 = fs.readFileSync(path.join(SUPABASE_DIR, '06_dashboard.sql'), 'utf8');
 
   assert.doesNotMatch(s2, /grant\s+insert\s*,\s*update\s*,\s*delete\s+on\s+public\.questions\s+to\s+authenticated/i);
+  assert.match(s2, /content_imports_select_admin_only/);
+  assert.match(s2, /revoke all on public\.content_imports from public, anon, authenticated/);
   assert.match(s3, /recompute_user_skill_level/);
   assert.match(s3, /admin_delete_question/);
+  assert.match(s3, /admin_bulk_import_course_content/);
+  assert.match(s3, /admin_restore_course_snapshot/);
+  assert.match(s3, /admin_log_content_import_event/);
   assert.match(s4, /left\(name,\s*1\)\s*<>\s*'\/'/i);
   assert.match(s6, /enrolledCourses/);
   assert.match(s6, /weeklyMinutes/);

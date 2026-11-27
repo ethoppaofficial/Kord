@@ -369,12 +369,198 @@ export interface CourseVersion {
   id: string;
   courseId: string;
   versionNumber: number;
+  snapshotType?: 'manual' | 'pre_import' | 'pre_restore' | string;
   snapshot?: Record<string, unknown>;
+  snapshotData?: CourseCurriculumSnapshot | null;
+  sourceImportId?: string | null;
   publishedAt?: string;
   publishedBy?: string | null;
   notes?: string;
   changeNotes?: string;
   createdAt?: string;
+}
+
+export interface CourseCurriculumSnapshot {
+  schemaVersion: string;
+  capturedAt: string;
+  course: {
+    id: string;
+    slug: string;
+    title: string;
+    description: string;
+    targetAudience?: string;
+    outcomes?: string[];
+    difficulty?: string;
+    estimatedDurationWeeks?: number;
+    recommendedWeeklyHours?: number;
+    recommendedSchedule?: string;
+    prerequisites?: string[];
+    thumbnailUrl?: string;
+    authorName?: string;
+    completionRules?: CompletionRules;
+    publicationStatus: PublicationStatus | string;
+    version?: number;
+  };
+  phases: Array<{
+    id: string;
+    position: number;
+    title: string;
+    summary?: string;
+    objectives?: string[];
+    difficulty?: string;
+    estHours?: number;
+    publicationStatus: PublicationStatus | string;
+    lessons: Lesson[];
+  }>;
+}
+
+export interface ContentPackageLessonInput {
+  id?: string | null;
+  isNew?: boolean;
+  action?: 'create' | 'update' | string;
+  phaseId?: string;
+  position?: number;
+  title: string;
+  introduction?: string;
+  objectives?: string[];
+  estMinutes?: number;
+  blocks?: LessonBlock[];
+  videos?: VideoEntry[];
+  summary?: string;
+  takeaways?: string[];
+  furtherReading?: FurtherReadingItem[];
+  isRequired?: boolean;
+  completionCriteria?: string;
+  publicationStatus?: PublicationStatus | string;
+}
+
+export interface ContentPackagePhaseInput {
+  id?: string;
+  position?: number;
+  title?: string;
+  lessons: ContentPackageLessonInput[];
+}
+
+export interface ContentPackage {
+  schemaVersion: string;
+  packageType: string;
+  exportedAt?: string;
+  course: {
+    id?: string;
+    slug?: string;
+    title?: string;
+    difficulty?: string;
+    version?: number;
+  };
+  phases: ContentPackagePhaseInput[];
+  lessons?: ContentPackageLessonInput[];
+}
+
+export interface DryRunValidationIssue {
+  field: string;
+  message: string;
+}
+
+export interface DryRunLessonDiff {
+  field: string;
+  before: unknown;
+  after: unknown;
+}
+
+export interface DryRunLessonResult {
+  index: number;
+  classification: 'new' | 'updated' | 'unchanged' | 'rejected';
+  lessonId: string | null;
+  phaseId: string | null;
+  phaseTitle: string;
+  title: string;
+  position: number | null;
+  existingStatus: PublicationStatus | string | null;
+  effectiveStatus: PublicationStatus | string;
+  normalizedLesson: Lesson | null;
+  errors: DryRunValidationIssue[];
+  warnings: string[];
+  changes: DryRunLessonDiff[];
+  beforeLesson: Lesson | null;
+}
+
+export interface DryRunImportPlan {
+  valid: boolean;
+  canCommit: boolean;
+  schemaVersion: string;
+  packageType: string;
+  courseId: string;
+  courseSlug: string;
+  courseTitle: string;
+  totalProcessed: number;
+  counts: {
+    new: number;
+    updated: number;
+    unchanged: number;
+    rejected: number;
+  };
+  packageErrors: DryRunValidationIssue[];
+  lessons: DryRunLessonResult[];
+  warnings: string[];
+}
+
+export interface ImportErrorReport {
+  generatedAt: string;
+  schemaVersion: string;
+  courseId: string;
+  courseTitle: string;
+  packageErrors: DryRunValidationIssue[];
+  rejectedLessons: Array<{
+    index: number;
+    lessonId: string | null;
+    phaseId: string | null;
+    title: string;
+    errors: DryRunValidationIssue[];
+  }>;
+}
+
+export interface ContentImportRecord {
+  id: string;
+  courseId: string;
+  actorId: string | null;
+  actorEmail?: string | null;
+  operationType: 'import' | 'restore' | string;
+  packageVersion: string;
+  status: 'committed' | 'rejected' | 'failed' | 'restored' | string;
+  processedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  rejectedCount: number;
+  snapshotVersionId: string | null;
+  idempotencyKey?: string | null;
+  changeNotes: string;
+  errorSummary?: string | null;
+  details?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface BulkImportCommitResult {
+  importId: string;
+  snapshotVersionId: string | null;
+  snapshotVersionNumber: number | null;
+  processedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  rejectedCount: number;
+  idempotentReplay: boolean;
+}
+
+export interface RestoreSnapshotResult {
+  restoreImportId: string;
+  restoredFromVersionId: string;
+  restoredVersionNumber: number;
+  safetySnapshotVersionId: string | null;
+  safetySnapshotVersionNumber: number | null;
+  restoredLessonsCount: number;
+  archivedExtraLessonsCount: number;
+  deletedExtraLessonsCount: number;
 }
 
 export interface QuizQuestion {
@@ -699,6 +885,7 @@ export interface DemoState {
   submissions: Submission[];
   courseCompletions: Record<string, unknown>[];
   adminAuditLogs: AdminAuditLogEntry[];
+  contentImports?: ContentImportRecord[];
   enrollments?: CourseEnrollment[];
   syntheticHistory?: Record<string, unknown>[];
   sampleHistoryInjected?: boolean;

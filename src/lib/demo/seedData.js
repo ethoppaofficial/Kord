@@ -301,6 +301,7 @@ export function createInitialSeed() {
     submissions: [],
     courseCompletions: [],
     adminAuditLogs: [],
+    contentImports: [],
     // Keep legacy empty arrays so older references degrade safely if touched
     enrollments: [],
     activityProgress: [],

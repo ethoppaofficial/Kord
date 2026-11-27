@@ -93,11 +93,18 @@ create table if not exists public.course_versions (
   course_id uuid not null references public.courses(id) on delete cascade,
   version_number integer not null,
   change_notes text not null default '',
+  snapshot_type text not null default 'manual' check (snapshot_type in ('manual', 'pre_import', 'pre_restore')),
   snapshot jsonb not null default '{}'::jsonb,
+  snapshot_data jsonb not null default '{}'::jsonb,
+  source_import_id uuid,
   created_by uuid references public.profiles(id) on delete set null,
   created_at timestamptz not null default now(),
   unique (course_id, version_number)
 );
+alter table public.course_versions
+  add column if not exists snapshot_type text not null default 'manual' check (snapshot_type in ('manual', 'pre_import', 'pre_restore')),
+  add column if not exists snapshot_data jsonb not null default '{}'::jsonb,
+  add column if not exists source_import_id uuid;
 
 create table if not exists public.phases (
   id uuid primary key default gen_random_uuid(),
@@ -419,6 +426,38 @@ create table if not exists public.admin_audit_logs (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.content_imports (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.courses(id) on delete cascade,
+  actor_id uuid references public.profiles(id) on delete set null,
+  actor_email text,
+  operation_type text not null default 'import' check (operation_type in ('import', 'restore')),
+  package_version text not null default '1.0',
+  status text not null check (status in ('committed', 'rejected', 'failed', 'restored')),
+  processed_count integer not null default 0 check (processed_count >= 0),
+  created_count integer not null default 0 check (created_count >= 0),
+  updated_count integer not null default 0 check (updated_count >= 0),
+  unchanged_count integer not null default 0 check (unchanged_count >= 0),
+  rejected_count integer not null default 0 check (rejected_count >= 0),
+  snapshot_version_id uuid references public.course_versions(id) on delete set null,
+  idempotency_key text,
+  change_notes text not null default '',
+  error_summary text,
+  details jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'course_versions_source_import_fk'
+  ) then
+    alter table public.course_versions
+      add constraint course_versions_source_import_fk
+      foreign key (source_import_id) references public.content_imports(id) on delete set null;
+  end if;
+end $$;
+
 -- 20261121000002_constraints_and_indexes.sql
 -- Hardened check constraints and query performance indexes (idempotent, non-destructive).
 
@@ -520,3 +559,14 @@ create index if not exists idx_quiz_sessions_attempt on public.quiz_sessions(com
 create index if not exists idx_admin_audit_logs_created on public.admin_audit_logs(created_at desc);
 create index if not exists idx_admin_audit_logs_actor on public.admin_audit_logs(actor_id, created_at desc);
 create index if not exists idx_admin_audit_logs_target on public.admin_audit_logs(target_table, target_id, created_at desc);
+create unique index if not exists idx_content_imports_course_idem
+  on public.content_imports(course_id, idempotency_key)
+  where idempotency_key is not null;
+create index if not exists idx_content_imports_course_created
+  on public.content_imports(course_id, created_at desc);
+create index if not exists idx_content_imports_actor
+  on public.content_imports(actor_id, created_at desc);
+create index if not exists idx_content_imports_snapshot_version
+  on public.content_imports(snapshot_version_id);
+create index if not exists idx_course_versions_source_import
+  on public.course_versions(source_import_id);

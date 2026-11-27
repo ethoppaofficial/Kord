@@ -202,6 +202,7 @@ function migrateDemoState(parsed) {
     submissions: Array.isArray(cleanParsed.submissions) ? cleanParsed.submissions : [],
     courseCompletions: Array.isArray(cleanParsed.courseCompletions) ? cleanParsed.courseCompletions : [],
     adminAuditLogs: Array.isArray(cleanParsed.adminAuditLogs) ? cleanParsed.adminAuditLogs : [],
+    contentImports: Array.isArray(cleanParsed.contentImports) ? cleanParsed.contentImports : [],
   };
   return stripSessionFields(merged);
 }
@@ -254,6 +255,7 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
     parsed.courseCompletions = parsed.courseCompletions || [];
     parsed.quizSessions = parsed.quizSessions || [];
     parsed.adminAuditLogs = parsed.adminAuditLogs || [];
+    parsed.contentImports = parsed.contentImports || [];
     parsed.users = (parsed.users || []).map((/** @type {import('../../types/kord.d.ts').KordUser} */ u) => ({
       ...u,
       accountStatus: u.accountStatus || 'active',

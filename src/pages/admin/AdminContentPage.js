@@ -14,18 +14,28 @@ import {
   adminUpsertLesson,
   adminDeleteLesson,
   validateCourseForPublish,
+  adminExportCourseContent,
+  adminPreviewCourseContentImport,
+  adminCommitCourseContentImport,
+  adminListCourseImportHistory,
+  adminRestoreCourseSnapshot,
 } from '../../lib/repositories/contentRepository.js';
 import { DIFFICULTY_LEVELS } from '../../lib/constants.js';
 import { BLOCK_TYPE_CATALOG, createEmptyBlock, renderLessonBlocks } from '../../lib/lessonBlocks.js';
+import {
+  CONTENT_PACKAGE_SCHEMA_VERSION,
+  CONTENT_PACKAGE_TYPE,
+  buildImportErrorReport,
+} from '../../lib/contentPackage.js';
 import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
 import { renderVideoPlayerHtml, normalizeVideoEntry } from '../../lib/videoProvider.js';
-import { escapeHtml } from '../../lib/formatters.js';
+import { escapeHtml, formatDate } from '../../lib/formatters.js';
 import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { renderStatusBadge } from '../../components/Common.js';
 import { showToast } from '../../components/Toast.js';
 
-let activeTab = 'courses'; // 'catalog' | 'courses' | 'lessons'
+let activeTab = 'courses'; // 'catalog' | 'courses' | 'lessons' | 'import_export'
 /** @type {string | null} */
 let selectedSkillId = null;
 /** @type {string | null} */
@@ -65,6 +75,44 @@ let draftVideos = [];
 /** @type {import('../../types/kord.d.ts').FurtherReadingItem[]} */
 let draftResources = [];
 
+// Stateful Bulk Content Import / Export / Recovery state
+let importJsonText = '';
+let lastPreviewedJsonText = '';
+let importFileName = '';
+let importChangeNotes = '';
+/** @type {import('../../types/kord.d.ts').DryRunImportPlan | null} */
+let dryRunPlan = null;
+/** @type {import('../../types/kord.d.ts').DryRunValidationIssue[]} */
+let dryRunParseErrors = [];
+let confirmBulkImport = false;
+let importInFlight = false;
+/** @type {string | null} */
+let restoreInFlightId = null;
+/** @type {string | null} */
+let confirmRestoreVersionId = null;
+let restoreNotes = '';
+let exportPreviewOpen = false;
+let exportPreviewJson = '';
+/** @type {import('../../types/kord.d.ts').BulkImportCommitResult | null} */
+let lastCommitResult = null;
+
+function resetImportExportState() {
+  importJsonText = '';
+  lastPreviewedJsonText = '';
+  importFileName = '';
+  importChangeNotes = '';
+  dryRunPlan = null;
+  dryRunParseErrors = [];
+  confirmBulkImport = false;
+  importInFlight = false;
+  restoreInFlightId = null;
+  confirmRestoreVersionId = null;
+  restoreNotes = '';
+  exportPreviewOpen = false;
+  exportPreviewJson = '';
+  lastCommitResult = null;
+}
+
 function resetLessonBuilder() {
   editingLessonId = null;
   lessonDraft = {
@@ -98,7 +146,118 @@ registerSessionCleanup(() => {
   catalogCourseStatusFilter = 'all';
   editingSkillId = null;
   resetLessonBuilder();
+  resetImportExportState();
 });
+
+/**
+ * Triggers an in-browser JSON file download without window.open or popups.
+ *
+ * @param {string} filename
+ * @param {string} jsonString
+ */
+function downloadJsonFile(filename, jsonString) {
+  const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * Formats a diff field value into a readable, bounded summary string.
+ *
+ * @param {unknown} val
+ * @returns {string}
+ */
+function formatDiffValue(val) {
+  if (val === null || val === undefined || val === '') return '(empty)';
+  if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
+    const str = String(val);
+    return str.length > 220 ? `${str.slice(0, 220)}…` : str;
+  }
+  if (Array.isArray(val)) {
+    if (val.length === 0) return '[]';
+    const json = JSON.stringify(val);
+    return json.length > 260 ? `${val.length} items — ${json.slice(0, 220)}…` : json;
+  }
+  const json = JSON.stringify(val);
+  return json.length > 260 ? `${json.slice(0, 240)}…` : json;
+}
+
+/**
+ * Builds a minimal valid v1.0 JSON import starter template for the active course.
+ *
+ * @param {import('../../types/kord.d.ts').Course} course
+ * @returns {string}
+ */
+function buildStarterPackageTemplate(course) {
+  const firstPhase = (course.phases || [])[0];
+  return JSON.stringify(
+    {
+      schemaVersion: CONTENT_PACKAGE_SCHEMA_VERSION,
+      packageType: CONTENT_PACKAGE_TYPE,
+      course: {
+        id: course.id,
+        slug: course.slug,
+        title: course.title,
+      },
+      phases: [
+        {
+          id: firstPhase?.id || 'replace-with-existing-phase-id',
+          lessons: [
+            {
+              isNew: true,
+              title: 'New Structured Practical Lesson',
+              introduction: 'Introduce the practical scope, tools, and mental model learners will apply in this lesson.',
+              objectives: ['Apply core concept accurately', 'Complete self-check verification'],
+              estMinutes: 25,
+              isRequired: true,
+              blocks: [
+                { type: 'heading', text: 'Core Framework' },
+                {
+                  type: 'paragraph',
+                  text: 'Provide clear, step-by-step instructional explanations free of raw HTML tags.',
+                },
+                {
+                  type: 'steps',
+                  title: 'Execution Checklist',
+                  items: ['Audit existing assumptions', 'Document measurable outcome'],
+                },
+                {
+                  type: 'knowledge_check',
+                  prompt: 'Which practice keeps imported course content reliable?',
+                  options: [
+                    'Validate structured JSON blocks and preview diffs before commit',
+                    'Bypass validation checks and auto-publish untested drafts',
+                  ],
+                  correctIndex: 0,
+                  explanation: 'Dry-run validation and draft staging protect learner progress.',
+                },
+              ],
+              summary: 'Recap how structured workflows preserve curriculum quality.',
+              takeaways: ['Every imported lesson defaults safely to Draft status.'],
+              furtherReading: [
+                {
+                  title: 'MDN Web Docs Reference',
+                  source: 'MDN',
+                  url: 'https://developer.mozilla.org/en-US/',
+                  resourceType: 'Documentation',
+                },
+              ],
+              completionCriteria: 'Review every block, verify the inline check, and mark complete.',
+            },
+          ],
+        },
+      ],
+    },
+    null,
+    2
+  );
+}
 
 /** @param {import('../../types/kord.d.ts').Lesson | null} lesson */
 function loadLessonIntoBuilder(lesson) {
@@ -280,16 +439,32 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
   });
   const editingSkill = editingSkillId ? skills.find((s) => s.id === editingSkillId) || null : null;
 
+  /** @type {import('../../types/kord.d.ts').ContentImportRecord[]} */
+  let importHistory = [];
+  if (activeTab === 'import_export' && activeCourse) {
+    try {
+      importHistory = await adminListCourseImportHistory({ courseId: activeCourse.id, limit: 25 });
+    } catch {
+      importHistory = [];
+    }
+  }
+  const recoverableVersions = (activeCourse?.versions || []).filter(
+    (v) => v.snapshotData && Array.isArray(v.snapshotData.phases)
+  );
+  const dryRunMatchesCurrentText = Boolean(dryRunPlan) && importJsonText === lastPreviewedJsonText;
+  const totalCourseLessons = phases.reduce((sum, p) => sum + (p.lessons || []).length, 0);
+
   const innerHtml = `
     <div class="page-header">
       <div>
         <h1 class="page-title">Course Engine &amp; Curriculum Authoring</h1>
-        <p class="page-subtitle">Manage ${courses.length} courses, ${skills.length} competencies, module ordering, practical activities, JSON block lessons, and course versioning.</p>
+        <p class="page-subtitle">Manage ${courses.length} courses, ${skills.length} competencies, module ordering, practical activities, JSON block lessons, bulk JSON import/export, and snapshot recovery.</p>
       </div>
 
       <div class="segmented" role="tablist">
         <button type="button" class="segmented-btn ${activeTab === 'courses' ? 'is-active' : ''}" data-admin-tab="courses">Courses &amp; Modules</button>
         <button type="button" class="segmented-btn ${activeTab === 'lessons' ? 'is-active' : ''}" data-admin-tab="lessons">Visual Lesson Builder</button>
+        <button type="button" class="segmented-btn ${activeTab === 'import_export' ? 'is-active' : ''}" data-admin-tab="import_export">Import / Export</button>
         <button type="button" class="segmented-btn ${activeTab === 'catalog' ? 'is-active' : ''}" data-admin-tab="catalog">Categories &amp; Skills (${skills.length})</button>
       </div>
     </div>
@@ -892,7 +1067,376 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         </aside>
       </div>
     `
-          : `
+          : activeTab === 'import_export'
+            ? `
+      <div class="card" style="margin-bottom:20px;">
+        <div class="lab-grid-2" style="align-items:end;">
+          <div class="field">
+            <label class="field-label" for="import-course-select">Target Course for Export, Bulk Import &amp; Recovery</label>
+            <select class="select" id="import-course-select">
+              ${courses
+                .map(
+                  (c) =>
+                    `<option value="${escapeHtml(c.id)}" ${c.id === selectedCourseId ? 'selected' : ''}>${escapeHtml(c.title)} (${escapeHtml(c.slug)} · v${Number(c.version || 1)} · ${escapeHtml(c.publicationStatus || 'draft')})</option>`
+                )
+                .join('')}
+            </select>
+          </div>
+          ${
+            activeCourse
+              ? `<div class="card-workspace" style="padding:10px 12px;">
+                  <div class="meta-line" style="margin-bottom:4px;">
+                    <span>Course ID: <code class="mono-num">${escapeHtml(activeCourse.id)}</code></span>
+                    <span class="meta-sep">·</span>
+                    <span>Version <strong class="mono-num">v${Number(activeCourse.version || 1)}</strong></span>
+                  </div>
+                  <div style="font-size:12.5px; color:var(--color-text-secondary);">
+                    ${phases.length} modules · ${totalCourseLessons} lessons · ${recoverableVersions.length} restorable snapshots
+                  </div>
+                </div>`
+              : ''
+          }
+        </div>
+      </div>
+
+      ${
+        activeCourse
+          ? `
+        <div class="card" style="margin-bottom:20px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+            <div>
+              <h2 class="section-heading" style="margin:0 0 4px;">Export Course Curriculum (Schema v${CONTENT_PACKAGE_SCHEMA_VERSION})</h2>
+              <p style="font-size:13px; color:var(--color-text-secondary); margin:0;">
+                Downloads all ${phases.length} modules, ${totalCourseLessons} lessons, structured blocks, video metadata, and further-reading resources cleanly without learner PII or quiz answers.
+              </p>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-primary btn-sm" id="export-course-json-btn">Export JSON Package</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="load-export-into-import-btn">Load Export into Inspector</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="toggle-export-preview-btn">${exportPreviewOpen ? 'Hide JSON Preview' : 'Preview Export JSON'}</button>
+            </div>
+          </div>
+          ${
+            exportPreviewOpen && exportPreviewJson
+              ? `<pre style="margin-top:14px; padding:12px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-family:var(--font-mono); font-size:12px; max-height:280px; overflow:auto; white-space:pre-wrap; word-break:break-word;">${escapeHtml(exportPreviewJson)}</pre>`
+              : ''
+          }
+        </div>
+
+        <div class="card" style="margin-bottom:20px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+            <div>
+              <h2 class="section-heading" style="margin:0 0 4px;">Bulk JSON Lesson Import &amp; Dry-Run Validation</h2>
+              <p style="font-size:13px; color:var(--color-text-secondary); margin:0;">
+                Step 1 validates every block, URL, and module reference without modifying database records. Step 2 commits atomically after creating an automatic <code class="mono-num">pre_import</code> backup snapshot. New lessons always stage as <strong>Draft</strong>.
+              </p>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-secondary btn-sm" id="load-import-template-btn">Load Starter Template</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="clear-import-btn" ${!importJsonText && !dryRunPlan && dryRunParseErrors.length === 0 ? 'disabled' : ''}>Clear</button>
+            </div>
+          </div>
+
+          <div class="form-stack">
+            <div class="lab-grid-2" style="align-items:end;">
+              <div class="field">
+                <label class="field-label" for="import-json-file">Upload JSON Content Package (.json, max 5 MB)</label>
+                <input class="input" type="file" id="import-json-file" accept=".json,application/json" />
+              </div>
+              <div style="font-size:12.5px; color:var(--color-text-muted); padding-bottom:6px;">
+                ${importFileName ? `Loaded file: <strong style="color:var(--color-navy);">${escapeHtml(importFileName)}</strong>` : 'Or paste JSON directly into the inspector below.'}
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="import-json-textarea">Package JSON Payload</label>
+              <textarea class="textarea" id="import-json-textarea" style="min-height:210px; font-family:var(--font-mono); font-size:12px;" placeholder='Paste a "${CONTENT_PACKAGE_TYPE}" schema v${CONTENT_PACKAGE_SCHEMA_VERSION} JSON package here…'>${escapeHtml(importJsonText)}</textarea>
+            </div>
+
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <button type="button" class="btn btn-secondary" id="run-dry-run-btn" ${importInFlight ? 'disabled' : ''}>
+                1. Validate &amp; Preview Import (Dry Run)
+              </button>
+              ${
+                dryRunPlan && !dryRunMatchesCurrentText
+                  ? `<span style="font-size:12.5px; color:var(--color-amber, #b45309);">JSON edited after preview — re-run Dry Run before committing.</span>`
+                  : ''
+              }
+            </div>
+          </div>
+
+          ${
+            lastCommitResult
+              ? `<div style="margin-top:16px; padding:12px 14px; border-radius:var(--radius-sm); border:1px solid var(--color-green-border, #bbf7d0); background:var(--color-green-bg); font-size:13px;">
+                  <strong style="color:var(--color-navy); display:block; margin-bottom:4px;">
+                    Bulk import committed cleanly${lastCommitResult.idempotentReplay ? ' (idempotent replay)' : ''}.
+                  </strong>
+                  <div style="color:var(--color-text-secondary);">
+                    Import ID <code class="mono-num">${escapeHtml(lastCommitResult.importId)}</code> · Created <strong class="mono-num">${lastCommitResult.createdCount}</strong> draft lesson(s) · Updated <strong class="mono-num">${lastCommitResult.updatedCount}</strong> lesson(s) · Unchanged <strong class="mono-num">${lastCommitResult.unchangedCount}</strong>${lastCommitResult.snapshotVersionNumber ? ` · Backup snapshot <strong class="mono-num">v${lastCommitResult.snapshotVersionNumber}</strong> saved` : ''}.
+                  </div>
+                </div>`
+              : ''
+          }
+
+          ${
+            dryRunParseErrors.length > 0
+              ? `<div style="margin-top:16px; padding:14px; border-radius:var(--radius-sm); border:1px solid var(--color-red-border); background:var(--color-red-bg);">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+                    <strong style="color:var(--color-red);">Package Parsing Rejected (${dryRunParseErrors.length} error${dryRunParseErrors.length === 1 ? '' : 's'})</strong>
+                    <button type="button" class="btn btn-secondary btn-sm" id="download-error-report-btn">Download Error Report (.json)</button>
+                  </div>
+                  <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--color-navy);">
+                    ${dryRunParseErrors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
+                  </ul>
+                </div>`
+              : ''
+          }
+
+          ${
+            dryRunPlan
+              ? `
+            <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--color-border);">
+              <div style="padding:14px; border-radius:var(--radius-sm); border:1px solid ${
+                !dryRunPlan.valid
+                  ? 'var(--color-red-border)'
+                  : dryRunPlan.canCommit
+                    ? 'var(--color-green-border, #bbf7d0)'
+                    : 'var(--color-amber-border)'
+              }; background:${
+                !dryRunPlan.valid
+                  ? 'var(--color-red-bg)'
+                  : dryRunPlan.canCommit
+                    ? 'var(--color-green-bg)'
+                    : 'var(--color-amber-bg)'
+              }; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
+                  <strong style="color:var(--color-navy);">
+                    ${
+                      !dryRunPlan.valid
+                        ? 'Dry-Run Failed: Resolve all rejected items before commit.'
+                        : dryRunPlan.canCommit
+                          ? 'Dry-Run Passed: Ready for administrator review and commit.'
+                          : 'Dry-Run Complete: No new or modified lessons detected.'
+                    }
+                  </strong>
+                  <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <span class="status-tag status-green">New: ${dryRunPlan.counts.new}</span>
+                    <span class="status-tag status-blue">Updated: ${dryRunPlan.counts.updated}</span>
+                    <span class="status-tag status-neutral">Unchanged: ${dryRunPlan.counts.unchanged}</span>
+                    <span class="status-tag status-red">Rejected: ${dryRunPlan.counts.rejected}</span>
+                  </div>
+                </div>
+                ${
+                  dryRunPlan.packageErrors.length > 0
+                    ? `<ul style="margin:6px 0 0; padding-left:18px; font-size:13px; color:var(--color-red);">
+                        ${dryRunPlan.packageErrors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
+                      </ul>`
+                    : ''
+                }
+                ${
+                  dryRunPlan.warnings.length > 0
+                    ? `<ul style="margin:6px 0 0; padding-left:18px; font-size:12.5px; color:var(--color-text-secondary);">
+                        ${dryRunPlan.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}
+                      </ul>`
+                    : ''
+                }
+                ${
+                  !dryRunPlan.valid || dryRunPlan.counts.rejected > 0
+                    ? `<div style="margin-top:10px;">
+                        <button type="button" class="btn btn-secondary btn-sm" id="download-error-report-btn">Download Validation Error Report (.json)</button>
+                      </div>`
+                    : ''
+                }
+              </div>
+
+              <div class="divider-list" style="margin-bottom:16px;">
+                ${dryRunPlan.lessons
+                  .map(
+                    (item) => `
+                  <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:6px; padding:10px 0;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                      <div>
+                        <strong style="color:var(--color-navy);">${item.index + 1}. ${escapeHtml(item.title)}</strong>
+                        <span style="font-size:12.5px; color:var(--color-text-muted); margin-left:8px;">
+                          Module: ${escapeHtml(item.phaseTitle)} · Pos <span class="mono-num">${item.position ?? 'auto'}</span> · Target status: <strong class="mono-num">${escapeHtml(item.effectiveStatus)}</strong>
+                        </span>
+                      </div>
+                      ${renderStatusBadge(item.classification)}
+                    </div>
+                    ${
+                      item.warnings.length > 0
+                        ? `<div style="font-size:12.5px; color:var(--color-text-secondary);">
+                            ${item.warnings.map((w) => escapeHtml(w)).join(' · ')}
+                          </div>`
+                        : ''
+                    }
+                    ${
+                      item.errors.length > 0
+                        ? `<ul style="margin:0; padding-left:18px; font-size:12.5px; color:var(--color-red);">
+                            ${item.errors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
+                          </ul>`
+                        : ''
+                    }
+                    ${
+                      item.changes.length > 0
+                        ? `<details style="font-size:12.5px;">
+                            <summary style="cursor:pointer; color:var(--color-blue); font-weight:600;">View ${item.changes.length} field change${item.changes.length === 1 ? '' : 's'}</summary>
+                            <div style="margin-top:6px; padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:6px;">
+                              ${item.changes
+                                .map(
+                                  (ch) => `
+                                <div>
+                                  <strong class="mono-num" style="color:var(--color-navy);">${escapeHtml(ch.field)}</strong>:
+                                  <div style="color:var(--color-text-muted);">Before: ${escapeHtml(formatDiffValue(ch.before))}</div>
+                                  <div style="color:var(--color-navy);">After: ${escapeHtml(formatDiffValue(ch.after))}</div>
+                                </div>
+                              `
+                                )
+                                .join('')}
+                            </div>
+                          </details>`
+                        : ''
+                    }
+                  </div>
+                `
+                  )
+                  .join('')}
+              </div>
+
+              ${
+                dryRunPlan.canCommit
+                  ? `<div class="card-workspace" style="padding:14px;">
+                      <h3 style="font-size:0.98rem; margin:0 0 10px;">2. Confirm &amp; Commit Atomic Bulk Import</h3>
+                      <div class="form-stack">
+                        <div class="field">
+                          <label class="field-label" for="import-change-notes">Release / Import Notes (stored on backup snapshot &amp; audit log)</label>
+                          <input class="input" id="import-change-notes" value="${escapeHtml(importChangeNotes)}" placeholder="e.g. Q4 Module 2 content refresh + 2 new draft lessons" />
+                        </div>
+                        <label style="display:flex; align-items:flex-start; gap:8px; font-size:13px; color:var(--color-navy); cursor:pointer;">
+                          <input type="checkbox" id="confirm-bulk-import-chk" ${confirmBulkImport ? 'checked' : ''} ${!dryRunMatchesCurrentText ? 'disabled' : ''} style="margin-top:3px;" />
+                          <span>
+                            I have reviewed the dry-run summary (${dryRunPlan.counts.new} new, ${dryRunPlan.counts.updated} updated, ${dryRunPlan.counts.unchanged} unchanged). Existing learner progress stays untouched, new lessons stage as Draft, and an automatic backup snapshot will be saved first.
+                          </span>
+                        </label>
+                        <div>
+                          <button type="button" class="btn btn-primary" id="commit-bulk-import-btn" ${!confirmBulkImport || importInFlight || !dryRunMatchesCurrentText ? 'disabled' : ''}>
+                            ${importInFlight ? 'Committing Import…' : `Commit Validated Lessons (${dryRunPlan.counts.new + dryRunPlan.counts.updated})`}
+                          </button>
+                        </div>
+                      </div>
+                    </div>`
+                  : ''
+              }
+            </div>
+          `
+              : ''
+          }
+        </div>
+
+        <div class="lab-grid-2" style="align-items:start;">
+          <section class="card">
+            <h2 class="section-heading" style="margin:0 0 6px;">Curriculum Snapshot Recovery (${recoverableVersions.length})</h2>
+            <p style="font-size:12.5px; color:var(--color-text-muted); margin:0 0 12px;">
+              Restoring any snapshot first saves an automatic <code class="mono-num">pre_restore</code> backup and leaves all learner enrollments, lesson progress, and quiz attempts intact.
+            </p>
+            ${
+              recoverableVersions.length > 0
+                ? `<div class="divider-list">
+                    ${recoverableVersions
+                      .map(
+                        (v) => `
+                      <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:8px; padding:10px 0;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+                          <div>
+                            <div style="font-weight:700; color:var(--color-navy);">
+                              Version v${Number(v.versionNumber || 1)}
+                              <span class="status-tag status-neutral" style="margin-left:6px;">${escapeHtml(v.snapshotType || 'manual')}</span>
+                            </div>
+                            <div style="font-size:12.5px; color:var(--color-text-secondary); margin-top:2px;">
+                              ${escapeHtml(v.changeNotes || 'Curriculum snapshot')} · ${v.snapshotData?.phases?.length || 0} modules · ${formatDate(v.createdAt)}
+                            </div>
+                          </div>
+                          ${
+                            confirmRestoreVersionId === v.id
+                              ? ''
+                              : `<button type="button" class="btn btn-secondary btn-sm" data-start-restore="${escapeHtml(v.id)}" ${restoreInFlightId ? 'disabled' : ''}>Restore Version</button>`
+                          }
+                        </div>
+                        ${
+                          confirmRestoreVersionId === v.id
+                            ? `<div class="card-workspace" style="padding:10px 12px;">
+                                <p style="font-size:12.5px; color:var(--color-navy); margin:0 0 8px;">
+                                  Confirm restoring <strong>v${Number(v.versionNumber || 1)}</strong>? Current state will be backed up as a <code class="mono-num">pre_restore</code> snapshot before reverting modules and lessons. Learner records will not be altered.
+                                </p>
+                                <input class="input" id="restore-notes-input" value="${escapeHtml(restoreNotes)}" placeholder="Optional recovery reason…" style="margin-bottom:8px;" />
+                                <div style="display:flex; gap:8px;">
+                                  <button type="button" class="btn btn-primary btn-sm" data-confirm-restore="${escapeHtml(v.id)}" ${restoreInFlightId ? 'disabled' : ''}>
+                                    ${restoreInFlightId === v.id ? 'Restoring…' : 'Confirm Restore'}
+                                  </button>
+                                  <button type="button" class="btn btn-ghost btn-sm" id="cancel-restore-btn" ${restoreInFlightId ? 'disabled' : ''}>Cancel</button>
+                                </div>
+                              </div>`
+                            : ''
+                        }
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </div>`
+                : `<p style="font-size:13px; color:var(--color-text-muted); margin:0;">No full curriculum snapshots saved for this course yet. Create a manual snapshot or run a bulk import to generate one automatically.</p>`
+            }
+          </section>
+
+          <section class="card">
+            <h2 class="section-heading" style="margin:0 0 6px;">Import &amp; Recovery Audit History (${importHistory.length})</h2>
+            <p style="font-size:12.5px; color:var(--color-text-muted); margin:0 0 12px;">
+              Immutable administrator record of committed, rejected, failed, and restored curriculum operations.
+            </p>
+            ${
+              importHistory.length > 0
+                ? `<div class="divider-list">
+                    ${importHistory
+                      .map(
+                        (rec) => `
+                      <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                          <div style="font-size:13px; font-weight:700; color:var(--color-navy);">
+                            ${escapeHtml(rec.operationType === 'restore' ? 'Snapshot Recovery' : 'Bulk JSON Import')}
+                            <span style="font-weight:400; color:var(--color-text-muted); margin-left:6px;">${formatDate(rec.createdAt)}</span>
+                          </div>
+                          ${renderStatusBadge(rec.status === 'failed' ? 'import_failed' : rec.status)}
+                        </div>
+                        <div style="font-size:12.5px; color:var(--color-text-secondary);">
+                          Actor: ${escapeHtml(rec.actorEmail || rec.actorId || 'Administrator')} ·
+                          New <span class="mono-num">${rec.createdCount}</span> ·
+                          Updated <span class="mono-num">${rec.updatedCount}</span> ·
+                          Unchanged <span class="mono-num">${rec.unchangedCount}</span> ·
+                          Rejected <span class="mono-num">${rec.rejectedCount}</span>
+                        </div>
+                        ${
+                          rec.changeNotes
+                            ? `<div style="font-size:12.5px; color:var(--color-navy);">Notes: ${escapeHtml(rec.changeNotes)}</div>`
+                            : ''
+                        }
+                        ${
+                          rec.errorSummary
+                            ? `<div style="font-size:12.5px; color:var(--color-red);">Error: ${escapeHtml(rec.errorSummary)}</div>`
+                            : ''
+                        }
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </div>`
+                : `<p style="font-size:13px; color:var(--color-text-muted); margin:0;">No bulk import or snapshot recovery events recorded for this course yet.</p>`
+            }
+          </section>
+        </div>
+      `
+          : `<div class="card"><p style="font-size:14px; color:var(--color-text-muted); margin:0;">Create or select a course first to export, bulk import, or restore snapshots.</p></div>`
+      }
+    `
+            : `
       <div class="lab-split">
         <section class="card">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
@@ -1045,6 +1589,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         );
         selectedCourseId = nextCourses[0]?.id || null;
         selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
+        resetImportExportState();
         rerender({ silent: true });
       });
 
@@ -1052,6 +1597,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         selectedCourseId = /** @type {HTMLSelectElement} */ (e.target).value;
         const nextC = courses.find((c) => c.id === selectedCourseId);
         selectedPhaseId = nextC?.phases?.[0]?.id || null;
+        resetImportExportState();
         rerender({ silent: true });
       });
 
@@ -1529,6 +2075,252 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             rerender({ silent: true });
           } catch (err) {
             showToast(err instanceof Error ? err.message : 'Unable to update skill status.', 'error');
+          }
+        });
+      });
+
+      // Import / Export & Recovery tab handlers
+      root.querySelector('#import-course-select')?.addEventListener('change', (e) => {
+        selectedCourseId = /** @type {HTMLSelectElement} */ (e.target).value;
+        const nextC = courses.find((c) => c.id === selectedCourseId);
+        selectedPhaseId = nextC?.phases?.[0]?.id || null;
+        resetImportExportState();
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#export-course-json-btn')?.addEventListener('click', async () => {
+        if (!activeCourse) return;
+        try {
+          const exported = await adminExportCourseContent(activeCourse.id);
+          downloadJsonFile(exported.filename, exported.jsonString);
+          showToast(`Exported ${exported.filename}.`, 'success');
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Unable to export course JSON.', 'error');
+        }
+      });
+
+      root.querySelector('#load-export-into-import-btn')?.addEventListener('click', async () => {
+        if (!activeCourse) return;
+        try {
+          const exported = await adminExportCourseContent(activeCourse.id);
+          importJsonText = exported.jsonString;
+          importFileName = exported.filename;
+          dryRunPlan = null;
+          dryRunParseErrors = [];
+          confirmBulkImport = false;
+          lastCommitResult = null;
+          showToast('Loaded exported curriculum into JSON inspector.', 'info');
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Unable to load course export.', 'error');
+        }
+      });
+
+      root.querySelector('#toggle-export-preview-btn')?.addEventListener('click', async () => {
+        if (!activeCourse) return;
+        if (exportPreviewOpen) {
+          exportPreviewOpen = false;
+          rerender({ silent: true });
+          return;
+        }
+        try {
+          const exported = await adminExportCourseContent(activeCourse.id);
+          exportPreviewJson = exported.jsonString;
+          exportPreviewOpen = true;
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Unable to generate JSON preview.', 'error');
+        }
+      });
+
+      root.querySelector('#load-import-template-btn')?.addEventListener('click', () => {
+        if (!activeCourse) return;
+        importJsonText = buildStarterPackageTemplate(activeCourse);
+        importFileName = 'starter-template.json';
+        dryRunPlan = null;
+        dryRunParseErrors = [];
+        confirmBulkImport = false;
+        lastCommitResult = null;
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#clear-import-btn')?.addEventListener('click', () => {
+        resetImportExportState();
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#import-json-file')?.addEventListener('change', async (e) => {
+        const input = /** @type {HTMLInputElement} */ (e.target);
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          importJsonText = await file.text();
+          importFileName = file.name;
+          dryRunPlan = null;
+          dryRunParseErrors = [];
+          confirmBulkImport = false;
+          lastCommitResult = null;
+          rerender({ silent: true });
+        } catch {
+          showToast('Unable to read uploaded JSON file.', 'error');
+        }
+      });
+
+      root.querySelector('#import-json-textarea')?.addEventListener('input', (e) => {
+        importJsonText = /** @type {HTMLTextAreaElement} */ (e.target).value;
+        confirmBulkImport = false;
+        const commitBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#commit-bulk-import-btn'));
+        const confirmChk = /** @type {HTMLInputElement | null} */ (root.querySelector('#confirm-bulk-import-chk'));
+        if (confirmChk) {
+          confirmChk.checked = false;
+          confirmChk.disabled = importJsonText !== lastPreviewedJsonText;
+        }
+        if (commitBtn) {
+          commitBtn.disabled = true;
+        }
+      });
+
+      root.querySelector('#import-change-notes')?.addEventListener('input', (e) => {
+        importChangeNotes = /** @type {HTMLInputElement} */ (e.target).value;
+      });
+
+      root.querySelector('#confirm-bulk-import-chk')?.addEventListener('change', (e) => {
+        confirmBulkImport = /** @type {HTMLInputElement} */ (e.target).checked;
+        const commitBtn = /** @type {HTMLButtonElement | null} */ (root.querySelector('#commit-bulk-import-btn'));
+        if (commitBtn) {
+          commitBtn.disabled = !confirmBulkImport || importInFlight || importJsonText !== lastPreviewedJsonText;
+        }
+      });
+
+      root.querySelector('#run-dry-run-btn')?.addEventListener('click', async () => {
+        if (!activeCourse || importInFlight) return;
+        try {
+          const res = await adminPreviewCourseContentImport({
+            courseId: activeCourse.id,
+            rawJsonText: importJsonText,
+            logRejection: true,
+          });
+          lastPreviewedJsonText = importJsonText;
+          confirmBulkImport = false;
+          lastCommitResult = null;
+          if (!res.parsed) {
+            dryRunPlan = null;
+            dryRunParseErrors = res.parseErrors;
+            showToast('Package parsing failed validation.', 'error');
+          } else {
+            dryRunParseErrors = [];
+            dryRunPlan = res.plan;
+            if (res.plan && !res.plan.valid) {
+              showToast('Dry run rejected one or more items. Review error details.', 'error');
+            } else if (res.plan?.canCommit) {
+              showToast('Dry run passed! Review changes and confirm to commit.', 'success');
+            } else {
+              showToast('Dry run complete: no changes to import.', 'info');
+            }
+          }
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Unable to validate import package.', 'error');
+        }
+      });
+
+      root.querySelector('#download-error-report-btn')?.addEventListener('click', () => {
+        if (!activeCourse) return;
+        const report = dryRunPlan
+          ? buildImportErrorReport(dryRunPlan)
+          : {
+              generatedAt: new Date().toISOString(),
+              schemaVersion: CONTENT_PACKAGE_SCHEMA_VERSION,
+              courseId: activeCourse.id,
+              courseTitle: activeCourse.title,
+              packageErrors: dryRunParseErrors,
+              rejectedLessons: [],
+            };
+        downloadJsonFile(
+          `import-error-report-${activeCourse.slug || activeCourse.id}.json`,
+          JSON.stringify(report, null, 2)
+        );
+      });
+
+      root.querySelector('#commit-bulk-import-btn')?.addEventListener('click', async () => {
+        if (!activeCourse || importInFlight || !dryRunPlan?.canCommit || !confirmBulkImport) return;
+        if (importJsonText !== lastPreviewedJsonText) {
+          showToast('JSON was edited after dry-run preview. Re-run Dry Run first.', 'error');
+          return;
+        }
+        importInFlight = true;
+        rerender({ silent: true });
+        try {
+          const result = await adminCommitCourseContentImport({
+            courseId: activeCourse.id,
+            rawJsonText: importJsonText,
+            changeNotes: importChangeNotes,
+          });
+          lastCommitResult = result;
+          dryRunPlan = null;
+          dryRunParseErrors = [];
+          confirmBulkImport = false;
+          importChangeNotes = '';
+          lastPreviewedJsonText = '';
+          showToast(
+            `Imported ${result.createdCount} new and ${result.updatedCount} updated lesson(s).`,
+            'success'
+          );
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Bulk import failed.', 'error');
+        } finally {
+          importInFlight = false;
+          rerender({ silent: true });
+        }
+      });
+
+      root.querySelectorAll('[data-start-restore]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          confirmRestoreVersionId = btn.dataset.startRestore || null;
+          restoreNotes = '';
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelector('#restore-notes-input')?.addEventListener('input', (e) => {
+        restoreNotes = /** @type {HTMLInputElement} */ (e.target).value;
+      });
+
+      root.querySelector('#cancel-restore-btn')?.addEventListener('click', () => {
+        confirmRestoreVersionId = null;
+        restoreNotes = '';
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-confirm-restore]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse || restoreInFlightId) return;
+          const versionId = btn.dataset.confirmRestore || '';
+          if (!versionId) return;
+          restoreInFlightId = versionId;
+          rerender({ silent: true });
+          try {
+            const res = await adminRestoreCourseSnapshot({
+              courseId: activeCourse.id,
+              versionId,
+              restoreNotes,
+            });
+            confirmRestoreVersionId = null;
+            restoreNotes = '';
+            dryRunPlan = null;
+            dryRunParseErrors = [];
+            confirmBulkImport = false;
+            showToast(
+              `Restored snapshot v${res.restoredVersionNumber}. Backup v${res.safetySnapshotVersionNumber} created.`,
+              'success'
+            );
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Snapshot recovery failed.', 'error');
+          } finally {
+            restoreInFlightId = null;
+            rerender({ silent: true });
           }
         });
       });

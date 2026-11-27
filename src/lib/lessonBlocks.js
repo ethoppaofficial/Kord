@@ -104,7 +104,7 @@ export function renderLessonBlocks(blocks = []) {
             <div class="lesson-callout lesson-definition">
               <div class="lesson-callout-kicker">Definition</div>
               <div style="font-weight:700; color:var(--color-navy); margin-bottom:4px;">${escapeHtml(blk.term || '')}</div>
-              <p style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(blk.meaning || '')}</p>
+              <p style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(blk.meaning || blk.text || '')}</p>
             </div>
           `;
 
@@ -122,7 +122,7 @@ export function renderLessonBlocks(blocks = []) {
             <div class="lesson-callout lesson-case-study">
               <div class="lesson-callout-kicker">Case study</div>
               <div style="font-weight:700; color:var(--color-navy); margin-bottom:6px;">${escapeHtml(blk.title || 'Applied Case')}</div>
-              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${escapeHtml(blk.scenario || '')}</p>
+              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${escapeHtml(blk.scenario || blk.text || '')}</p>
               ${
                 blk.takeaway
                   ? `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--color-border); font-size:13px; color:var(--color-navy);">

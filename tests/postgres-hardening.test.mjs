@@ -1100,3 +1100,292 @@ test('PostgreSQL get_dashboard() SQL Contract: all 7 test cases + cross-user & a
   // Sanity check that admin also exists cleanly and doesn't leak into learner B
   assert.equal(admin.role, 'admin');
 });
+
+test('PostgreSQL Bulk Content Import & Snapshot Recovery: RLS, validation rollback, progress preservation, and idempotency', async () => {
+  const db = await setupMigratedDb();
+  const { admin, learnerA } = await seedAdminAndLearners(db);
+
+  const courseRow = (
+    await db.query(`select id, slug, title, version from public.courses where slug = $1`, [
+      SEEDED_FRONTEND_COURSE_SLUG,
+    ])
+  ).rows[0];
+  const phasesRes = await db.query(
+    `select id, title, position from public.phases where course_id = $1::uuid order by position asc`,
+    [courseRow.id]
+  );
+  const firstPhase = phasesRes.rows[0];
+  const lessonsRes = await db.query(
+    `select id, title, position, publication_status from public.lessons where phase_id = $1::uuid order by position asc`,
+    [firstPhase.id]
+  );
+  const lesson1 = lessonsRes.rows[0];
+  const lesson2 = lessonsRes.rows[1];
+
+  // Learner A enrolls and completes Lesson 1
+  await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
+    await tx.query(`select public.enroll_in_course($1::uuid)`, [courseRow.id]);
+    await tx.query(`select public.set_lesson_completion($1::uuid, true)`, [lesson1.id]);
+  });
+
+  // 1. Anon and non-admin learners are strictly denied all bulk import/recovery/audit RPCs and content_imports reads
+  await assert.rejects(
+    () =>
+      asActor(db, { role: 'anon' }, (tx) =>
+        tx.query(`select public.admin_bulk_import_course_content($1::uuid, '1.0', '[]'::jsonb)`, [
+          courseRow.id,
+        ])
+      ),
+    /permission denied/i
+  );
+
+  await assert.rejects(
+    () =>
+      asActor(db, { role: 'authenticated', userId: learnerA.id }, (tx) =>
+        tx.query(`select public.admin_bulk_import_course_content($1::uuid, '1.0', '[]'::jsonb)`, [
+          courseRow.id,
+        ])
+      ),
+    /Administrator access required/i
+  );
+
+  await assert.rejects(
+    () =>
+      asActor(db, { role: 'authenticated', userId: learnerA.id }, (tx) =>
+        tx.query(`select public.admin_log_content_import_event($1::uuid, 'rejected')`, [courseRow.id])
+      ),
+    /Administrator access required/i
+  );
+
+  await assert.rejects(
+    () =>
+      asActor(db, { role: 'authenticated', userId: learnerA.id }, (tx) =>
+        tx.query(
+          `select public.admin_restore_course_snapshot($1::uuid, gen_random_uuid(), 'unauthorized')`,
+          [courseRow.id]
+        )
+      ),
+    /Administrator access required/i
+  );
+
+  await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
+    const res = await tx.query(`select * from public.content_imports`);
+    assert.equal(res.rows.length, 0);
+  });
+
+  // 2. Validation failure / XSS / unknown block rolls back transaction completely without creating versions or altering lessons
+  const preFailVerCount = (
+    await db.query(`select count(*)::int as cnt from public.course_versions where course_id = $1::uuid`, [
+      courseRow.id,
+    ])
+  ).rows[0].cnt;
+
+  await assert.rejects(
+    () =>
+      asActor(db, { role: 'authenticated', userId: admin.id }, (tx) =>
+        tx.query(
+          `select public.admin_bulk_import_course_content($1::uuid, '1.0', $2::jsonb, 'Bad batch')`,
+          [
+            courseRow.id,
+            JSON.stringify([
+              {
+                id: lesson1.id,
+                phaseId: firstPhase.id,
+                position: 1,
+                title: 'Updated Good First Entry',
+                estMinutes: 25,
+                blocks: [{ type: 'paragraph', text: 'Valid substantive paragraph before invalid sibling entry.' }],
+              },
+              {
+                isNew: true,
+                phaseId: firstPhase.id,
+                title: 'Malicious Second Entry',
+                estMinutes: 20,
+                blocks: [{ type: 'paragraph', text: '<script>alert(1)</script> Unsafe payload!' }],
+              },
+            ]),
+          ]
+        )
+      ),
+    /disallowed HTML|script/i
+  );
+
+  const postFailVerCount = (
+    await db.query(`select count(*)::int as cnt from public.course_versions where course_id = $1::uuid`, [
+      courseRow.id,
+    ])
+  ).rows[0].cnt;
+  const lesson1TitleAfterFail = (
+    await db.query(`select title from public.lessons where id = $1::uuid`, [lesson1.id])
+  ).rows[0].title;
+  assert.equal(postFailVerCount, preFailVerCount);
+  assert.equal(lesson1TitleAfterFail, lesson1.title);
+
+  // Admin can log rejected attempt cleanly into content_imports + admin_audit_logs
+  await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
+    await tx.query(
+      `select public.admin_log_content_import_event($1::uuid, 'rejected', '1.0', 2, 1, 'XSS blocked in batch', '{"source":"test"}'::jsonb)`,
+      [courseRow.id]
+    );
+  });
+
+  // 3. Valid atomic bulk import: updates existing lesson1 in-place (keeps ID & 'published'), swaps positions cleanly,
+  //    inserts new lesson as 'draft' (even if 'published' requested), syncs lesson_resources, saves pre_import snapshot
+  /** @type {any} */
+  let commitRes = null;
+  await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
+    const r = await tx.query(
+      `select public.admin_bulk_import_course_content($1::uuid, '1.0', $2::jsonb, 'Q4 bulk update', 'pg-idem-key-1', 0, 0) as res`,
+      [
+        courseRow.id,
+        JSON.stringify([
+          {
+            id: lesson1.id,
+            phaseId: firstPhase.id,
+            position: 2,
+            title: `${lesson1.title} — Revised`,
+            estMinutes: 35,
+            publicationStatus: 'draft',
+            blocks: [
+              { type: 'heading', text: 'Updated Architecture' },
+              { type: 'paragraph', text: 'Comprehensive updated lesson guidance with practical examples.' },
+            ],
+            furtherReading: [
+              {
+                title: 'MDN Semantic Reference',
+                url: 'https://developer.mozilla.org/en-US/docs/Glossary/Semantics',
+                resourceType: 'Documentation',
+              },
+            ],
+          },
+          {
+            id: lesson2.id,
+            phaseId: firstPhase.id,
+            position: 1,
+            title: lesson2.title,
+            estMinutes: 25,
+            blocks: [{ type: 'paragraph', text: 'Swapped into position 1 cleanly during bulk import.' }],
+          },
+          {
+            isNew: true,
+            phaseId: firstPhase.id,
+            title: 'Newly Imported Draft Lesson',
+            estMinutes: 30,
+            publicationStatus: 'published',
+            blocks: [
+              { type: 'paragraph', text: 'Brand-new lesson imported via JSON package; must remain draft.' },
+            ],
+          },
+        ]),
+      ]
+    );
+    commitRes = r.rows[0].res;
+  });
+
+  assert.equal(commitRes.createdCount, 1);
+  assert.equal(commitRes.updatedCount, 2);
+  assert.equal(commitRes.idempotentReplay, false);
+
+  // Replay with same idempotency key returns identical result without duplicate mutations
+  await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
+    const replay = await tx.query(
+      `select public.admin_bulk_import_course_content($1::uuid, '1.0', $2::jsonb, 'Q4 bulk update', 'pg-idem-key-1', 0, 0) as res`,
+      [courseRow.id, '[]']
+    );
+    assert.equal(replay.rows[0].res.idempotentReplay, true);
+    assert.equal(replay.rows[0].res.importId, commitRes.importId);
+  });
+
+  // Verify lesson1 preserved UUID & 'published', lesson2 moved to pos 1, new lesson forced to 'draft', resources synced, progress intact
+  const afterLessons = (
+    await db.query(
+      `select id, position, title, publication_status from public.lessons where phase_id = $1::uuid order by position asc`,
+      [firstPhase.id]
+    )
+  ).rows;
+  const updatedL1 = afterLessons.find((/** @type {any} */ r) => r.id === lesson1.id);
+  const newDraft = afterLessons.find((/** @type {any} */ r) => r.title === 'Newly Imported Draft Lesson');
+  assert.ok(updatedL1 && newDraft);
+  assert.equal(updatedL1.position, 2);
+  assert.equal(updatedL1.publication_status, 'published');
+  assert.equal(newDraft.publication_status, 'draft');
+
+  const syncedResources = (
+    await db.query(`select title, url from public.lesson_resources where lesson_id = $1::uuid`, [lesson1.id])
+  ).rows;
+  assert.equal(syncedResources.length, 1);
+  assert.equal(syncedResources[0].title, 'MDN Semantic Reference');
+
+  const learnerProgressAfterImport = (
+    await db.query(
+      `select completed from public.lesson_progress where user_id = $1::uuid and lesson_id = $2::uuid`,
+      [learnerA.id, lesson1.id]
+    )
+  ).rows[0];
+  assert.equal(learnerProgressAfterImport.completed, true);
+
+  // Publish the newly staged draft lesson so learner completes it, then restore pre_import snapshot -> must archive instead of deleting
+  await db.query(`update public.lessons set publication_status = 'published' where id = $1::uuid`, [
+    newDraft.id,
+  ]);
+  await asActor(db, { role: 'authenticated', userId: learnerA.id }, async (tx) => {
+    await tx.query(`select public.set_lesson_completion($1::uuid, true)`, [newDraft.id]);
+  });
+
+  // 4. Snapshot recovery restores pre_import title/positions, saves pre_restore safety backup, preserves learner progress,
+  //    and archives post-snapshot lesson that has learner_progress instead of deleting it
+  /** @type {any} */
+  let restoreRes = null;
+  await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
+    const r = await tx.query(
+      `select public.admin_restore_course_snapshot($1::uuid, $2::uuid, 'Reverting Q4 bulk edit') as res`,
+      [courseRow.id, commitRes.snapshotVersionId]
+    );
+    restoreRes = r.rows[0].res;
+  });
+
+  assert.equal(restoreRes.restoredFromVersionId, commitRes.snapshotVersionId);
+  assert.equal(restoreRes.archivedExtraLessonsCount, 1);
+
+  const restoredL1 = (
+    await db.query(`select title, position from public.lessons where id = $1::uuid`, [lesson1.id])
+  ).rows[0];
+  assert.equal(restoredL1.title, lesson1.title);
+  assert.equal(restoredL1.position, lesson1.position);
+
+  const archivedNewDraft = (
+    await db.query(`select publication_status from public.lessons where id = $1::uuid`, [newDraft.id])
+  ).rows[0];
+  assert.equal(archivedNewDraft.publication_status, 'archived');
+
+  const lpCountAfterRestore = (
+    await db.query(
+      `select count(*)::int as cnt from public.lesson_progress where user_id = $1::uuid and completed = true`,
+      [learnerA.id]
+    )
+  ).rows[0].cnt;
+  assert.equal(lpCountAfterRestore, 2);
+
+  // Verify pre_import & pre_restore snapshots + content_imports + admin_audit_logs exist
+  const verTypes = (
+    await db.query(
+      `select snapshot_type from public.course_versions where course_id = $1::uuid order by version_number desc`,
+      [courseRow.id]
+    )
+  ).rows.map((/** @type {any} */ r) => r.snapshot_type);
+  assert.ok(verTypes.includes('pre_import'));
+  assert.ok(verTypes.includes('pre_restore'));
+
+  await asActor(db, { role: 'authenticated', userId: admin.id }, async (tx) => {
+    const historyRows = (
+      await tx.query(
+        `select operation_type, status from public.content_imports where course_id = $1::uuid`,
+        [courseRow.id]
+      )
+    ).rows;
+    assert.ok(historyRows.some((/** @type {any} */ r) => r.status === 'rejected'));
+    assert.ok(historyRows.some((/** @type {any} */ r) => r.status === 'committed'));
+    assert.ok(historyRows.some((/** @type {any} */ r) => r.status === 'restored'));
+  });
+});
+

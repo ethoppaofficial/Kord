@@ -223,6 +223,7 @@ alter table public.submissions enable row level security;
 alter table public.user_skills enable row level security;
 alter table public.opportunities enable row level security;
 alter table public.admin_audit_logs enable row level security;
+alter table public.content_imports enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- 1. Profiles: column-restricted updates (first_name, full_name ONLY)
@@ -659,6 +660,15 @@ revoke all on public.admin_audit_logs from public, anon, authenticated;
 grant select on public.admin_audit_logs to authenticated;
 drop policy if exists "admin_audit_logs_select_admin_only" on public.admin_audit_logs;
 create policy "admin_audit_logs_select_admin_only" on public.admin_audit_logs
+  for select to authenticated
+  using (public.is_admin());
+
+revoke all on public.content_imports from public, anon, authenticated;
+grant select on public.content_imports to authenticated;
+revoke truncate on public.content_imports from authenticated;
+revoke trigger, references on public.content_imports from anon;
+drop policy if exists "content_imports_select_admin_only" on public.content_imports;
+create policy "content_imports_select_admin_only" on public.content_imports
   for select to authenticated
   using (public.is_admin());
 

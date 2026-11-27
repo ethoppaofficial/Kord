@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "1.0",
+  "packageType": "kord-course-content",
+  "exportedAt": "2026-11-27T00:00:00.000Z",
+  "course": {
+    "id": "course-frontend-foundations",
+    "slug": "frontend-development-foundations",
+    "title": "Frontend Development Foundations",
+    "difficulty": "Beginner",
+    "version": 1
+  },
+  "phases": [
+    {
+      "id": "ph-fe-1",
+      "position": 1,
+      "title": "Introduction to Web Development",
+      "lessons": [
+        {
+          "isNew": true,
+          "phaseId": "ph-fe-1",
+          "title": "Accessible Landmarks & Keyboard Navigation Audit",
+          "introduction": "Learn how semantic HTML landmarks enable screen-reader users and keyboard-only visitors to navigate complex interfaces rapidly without visual cues.",
+          "objectives": [
+            "Structure pages using header, nav, main, aside, and footer landmarks",
+            "Verify keyboard focus order and skip-navigation ergonomics"
+          ],
+          "estMinutes": 25,
+          "isRequired": true,
+          "publicationStatus": "draft",
+          "blocks": [
+            {
+              "type": "heading",
+              "level": 2,
+              "text": "Landmark Hierarchy in Modern Web Documents"
+            },
+            {
+              "type": "paragraph",
+              "text": "Using <nav>, <main>, and <article> intentionally gives assistive technology an accurate structural map so users can jump straight to primary content."
+            },
+            {
+              "type": "definition",
+              "term": "ARIA Landmark Region",
+              "meaning": "A programmatically exposed section of a page (such as main, navigation, or banner) derived automatically from native semantic HTML elements."
+            },
+            {
+              "type": "code",
+              "title": "Minimal Landmark Shell",
+              "language": "html",
+              "code": "<header><nav aria-label=\"Primary\">...</nav></header>\n<main id=\"main-content\"><h1>Lesson Workspace</h1></main>\n<footer><p>Copyright Kord</p></footer>"
+            },
+            {
+              "type": "steps",
+              "title": "5-Minute Keyboard Audit Workflow",
+              "items": [
+                "Press Tab from the address bar and confirm a visible focus indicator on every interactive control.",
+                "Verify only one top-level <main> landmark wraps the core page workspace.",
+                "Check that focus order matches top-to-bottom visual reading flow."
+              ]
+            },
+            {
+              "type": "callout",
+              "variant": "tip",
+              "title": "Avoid Redundant Roles",
+              "text": "Native <main> already exposes role=main; only add aria-label when distinguishing multiple <nav> landmarks on the same page."
+            },
+            {
+              "type": "knowledge_check",
+              "prompt": "Which HTML element should wrap the unique central content of a page?",
+              "options": [
+                "<div class=\"wrapper\">",
+                "<main>",
+                "<section>"
+              ],
+              "correctIndex": 1,
+              "explanation": "A single <main> landmark lets screen readers skip repeated navigation and jump straight to primary content."
+            }
+          ],
+          "videos": [
+            {
+              "provider": "youtube",
+              "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+              "title": "Keyboard Focus & Landmark Inspection Walkthrough",
+              "duration": "08:15",
+              "viewingInstructions": "Watch how the accessibility tree updates as native landmarks replace generic containers.",
+              "transcript": "Screen reader landmark menus list banner, navigation, main, and contentinfo regions automatically."
+            }
+          ],
+          "summary": "Consistent semantic landmarks reduce navigation friction and eliminate fragile manual focus overrides.",
+          "takeaways": [
+            "Prefer native HTML5 landmark tags over generic div containers.",
+            "Label multiple navigation landmarks uniquely with aria-label."
+          ],
+          "furtherReading": [
+            {
+              "title": "WAI-ARIA Landmarks Pattern",
+              "source": "W3C WAI",
+              "url": "https://www.w3.org/WAI/ARIA/apg/practices/landmark-regions/",
+              "resourceType": "Guide"
+            }
+          ],
+          "completionCriteria": "Audit a multi-section layout with keyboard navigation and complete the inline landmark check."
+        }
+      ]
+    }
+  ]
+}
