@@ -1,4 +1,5 @@
 import { DEFAULT_ALLOWED_MIME_TYPES } from '../validators.js';
+import { expandDomainLessonSpec } from './curriculumExpander.js';
 
 /** @param {string} url */
 function inferSourceFromUrl(url) {
@@ -35,6 +36,40 @@ export function buildCoursePackage(spec, { buildLesson, buildActivity, addAssess
         ? les.furtherReading
         : normalizedResources.slice(lIdx % Math.max(1, normalizedResources.length), (lIdx % Math.max(1, normalizedResources.length)) + 2);
 
+      const lessonBlocks =
+        Array.isArray(les.blocks) && les.blocks.length > 0
+          ? les.blocks
+          : [
+              { type: 'heading', level: 2, text: les.conceptHeading },
+              { type: 'paragraph', text: les.conceptExplanation },
+              { type: 'definition', term: les.definition.term, text: les.definition.meaning },
+              { type: 'example', title: les.example.title, body: les.example.body },
+              {
+                type: 'steps',
+                title: les.stepsTitle || `Step-by-Step Workflow: ${les.title}`,
+                items: les.steps,
+              },
+              {
+                type: 'case_study',
+                title: les.caseStudy.title,
+                text: les.caseStudy.scenario,
+                takeaway: les.caseStudy.takeaway,
+              },
+              {
+                type: 'callout',
+                variant: les.callout.variant || 'tip',
+                title: les.callout.title,
+                text: les.callout.text,
+              },
+              {
+                type: 'knowledge_check',
+                prompt: les.inlineCheck.prompt,
+                options: les.inlineCheck.options,
+                correctIndex: les.inlineCheck.correctIndex ?? 0,
+                explanation: les.inlineCheck.explanation,
+              },
+            ];
+
       return buildLesson({
         id: lesId,
         position: lIdx + 1,
@@ -42,36 +77,7 @@ export function buildCoursePackage(spec, { buildLesson, buildActivity, addAssess
         introduction: les.introduction,
         objectives: les.objectives,
         estMinutes: les.estMinutes || 28,
-        blocks: [
-          { type: 'heading', level: 2, text: les.conceptHeading },
-          { type: 'paragraph', text: les.conceptExplanation },
-          { type: 'definition', term: les.definition.term, text: les.definition.meaning },
-          { type: 'example', title: les.example.title, body: les.example.body },
-          {
-            type: 'steps',
-            title: les.stepsTitle || `Step-by-Step Workflow: ${les.title}`,
-            items: les.steps,
-          },
-          {
-            type: 'case_study',
-            title: les.caseStudy.title,
-            text: les.caseStudy.scenario,
-            takeaway: les.caseStudy.takeaway,
-          },
-          {
-            type: 'callout',
-            variant: les.callout.variant || 'tip',
-            title: les.callout.title,
-            text: les.callout.text,
-          },
-          {
-            type: 'knowledge_check',
-            prompt: les.inlineCheck.prompt,
-            options: les.inlineCheck.options,
-            correctIndex: les.inlineCheck.correctIndex ?? 0,
-            explanation: les.inlineCheck.explanation,
-          },
-        ],
+        blocks: lessonBlocks,
         summary: les.summary,
         takeaways: les.takeaways,
         furtherReading: readingPool.map((fr) => ({
@@ -222,29 +228,64 @@ export function buildCoursePackage(spec, { buildLesson, buildActivity, addAssess
  * @param {import('../../types/kord.d.ts').CourseBuilderHelpers} helpers
  */
 export function buildDomainCourse(cfg, helpers) {
+  const normalizedResources = (cfg.resources || []).map((r) => ({
+    title: r.title,
+    source: r.source || inferSourceFromUrl(r.url),
+    url: r.url,
+    resourceType: r.resourceType || 'Documentation',
+  }));
+
+  /** @type {Array<{ term: string; meaning: string; lessonTitle: string }>} */
+  const allCourseDefs = [];
+  for (const mod of cfg.modules || []) {
+    for (const les of mod.l || []) {
+      if (les?.def?.[0] && les?.def?.[1]) {
+        allCourseDefs.push({
+          term: les.def[0],
+          meaning: les.def[1],
+          lessonTitle: les.t,
+        });
+      }
+    }
+  }
+
   const modules = cfg.modules.map((m, idx) => ({
     title: m.t,
     summary: m.s,
     objectives: m.o,
     difficulty: idx >= 4 && cfg.difficulty === 'Beginner' ? 'Intermediate' : (cfg.difficulty || 'Beginner'),
     estHours: m.h || 3,
-    lessons: m.l.map((l) => ({
-      title: l.t,
-      introduction: l.intro,
-      objectives: l.o,
-      estMinutes: l.min || 28,
-      conceptHeading: l.h,
-      conceptExplanation: l.exp,
-      definition: { term: l.def[0], meaning: l.def[1] },
-      example: { title: l.ex[0], body: l.ex[1] },
-      stepsTitle: `Applying ${l.t}`,
-      steps: l.steps,
-      caseStudy: { title: l.cs[0], scenario: l.cs[1], takeaway: l.cs[2] || '' },
-      callout: { variant: 'tip', title: l.tip[0], text: l.tip[1] },
-      inlineCheck: { prompt: l.chk[0], options: l.chk[1], correctIndex: l.chk[2], explanation: l.chk[3] },
-      summary: l.sum,
-      takeaways: l.tk,
-    })),
+    lessons: m.l.map((l, lIdx) => {
+      const siblingLesson = m.l.length > 1 ? m.l[lIdx === 0 ? 1 : 0] : null;
+      const readingPool =
+        normalizedResources.length > 0
+          ? normalizedResources.slice(
+              lIdx % normalizedResources.length,
+              (lIdx % normalizedResources.length) + 2
+            )
+          : [];
+      const expanded = expandDomainLessonSpec({
+        cfg,
+        mod: m,
+        modIndex: idx,
+        lesson: l,
+        lessonIndex: lIdx,
+        siblingLesson,
+        allCourseDefs,
+        readingPool,
+      });
+      return {
+        title: expanded.title,
+        introduction: expanded.introduction,
+        objectives: expanded.objectives,
+        estMinutes: expanded.estMinutes,
+        blocks: expanded.blocks,
+        summary: expanded.summary,
+        takeaways: expanded.takeaways,
+        furtherReading: expanded.furtherReading,
+        completionCriteria: expanded.completionCriteria,
+      };
+    }),
     activity: {
       title: m.act[0],
       description: m.act[1],

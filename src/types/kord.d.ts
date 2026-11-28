@@ -1064,6 +1064,15 @@ export type DomainQuestionTuple = [
   string?
 ];
 
+export interface DomainCourseModule {
+  t: string;
+  s: string;
+  o: string[];
+  h?: number;
+  act: [string, string, string, string];
+  l: DomainLessonItem[];
+}
+
 export interface DomainCourseConfig {
   code: string;
   skillId: string;
@@ -1082,14 +1091,7 @@ export interface DomainCourseConfig {
   prerequisites?: string[];
   author?: string;
   resources: FurtherReadingItem[];
-  modules: Array<{
-    t: string;
-    s: string;
-    o: string[];
-    h?: number;
-    act: [string, string, string, string];
-    l: DomainLessonItem[];
-  }>;
+  modules: DomainCourseModule[];
   mq: DomainQuestionTuple[];
   fq: DomainQuestionTuple[];
   ch: {
@@ -1135,15 +1137,16 @@ export interface CoursePackageSpec {
       introduction: string;
       objectives: string[];
       estMinutes?: number;
-      conceptHeading: string;
-      conceptExplanation: string;
-      definition: { term: string; meaning: string };
-      example: { title: string; body: string };
+      blocks?: LessonBlock[];
+      conceptHeading?: string;
+      conceptExplanation?: string;
+      definition?: { term: string; meaning: string };
+      example?: { title: string; body: string };
       stepsTitle?: string;
-      steps: string[];
-      caseStudy: { title: string; scenario: string; takeaway: string };
-      callout: { variant?: string; title: string; text: string };
-      inlineCheck: { prompt: string; options: string[]; correctIndex?: number; explanation: string };
+      steps?: string[];
+      caseStudy?: { title: string; scenario: string; takeaway: string };
+      callout?: { variant?: string; title: string; text: string };
+      inlineCheck?: { prompt: string; options: string[]; correctIndex?: number; explanation: string };
       summary: string;
       takeaways: string[];
       furtherReading?: FurtherReadingItem[];

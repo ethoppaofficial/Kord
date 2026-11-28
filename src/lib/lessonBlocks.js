@@ -1,4 +1,5 @@
 import { escapeHtml } from './formatters.js';
+import { renderFormattedInlineText } from './lessonArticle.js';
 import { renderVideoPlayerHtml } from './videoProvider.js';
 
 export const BLOCK_TYPE_CATALOG = [
@@ -63,7 +64,7 @@ export function createEmptyBlock(type) {
 
 /**
  * Safe XSS-free JSON content block renderer.
- * Never evaluates raw HTML strings; every field passes through escapeHtml.
+ * Never evaluates raw HTML strings; every field passes through escapeHtml / renderFormattedInlineText.
  * @param {import('../types/kord.d.ts').LessonBlock[]} [blocks]
  */
 export function renderLessonBlocks(blocks = []) {
@@ -74,17 +75,17 @@ export function renderLessonBlocks(blocks = []) {
       if (!blk || !blk.type) return '';
       switch (blk.type) {
         case 'heading':
-          return `<h3 class="lesson-subheading">${escapeHtml(blk.text || '')}</h3>`;
+          return `<h3 class="lesson-subheading">${renderFormattedInlineText(blk.text || '')}</h3>`;
 
         case 'paragraph':
-          return `<p class="lesson-paragraph">${escapeHtml(blk.text || '')}</p>`;
+          return `<p class="lesson-paragraph">${renderFormattedInlineText(blk.text || '')}</p>`;
 
         case 'steps':
           return `
             <div class="lesson-block">
-              ${blk.title ? `<h4 class="lesson-block-title">${escapeHtml(blk.title)}</h4>` : ''}
+              ${blk.title ? `<h4 class="lesson-block-title">${renderFormattedInlineText(blk.title)}</h4>` : ''}
               <ol class="lesson-ordered">
-                ${(blk.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+                ${(blk.items || []).map((item) => `<li>${renderFormattedInlineText(item)}</li>`).join('')}
               </ol>
             </div>
           `;
@@ -92,9 +93,9 @@ export function renderLessonBlocks(blocks = []) {
         case 'bullets':
           return `
             <div class="lesson-block">
-              ${blk.title ? `<h4 class="lesson-block-title">${escapeHtml(blk.title)}</h4>` : ''}
+              ${blk.title ? `<h4 class="lesson-block-title">${renderFormattedInlineText(blk.title)}</h4>` : ''}
               <ul class="lesson-bullets">
-                ${(blk.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+                ${(blk.items || []).map((item) => `<li>${renderFormattedInlineText(item)}</li>`).join('')}
               </ul>
             </div>
           `;
@@ -103,8 +104,8 @@ export function renderLessonBlocks(blocks = []) {
           return `
             <div class="lesson-callout lesson-definition">
               <div class="lesson-callout-kicker">Definition</div>
-              <div style="font-weight:700; color:var(--color-navy); margin-bottom:4px;">${escapeHtml(blk.term || '')}</div>
-              <p style="font-size:14px; color:var(--color-text-secondary);">${escapeHtml(blk.meaning || blk.text || '')}</p>
+              <div style="font-weight:700; color:var(--color-navy); margin-bottom:4px;">${renderFormattedInlineText(blk.term || '')}</div>
+              <p style="font-size:14px; color:var(--color-text-secondary);">${renderFormattedInlineText(blk.meaning || blk.text || '')}</p>
             </div>
           `;
 
@@ -112,8 +113,8 @@ export function renderLessonBlocks(blocks = []) {
           return `
             <div class="lesson-callout">
               <div class="lesson-callout-kicker">Worked example</div>
-              ${blk.title ? `<div style="font-weight:700; color:var(--color-navy); margin-bottom:4px;">${escapeHtml(blk.title)}</div>` : ''}
-              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${escapeHtml(blk.body || '')}</p>
+              ${blk.title ? `<div style="font-weight:700; color:var(--color-navy); margin-bottom:4px;">${renderFormattedInlineText(blk.title)}</div>` : ''}
+              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${renderFormattedInlineText(blk.body || '')}</p>
             </div>
           `;
 
@@ -121,12 +122,12 @@ export function renderLessonBlocks(blocks = []) {
           return `
             <div class="lesson-callout lesson-case-study">
               <div class="lesson-callout-kicker">Case study</div>
-              <div style="font-weight:700; color:var(--color-navy); margin-bottom:6px;">${escapeHtml(blk.title || 'Applied Case')}</div>
-              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${escapeHtml(blk.scenario || blk.text || '')}</p>
+              <div style="font-weight:700; color:var(--color-navy); margin-bottom:6px;">${renderFormattedInlineText(blk.title || 'Applied Case')}</div>
+              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${renderFormattedInlineText(blk.scenario || blk.text || '')}</p>
               ${
                 blk.takeaway
                   ? `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--color-border); font-size:13px; color:var(--color-navy);">
-                      <strong>Outcome &amp; takeaway:</strong> ${escapeHtml(blk.takeaway)}
+                      <strong>Outcome &amp; takeaway:</strong> ${renderFormattedInlineText(blk.takeaway)}
                     </div>`
                   : ''
               }
@@ -136,18 +137,18 @@ export function renderLessonBlocks(blocks = []) {
         case 'table':
           return `
             <div class="lesson-block">
-              ${blk.title ? `<h4 class="lesson-block-title">${escapeHtml(blk.title)}</h4>` : ''}
+              ${blk.title ? `<h4 class="lesson-block-title">${renderFormattedInlineText(blk.title)}</h4>` : ''}
               <div style="overflow-x:auto; border:1px solid var(--color-border); border-radius:var(--radius-sm);">
                 <table class="lesson-table">
                   <thead>
                     <tr>
-                      ${(blk.headers || []).map((h) => `<th>${escapeHtml(h)}</th>`).join('')}
+                      ${(blk.headers || []).map((h) => `<th>${renderFormattedInlineText(h)}</th>`).join('')}
                     </tr>
                   </thead>
                   <tbody>
                     ${(blk.rows || [])
                       .map(
-                        (row) => `<tr>${(row || []).map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`
+                        (row) => `<tr>${(row || []).map((cell) => `<td>${renderFormattedInlineText(cell)}</td>`).join('')}</tr>`
                       )
                       .join('')}
                   </tbody>
@@ -159,8 +160,8 @@ export function renderLessonBlocks(blocks = []) {
         case 'callout':
           return `
             <div class="lesson-callout lesson-note">
-              <div class="lesson-callout-kicker">${escapeHtml(blk.title || 'Important note')}</div>
-              <p style="font-size:14px; color:var(--color-navy);">${escapeHtml(blk.text || '')}</p>
+              <div class="lesson-callout-kicker">${renderFormattedInlineText(blk.title || 'Important note')}</div>
+              <p style="font-size:14px; color:var(--color-navy);">${renderFormattedInlineText(blk.text || '')}</p>
             </div>
           `;
 
@@ -168,11 +169,11 @@ export function renderLessonBlocks(blocks = []) {
           return `
             <div class="lesson-callout">
               <div class="lesson-callout-kicker">Practical demonstration</div>
-              <div style="font-weight:700; color:var(--color-navy); margin-bottom:6px;">${escapeHtml(blk.title || 'Try it yourself')}</div>
-              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${escapeHtml(blk.instructions || '')}</p>
+              <div style="font-weight:700; color:var(--color-navy); margin-bottom:6px;">${renderFormattedInlineText(blk.title || 'Try it yourself')}</div>
+              <p style="font-size:14px; color:var(--color-text-secondary); white-space:pre-line;">${renderFormattedInlineText(blk.instructions || '')}</p>
               ${
                 blk.expectedOutcome
-                  ? `<p style="margin-top:8px; font-size:13px; color:var(--color-text-muted);"><strong>Expected output:</strong> ${escapeHtml(blk.expectedOutcome)}</p>`
+                  ? `<p style="margin-top:8px; font-size:13px; color:var(--color-text-muted);"><strong>Expected output:</strong> ${renderFormattedInlineText(blk.expectedOutcome)}</p>`
                   : ''
               }
             </div>

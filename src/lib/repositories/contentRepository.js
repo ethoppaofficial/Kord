@@ -13,6 +13,7 @@ import {
   buildCourseCurriculumSnapshot,
   validateLessonInstructionalContent,
 } from '../contentPackage.js';
+import { validateLessonPublishReadiness } from '../lessonArticle.js';
 
 /**
  * @param {import('../../types/kord.d.ts').DemoState} state
@@ -607,9 +608,7 @@ export async function adminUpsertSkill(payload) {
       return data;
     }
 
-    /** @type {import('../../types/kord.d.ts').Skill | null} */
-    let savedSkill = null;
-    updateDemoState((draft) => {
+    return updateDemoState((draft) => {
       const existing = payload.id
         ? draft.skills.find((s) => s.id === payload.id)
         : draft.skills.find((s) => s.slug === cleanSlug);
@@ -653,16 +652,14 @@ export async function adminUpsertSkill(payload) {
           beforeData: prev,
           afterData: { title: existing.title, publicationStatus: existing.publicationStatus },
         });
-        savedSkill = existing;
         return draft;
       }
 
       const newSkillId = `skill-${cleanSlug}-${Date.now().toString(36).slice(-4)}`;
-      const createdSkill = {
+      draft.skills.push({
         id: newSkillId,
         ...enriched,
-      };
-      draft.skills.push(createdSkill);
+      });
       appendDemoAuditLog(draft, {
         action: 'skill_created',
         targetTable: 'skills',
@@ -670,10 +667,8 @@ export async function adminUpsertSkill(payload) {
         beforeData: null,
         afterData: { title: enriched.title, publicationStatus: enriched.publicationStatus },
       });
-      savedSkill = createdSkill;
       return draft;
     });
-    return savedSkill;
   });
 }
 
@@ -1046,9 +1041,7 @@ export async function adminUpsertPhase({
       return data;
     }
 
-    /** @type {import('../../types/kord.d.ts').Phase | null} */
-    let savedPhase = null;
-    updateDemoState((draft) => {
+    return updateDemoState((draft) => {
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course) throw new Error('Course not found');
       course.phases = course.phases || [];
@@ -1071,10 +1064,9 @@ export async function adminUpsertPhase({
           beforeData: null,
           afterData: { courseId, title: existing.title, publicationStatus },
         });
-        savedPhase = existing;
       } else {
         const newPhaseId = `ph-${Date.now()}`;
-        const createdPhase = {
+        course.phases.push({
           id: newPhaseId,
           position: Number(position || course.phases.length + 1),
           title: String(title || '').trim(),
@@ -1085,8 +1077,7 @@ export async function adminUpsertPhase({
           publicationStatus,
           activities: [],
           lessons: [],
-        };
-        course.phases.push(createdPhase);
+        });
         appendDemoAuditLog(draft, {
           action: 'phase_created',
           targetTable: 'phases',
@@ -1094,12 +1085,10 @@ export async function adminUpsertPhase({
           beforeData: null,
           afterData: { courseId, title: String(title || '').trim(), publicationStatus },
         });
-        savedPhase = createdPhase;
       }
       course.updatedAt = new Date().toISOString();
       return draft;
     });
-    return savedPhase;
   });
 }
 
@@ -1231,11 +1220,19 @@ export async function adminUpsertLesson({
   summary = '',
   takeaways = [],
   furtherReading = [],
-  completionCriteria = 'Read the instructional guide, verify any inline checks, and mark complete.',
-  publicationStatus = 'published',
+  completionCriteria = 'Read the lesson carefully, complete the practical application, submit the assessment check, and mark this lesson complete.',
+  publicationStatus = 'draft',
   isRequired = true,
 }) {
-  const key = buildIdempotencyKey('admin-lesson', id || phaseId, title, String(blocks.length), String(videos.length), publicationStatus);
+  const cleanTitle = String(title || '').trim();
+  if (cleanTitle.length < 3) {
+    throw new Error('Lesson title must be at least 3 characters.');
+  }
+  const resolvedStatus = ['draft', 'published', 'archived'].includes(String(publicationStatus || '').trim())
+    ? String(publicationStatus).trim()
+    : 'draft';
+
+  const key = buildIdempotencyKey('admin-lesson', id || phaseId, cleanTitle, String(blocks.length), String(videos.length), resolvedStatus);
   return runIdempotent(key, async () => {
     const cleanVideos = (videos || []).map((v) => {
       if (v.videoId && v.embedUrl && !v.urlUpdated) return v;
@@ -1259,6 +1256,42 @@ export async function adminUpsertLesson({
           .filter(Boolean);
 
     const cleanResources = (furtherReading || []).filter((fr) => fr && fr.url);
+
+    const candidateLesson = {
+      id: id || '',
+      phaseId,
+      position: Number(position || 1),
+      title: cleanTitle,
+      introduction: String(introduction || '').trim(),
+      objectives: cleanObjectives,
+      estMinutes: Math.max(1, Number(estMinutes || 25)),
+      blocks: Array.isArray(blocks) ? blocks : [],
+      videos: cleanVideos,
+      summary: String(summary || '').trim(),
+      takeaways: cleanTakeaways,
+      furtherReading: cleanResources,
+      completionCriteria: String(completionCriteria || '').trim(),
+      publicationStatus: resolvedStatus,
+      isRequired: Boolean(isRequired),
+    };
+
+    const instructionalCheck = validateLessonInstructionalContent(candidateLesson);
+    const securityIssues = instructionalCheck.errors.filter(
+      (err) => err.message.includes('Disallowed raw HTML') || err.message.includes('Unsafe') || err.message.includes('Null bytes')
+    );
+    if (securityIssues.length > 0) {
+      throw new Error(securityIssues[0].message);
+    }
+
+    if (resolvedStatus === 'published') {
+      const readiness = validateLessonPublishReadiness(candidateLesson);
+      if (!readiness.valid) {
+        throw new Error(readiness.errors.join(' '));
+      }
+      if (!instructionalCheck.valid) {
+        throw new Error(instructionalCheck.errors.map((e) => e.message).join(' '));
+      }
+    }
 
     if (!isDemoMode && supabase) {
       let resolvedPosition = position;
@@ -1311,9 +1344,7 @@ export async function adminUpsertLesson({
       return data;
     }
 
-    /** @type {import('../../types/kord.d.ts').Lesson | null} */
-    let savedLesson = null;
-    updateDemoState((draft) => {
+    return updateDemoState((draft) => {
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course) throw new Error('Course not found');
       const phase = (course.phases || []).find((p) => p.id === phaseId);
@@ -1322,17 +1353,17 @@ export async function adminUpsertLesson({
 
       const existing = id ? phase.lessons.find((l) => l.id === id) : null;
       const lessonData = {
-        title: String(title || '').trim(),
+        title: cleanTitle,
         introduction: String(introduction || '').trim(),
         objectives: cleanObjectives,
-        estMinutes: Number(estMinutes || 25),
-        blocks: Array.isArray(blocks) ? blocks : [],
+        estMinutes: Math.max(1, Number(estMinutes || 25)),
+        blocks: instructionalCheck.normalizedLesson.blocks,
         videos: cleanVideos,
         summary: String(summary || '').trim(),
         takeaways: cleanTakeaways,
         furtherReading: cleanResources,
         completionCriteria: String(completionCriteria || '').trim(),
-        publicationStatus,
+        publicationStatus: resolvedStatus,
         isRequired: Boolean(isRequired),
       };
 
@@ -1343,30 +1374,26 @@ export async function adminUpsertLesson({
           targetTable: 'lessons',
           targetId: existing.id,
           beforeData: null,
-          afterData: { courseId, phaseId, title: lessonData.title, publicationStatus },
+          afterData: { courseId, phaseId, title: lessonData.title, publicationStatus: resolvedStatus },
         });
-        savedLesson = existing;
       } else {
         const newLessonId = `les-${Date.now()}`;
-        const createdLesson = {
+        phase.lessons.push({
           id: newLessonId,
           position: Number(position || phase.lessons.length + 1),
           ...lessonData,
-        };
-        phase.lessons.push(createdLesson);
+        });
         appendDemoAuditLog(draft, {
           action: 'lesson_created',
           targetTable: 'lessons',
           targetId: newLessonId,
           beforeData: null,
-          afterData: { courseId, phaseId, title: lessonData.title, publicationStatus },
+          afterData: { courseId, phaseId, title: lessonData.title, publicationStatus: resolvedStatus },
         });
-        savedLesson = createdLesson;
       }
       course.updatedAt = new Date().toISOString();
       return draft;
     });
-    return savedLesson;
   });
 }
 
@@ -1471,6 +1498,13 @@ export async function adminReorderLessons(courseId, phaseId, orderedLessonIds) {
       if (course) {
         course.updatedAt = new Date().toISOString();
       }
+      appendDemoAuditLog(draft, {
+        action: 'lessons_reordered',
+        targetTable: 'lessons',
+        targetId: phaseId,
+        beforeData: null,
+        afterData: { courseId, phaseId, orderedLessonIds },
+      });
       return draft;
     });
   });

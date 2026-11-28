@@ -69,6 +69,8 @@ const APPROVED_LOCAL_ORIGINS = [
 const APPROVED_AISTUDIO_ORIGINS = [
   'https://ais-dev-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app',
   'https://ais-pre-4bmcxts2gpl7n5lowmiyw3-371147082506.europe-west2.run.app',
+  'https://ais-dev-hndjp6s5npt4acl3a62e54-564723309739.europe-west2.run.app',
+  'https://ais-pre-hndjp6s5npt4acl3a62e54-564723309739.europe-west2.run.app',
 ];
 
 const DEFAULT_PRODUCTION_ORIGIN = 'https://kord-lcec.vercel.app';

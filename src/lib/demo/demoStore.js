@@ -29,6 +29,102 @@ const listeners = new Set();
 /** @type {string | null} */
 let lastSerializedState = null;
 
+/**
+ * Cached deterministic seed baseline for compact localStorage serialization.
+ * @type {{
+ *   coursesById: Map<string, import('../../types/kord.d.ts').Course>;
+ *   courseJsonById: Map<string, string>;
+ * } | null}
+ */
+let cachedSeedBaseline = null;
+
+function getSeedBaseline() {
+  if (cachedSeedBaseline) return cachedSeedBaseline;
+  const seed = createInitialSeed();
+  /** @type {Map<string, import('../../types/kord.d.ts').Course>} */
+  const coursesById = new Map();
+  /** @type {Map<string, string>} */
+  const courseJsonById = new Map();
+  (seed.courses || []).forEach((c) => {
+    if (!c?.id) return;
+    coursesById.set(c.id, c);
+    courseJsonById.set(c.id, JSON.stringify(c));
+  });
+  cachedSeedBaseline = { coursesById, courseJsonById };
+  return cachedSeedBaseline;
+}
+
+/**
+ * Serializes DemoState compactly by omitting unmodified baseline seed courses
+ * so expanded curriculum prose never overflows browser localStorage quotas.
+ *
+ * @param {import('../../types/kord.d.ts').DemoState} fullState
+ * @returns {string}
+ */
+function serializeStateForStorage(fullState) {
+  const { coursesById, courseJsonById } = getSeedBaseline();
+  const currentCourses = Array.isArray(fullState.courses) ? fullState.courses : [];
+  const presentIds = new Set();
+  /** @type {import('../../types/kord.d.ts').Course[]} */
+  const modifiedOrCustomCourses = [];
+
+  for (const c of currentCourses) {
+    if (!c?.id) continue;
+    presentIds.add(c.id);
+    const baselineJson = courseJsonById.get(c.id);
+    if (!baselineJson || JSON.stringify(c) !== baselineJson) {
+      modifiedOrCustomCourses.push(c);
+    }
+  }
+
+  /** @type {string[]} */
+  const deletedSeedCourseIds = [];
+  coursesById.forEach((_val, cid) => {
+    if (!presentIds.has(cid)) {
+      deletedSeedCourseIds.push(cid);
+    }
+  });
+
+  return JSON.stringify({
+    ...stripSessionFields(fullState),
+    _compactSeedCourses: true,
+    courses: modifiedOrCustomCourses,
+    deletedSeedCourseIds,
+  });
+}
+
+/**
+ * Re-hydrates unmodified baseline seed courses when reading a compact payload.
+ *
+ * @param {Record<string, any>} parsed
+ */
+function hydrateCompactedState(parsed) {
+  if (!parsed || !parsed._compactSeedCourses) return parsed;
+  const { coursesById } = getSeedBaseline();
+  const storedCourses = Array.isArray(parsed.courses) ? parsed.courses : [];
+  const storedById = new Map(storedCourses.filter((c) => c?.id).map((c) => [c.id, c]));
+  const deletedSet = new Set(Array.isArray(parsed.deletedSeedCourseIds) ? parsed.deletedSeedCourseIds : []);
+
+  /** @type {import('../../types/kord.d.ts').Course[]} */
+  const rebuilt = [];
+  coursesById.forEach((seedCourse, cid) => {
+    if (deletedSet.has(cid)) return;
+    const override = storedById.get(cid);
+    rebuilt.push(override ? override : structuredClone(seedCourse));
+  });
+  storedCourses.forEach((c) => {
+    if (c?.id && !coursesById.has(c.id)) {
+      rebuilt.push(c);
+    }
+  });
+
+  const { _compactSeedCourses: _omitCompact, deletedSeedCourseIds: _omitDeleted, ...clean } = parsed;
+  return {
+    ...clean,
+    courses: rebuilt,
+  };
+}
+
 export function getDemoCurrentUserId() {
   try {
     const storage =
@@ -176,7 +272,8 @@ function needsCurriculumMigration(parsed) {
  */
 function migrateDemoState(parsed) {
   const seed = createInitialSeed();
-  const cleanParsed = stripSessionFields(parsed);
+  const hydratedParsed = hydrateCompactedState(parsed);
+  const cleanParsed = stripSessionFields(hydratedParsed);
   const merged = {
     ...seed,
     ...cleanParsed,
@@ -216,14 +313,15 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
   try {
     if (!raw) {
       const seed = stripSessionFields(createInitialSeed());
-      const serialized = JSON.stringify(seed);
+      const serialized = serializeStateForStorage(seed);
       if (persistIfSeeded) {
         localStorage.setItem(STORAGE_KEY, serialized);
         lastSerializedState = serialized;
       }
       return seed;
     }
-    const parsed = JSON.parse(raw);
+    const rawParsed = JSON.parse(raw);
+    const parsed = hydrateCompactedState(rawParsed);
     if (
       !parsed ||
       !Array.isArray(parsed.skills) ||
@@ -232,7 +330,7 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
       parsed.skills.length < 20
     ) {
       const seed = stripSessionFields(createInitialSeed());
-      const serialized = JSON.stringify(seed);
+      const serialized = serializeStateForStorage(seed);
       if (persistIfSeeded) {
         localStorage.setItem(STORAGE_KEY, serialized);
         lastSerializedState = serialized;
@@ -242,7 +340,7 @@ function parseOrSeedState(raw, { persistIfSeeded = true } = {}) {
 
     if (needsCurriculumMigration(parsed) || Object.prototype.hasOwnProperty.call(parsed, 'currentUserId')) {
       const migrated = migrateDemoState(parsed);
-      const serialized = JSON.stringify(migrated);
+      const serialized = serializeStateForStorage(migrated);
       if (persistIfSeeded) {
         localStorage.setItem(STORAGE_KEY, serialized);
         lastSerializedState = serialized;
@@ -356,7 +454,7 @@ export function updateDemoState(updater) {
   );
   state = next;
   try {
-    const serialized = JSON.stringify(state);
+    const serialized = serializeStateForStorage(state);
     localStorage.setItem(STORAGE_KEY, serialized);
     lastSerializedState = serialized;
   } catch {
