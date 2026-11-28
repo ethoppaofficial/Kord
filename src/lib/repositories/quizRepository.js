@@ -688,7 +688,9 @@ export async function adminUpsertAssessment(payload) {
       return data;
     }
 
-    return updateDemoState((draft) => {
+    /** @type {import('../../types/kord.d.ts').Quiz | null} */
+    let savedQuiz = null;
+    updateDemoState((draft) => {
       draft.quizzes = draft.quizzes || [];
       const existing = payload.id ? draft.quizzes.find((q) => q.id === payload.id) : null;
       const fields = {
@@ -715,13 +717,15 @@ export async function adminUpsertAssessment(payload) {
           beforeData: prev,
           afterData: { title: existing.title, passPercent: existing.passPercent },
         });
+        savedQuiz = existing;
       } else {
         const newQuizId = `quiz-${Date.now()}`;
-        draft.quizzes.push({
+        const createdQuiz = {
           id: newQuizId,
           ...fields,
           questions: [],
-        });
+        };
+        draft.quizzes.push(createdQuiz);
         appendDemoAuditLog(draft, {
           action: 'quiz_created',
           targetTable: 'quizzes',
@@ -729,7 +733,56 @@ export async function adminUpsertAssessment(payload) {
           beforeData: null,
           afterData: { title: fields.title, passPercent: fields.passPercent },
         });
+        savedQuiz = createdQuiz;
       }
+      return draft;
+    });
+    return savedQuiz;
+  });
+}
+
+/**
+ * Deletes an assessment when it has zero recorded learner attempts
+ * (e.g. when removing all assessment questions from a lesson).
+ *
+ * @param {string} quizId
+ */
+export async function adminDeleteAssessment(quizId) {
+  if (!quizId) return;
+  const key = buildIdempotencyKey('admin-quiz-del', quizId);
+  return runIdempotent(key, async () => {
+    if (!isDemoMode && supabase) {
+      const { count, error: cntErr } = await supabase
+        .from('quiz_attempts')
+        .select('id', { count: 'exact', head: true })
+        .eq('quiz_id', quizId);
+      if (cntErr) throw cntErr;
+      if ((count || 0) > 0) {
+        throw new Error('Cannot remove an assessment that already has learner attempts.');
+      }
+      const { error } = await supabase.from('quizzes').delete().eq('id', quizId);
+      if (error) throw error;
+      return;
+    }
+
+    updateDemoState((draft) => {
+      const hasAttempts = (draft.quizAttempts || []).some((a) => a.quizId === quizId);
+      if (hasAttempts) {
+        throw new Error('Cannot remove an assessment that already has learner attempts.');
+      }
+      const quiz = (draft.quizzes || []).find((q) => q.id === quizId);
+      if (!quiz) return draft;
+      (quiz.questions || []).forEach((q) => {
+        if (draft.privateQuizAnswers) delete draft.privateQuizAnswers[q.id];
+      });
+      draft.quizzes = (draft.quizzes || []).filter((q) => q.id !== quizId);
+      appendDemoAuditLog(draft, {
+        action: 'quiz_deleted',
+        targetTable: 'quizzes',
+        targetId: quizId,
+        beforeData: { title: quiz.title, lessonId: quiz.lessonId || null },
+        afterData: null,
+      });
       return draft;
     });
   });

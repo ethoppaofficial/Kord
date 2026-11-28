@@ -10,8 +10,10 @@ import {
   adminCreateCourseVersion,
   adminUpsertPhase,
   adminReorderPhases,
+  adminDeletePhase,
   adminUpsertActivity,
   adminUpsertLesson,
+  adminReorderLessons,
   adminDeleteLesson,
   validateCourseForPublish,
   adminExportCourseContent,
@@ -20,60 +22,130 @@ import {
   adminListCourseImportHistory,
   adminRestoreCourseSnapshot,
 } from '../../lib/repositories/contentRepository.js';
-import { DIFFICULTY_LEVELS } from '../../lib/constants.js';
-import { BLOCK_TYPE_CATALOG, createEmptyBlock, renderLessonBlocks } from '../../lib/lessonBlocks.js';
+import {
+  listAssessmentsForCourse,
+  adminUpsertAssessment,
+  adminDeleteAssessment,
+  adminGetQuizQuestions,
+  adminUpsertQuestion,
+  adminDeleteQuestion,
+} from '../../lib/repositories/quizRepository.js';
+import { DIFFICULTY_LEVELS, QUESTION_TYPES } from '../../lib/constants.js';
 import {
   CONTENT_PACKAGE_SCHEMA_VERSION,
   CONTENT_PACKAGE_TYPE,
   buildImportErrorReport,
 } from '../../lib/contentPackage.js';
+import { lessonToEditorFields, richTextToLessonBlocks } from '../../lib/richTextLesson.js';
 import { renderCourseThumbnailHtml } from '../../lib/courseThumbnails.js';
-import { renderVideoPlayerHtml, normalizeVideoEntry } from '../../lib/videoProvider.js';
+import { normalizeVideoEntry } from '../../lib/videoProvider.js';
 import { escapeHtml, formatDate } from '../../lib/formatters.js';
 import { registerSessionCleanup } from '../../lib/sessionLifecycle.js';
 import { renderAdminLayout } from '../../components/AdminLayout.js';
 import { renderStatusBadge } from '../../components/Common.js';
+import { renderLessonReaderHtml, bindLessonReader } from '../../components/LessonReader.js';
 import { showToast } from '../../components/Toast.js';
 
-let activeTab = 'courses'; // 'catalog' | 'courses' | 'lessons' | 'import_export'
+/** @type {'hierarchy' | 'lesson_editor' | 'import_export'} */
+let activeTab = 'hierarchy';
 /** @type {string | null} */
 let selectedSkillId = null;
 /** @type {string | null} */
 let selectedCourseId = null;
 /** @type {string | null} */
 let selectedPhaseId = null;
-let courseFormMode = 'edit'; // 'edit' | 'create'
-let previewCourseOpen = false;
-/** @type {string | null} */
-let previewLessonId = null;
-let catalogCategoryFilter = 'All';
-let catalogCourseStatusFilter = 'all';
+
+// Hierarchy inline editor panels
+let skillFormOpen = false;
 /** @type {string | null} */
 let editingSkillId = null;
+let categoryFormOpen = false;
+let skillCourseFilter = 'linked'; // 'linked' | 'all'
+let skillSearchQuery = '';
+let skillAssociationFilter = '';
+let catalogCategoryFilter = 'All';
 
-// Stateful Visual Lesson Builder state (persists across block add/reorder rerenders)
+let courseFormMode = 'edit'; // 'edit' | 'create'
+let courseFormOpen = false;
+/** @type {string | null} */
+let editingPhaseId = null;
+let phaseFormOpen = false;
+/** @type {string | null} */
+let confirmDeletePhaseId = null;
+/** @type {string | null} */
+let confirmDeleteLessonId = null;
+
+// Preview modals
+let previewCourseOpen = false;
+/** @type {string | null} */
+let previewModalLessonId = null;
+
+// 10-Field Lesson Editor state
+/** @type {'split' | 'edit' | 'preview'} */
+let lessonViewMode = 'split';
 /** @type {string | null} */
 let editingLessonId = null;
 let lessonDraft = {
   title: '',
-  estMinutes: 25,
   introduction: '',
   objectives: '',
+  mainContentText:
+    '## Core concepts\n\nExplain the foundational principles clearly in connected paragraphs so learners can study independently.\n\n- Core principle one\n- Core principle two',
+  practicalTitle: '',
+  practicalBody: '',
+  practicalOutcome: '',
   summary: '',
   takeaways: '',
-  completionCriteria: 'Read the instructional guide, review the example, verify inline checks, and mark complete.',
+  completionCriteria:
+    'Read the lecture, work through the practical application, pass the knowledge check, and mark complete.',
   publicationStatus: 'published',
+  estMinutes: 25,
   isRequired: true,
+  passPercent: 70,
 };
-/** @type {import('../../types/kord.d.ts').LessonBlock[]} */
-let draftBlocks = [
-  { id: 'blk-init-1', type: 'heading', text: 'Core Concept Overview' },
-  { id: 'blk-init-2', type: 'paragraph', text: 'Explain the foundational principle clearly here.' },
-];
 /** @type {import('../../types/kord.d.ts').VideoEntry[]} */
 let draftVideos = [];
 /** @type {import('../../types/kord.d.ts').FurtherReadingItem[]} */
 let draftResources = [];
+
+/**
+ * @typedef {{
+ *   id?: string;
+ *   tempId: string;
+ *   questionType: string;
+ *   marks: number;
+ *   difficulty: string;
+ *   prompt: string;
+ *   contextText?: string;
+ *   options: string[];
+ *   correctIndex: number;
+ *   correctIndices: number[] | null;
+ *   acceptedAnswers: string[] | null;
+ *   correctOrder: number[] | null;
+ *   explanation: string;
+ * }} DraftAssessmentQuestion
+ */
+
+/** @type {string | null} */
+let draftLessonQuizId = null;
+/** @type {string[]} */
+let originalLessonQuestionIds = [];
+/** @type {DraftAssessmentQuestion[]} */
+let draftAssessmentQuestions = [];
+/** @type {number | null} */
+let editingQuestionIndex = null;
+let questionComposer = {
+  questionType: 'multiple_choice',
+  marks: 2,
+  difficulty: 'medium',
+  prompt: '',
+  contextText: '',
+  optionsLines: '',
+  correctIndex: 0,
+  correctIndicesCsv: '',
+  acceptedAnswersCsv: '',
+  explanation: '',
+};
 
 // Stateful Bulk Content Import / Export / Recovery state
 let importJsonText = '';
@@ -96,6 +168,50 @@ let exportPreviewJson = '';
 /** @type {import('../../types/kord.d.ts').BulkImportCommitResult | null} */
 let lastCommitResult = null;
 
+function resetQuestionComposer() {
+  editingQuestionIndex = null;
+  questionComposer = {
+    questionType: 'multiple_choice',
+    marks: 2,
+    difficulty: 'medium',
+    prompt: '',
+    contextText: '',
+    optionsLines: '',
+    correctIndex: 0,
+    correctIndicesCsv: '',
+    acceptedAnswersCsv: '',
+    explanation: '',
+  };
+}
+
+function resetLessonEditor() {
+  editingLessonId = null;
+  draftLessonQuizId = null;
+  originalLessonQuestionIds = [];
+  draftAssessmentQuestions = [];
+  resetQuestionComposer();
+  lessonDraft = {
+    title: '',
+    introduction: '',
+    objectives: '',
+    mainContentText:
+      '## Core concepts\n\nExplain the foundational principles clearly in connected paragraphs so learners can study independently.\n\n- Core principle one\n- Core principle two',
+    practicalTitle: '',
+    practicalBody: '',
+    practicalOutcome: '',
+    summary: '',
+    takeaways: '',
+    completionCriteria:
+      'Read the lecture, work through the practical application, pass the knowledge check, and mark complete.',
+    publicationStatus: 'published',
+    estMinutes: 25,
+    isRequired: true,
+    passPercent: 70,
+  };
+  draftVideos = [];
+  draftResources = [];
+}
+
 function resetImportExportState() {
   importJsonText = '';
   lastPreviewedJsonText = '';
@@ -113,45 +229,32 @@ function resetImportExportState() {
   lastCommitResult = null;
 }
 
-function resetLessonBuilder() {
-  editingLessonId = null;
-  lessonDraft = {
-    title: '',
-    estMinutes: 25,
-    introduction: '',
-    objectives: '',
-    summary: '',
-    takeaways: '',
-    completionCriteria: 'Read the instructional guide, review the example, verify inline checks, and mark complete.',
-    publicationStatus: 'published',
-    isRequired: true,
-  };
-  draftBlocks = [
-    { id: `blk-${Date.now()}-1`, type: 'heading', text: 'Core Concept Overview' },
-    { id: `blk-${Date.now()}-2`, type: 'paragraph', text: 'Explain the foundational principle clearly here.' },
-  ];
-  draftVideos = [];
-  draftResources = [];
-}
-
 registerSessionCleanup(() => {
-  activeTab = 'courses';
+  activeTab = 'hierarchy';
   selectedSkillId = null;
   selectedCourseId = null;
   selectedPhaseId = null;
-  courseFormMode = 'edit';
-  previewCourseOpen = false;
-  previewLessonId = null;
-  catalogCategoryFilter = 'All';
-  catalogCourseStatusFilter = 'all';
+  skillFormOpen = false;
   editingSkillId = null;
-  resetLessonBuilder();
+  categoryFormOpen = false;
+  skillCourseFilter = 'linked';
+  skillSearchQuery = '';
+  skillAssociationFilter = '';
+  catalogCategoryFilter = 'All';
+  courseFormMode = 'edit';
+  courseFormOpen = false;
+  editingPhaseId = null;
+  phaseFormOpen = false;
+  confirmDeletePhaseId = null;
+  confirmDeleteLessonId = null;
+  previewCourseOpen = false;
+  previewModalLessonId = null;
+  lessonViewMode = 'split';
+  resetLessonEditor();
   resetImportExportState();
 });
 
 /**
- * Triggers an in-browser JSON file download without window.open or popups.
- *
  * @param {string} filename
  * @param {string} jsonString
  */
@@ -167,12 +270,7 @@ function downloadJsonFile(filename, jsonString) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/**
- * Formats a diff field value into a readable, bounded summary string.
- *
- * @param {unknown} val
- * @returns {string}
- */
+/** @param {unknown} val */
 function formatDiffValue(val) {
   if (val === null || val === undefined || val === '') return '(empty)';
   if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
@@ -188,12 +286,7 @@ function formatDiffValue(val) {
   return json.length > 260 ? `${json.slice(0, 240)}…` : json;
 }
 
-/**
- * Builds a minimal valid v1.0 JSON import starter template for the active course.
- *
- * @param {import('../../types/kord.d.ts').Course} course
- * @returns {string}
- */
+/** @param {import('../../types/kord.d.ts').Course} course */
 function buildStarterPackageTemplate(course) {
   const firstPhase = (course.phases || [])[0];
   return JSON.stringify(
@@ -212,7 +305,8 @@ function buildStarterPackageTemplate(course) {
             {
               isNew: true,
               title: 'New Structured Practical Lesson',
-              introduction: 'Introduce the practical scope, tools, and mental model learners will apply in this lesson.',
+              introduction:
+                'Introduce the practical scope, tools, and mental model learners will apply in this lesson.',
               objectives: ['Apply core concept accurately', 'Complete self-check verification'],
               estMinutes: 25,
               isRequired: true,
@@ -227,28 +321,10 @@ function buildStarterPackageTemplate(course) {
                   title: 'Execution Checklist',
                   items: ['Audit existing assumptions', 'Document measurable outcome'],
                 },
-                {
-                  type: 'knowledge_check',
-                  prompt: 'Which practice keeps imported course content reliable?',
-                  options: [
-                    'Validate structured JSON blocks and preview diffs before commit',
-                    'Bypass validation checks and auto-publish untested drafts',
-                  ],
-                  correctIndex: 0,
-                  explanation: 'Dry-run validation and draft staging protect learner progress.',
-                },
               ],
               summary: 'Recap how structured workflows preserve curriculum quality.',
               takeaways: ['Every imported lesson defaults safely to Draft status.'],
-              furtherReading: [
-                {
-                  title: 'MDN Web Docs Reference',
-                  source: 'MDN',
-                  url: 'https://developer.mozilla.org/en-US/',
-                  resourceType: 'Documentation',
-                },
-              ],
-              completionCriteria: 'Review every block, verify the inline check, and mark complete.',
+              completionCriteria: 'Read the guide and mark complete.',
             },
           ],
         },
@@ -259,127 +335,254 @@ function buildStarterPackageTemplate(course) {
   );
 }
 
-/** @param {import('../../types/kord.d.ts').Lesson | null} lesson */
-function loadLessonIntoBuilder(lesson) {
+/**
+ * Loads a lesson (plus any linked DB assessment questions or legacy inline checks)
+ * into the 10-field Lesson Editor.
+ *
+ * @param {import('../../types/kord.d.ts').Lesson | null} lesson
+ * @param {import('../../types/kord.d.ts').Quiz[]} courseAssessments
+ */
+async function loadLessonIntoEditor(lesson, courseAssessments = []) {
   if (!lesson) {
-    resetLessonBuilder();
+    resetLessonEditor();
     return;
   }
+
   editingLessonId = lesson.id;
+  const extracted = lessonToEditorFields(lesson);
   lessonDraft = {
     title: lesson.title || '',
-    estMinutes: Number(lesson.estMinutes || 25),
     introduction: lesson.introduction || '',
     objectives: (lesson.objectives || []).join('\n'),
+    mainContentText: extracted.mainContentText || '',
+    practicalTitle: extracted.practicalTitle || '',
+    practicalBody: extracted.practicalBody || '',
+    practicalOutcome: extracted.practicalOutcome || '',
     summary: lesson.summary || '',
     takeaways: (lesson.takeaways || []).join('\n'),
     completionCriteria:
       lesson.completionCriteria ||
-      'Read the instructional guide, verify inline checks, and mark complete.',
+      'Read the lecture, work through the practical application, pass the knowledge check, and mark complete.',
     publicationStatus: lesson.publicationStatus || 'published',
+    estMinutes: Number(lesson.estMinutes || 25),
     isRequired: lesson.isRequired !== false,
+    passPercent: 70,
   };
-  draftBlocks = structuredClone(lesson.blocks || []);
   draftVideos = structuredClone(lesson.videos || []);
   draftResources = structuredClone(lesson.furtherReading || []);
+  resetQuestionComposer();
+
+  const linkedQuiz = courseAssessments.find((a) => a.lessonId === lesson.id) || null;
+  if (linkedQuiz) {
+    draftLessonQuizId = linkedQuiz.id;
+    lessonDraft.passPercent = Number(linkedQuiz.passPercent || 70);
+    try {
+      const qs = await adminGetQuizQuestions(linkedQuiz.id);
+      originalLessonQuestionIds = qs.map((q) => q.id);
+      draftAssessmentQuestions = qs.map((q, idx) => ({
+        id: q.id,
+        tempId: q.id || `q-${idx}`,
+        questionType: q.questionType || 'multiple_choice',
+        marks: Number(q.marks || 1),
+        difficulty: q.difficulty || 'medium',
+        prompt: q.prompt || '',
+        contextText: q.contextText || '',
+        options: Array.isArray(q.options) ? q.options.slice() : [],
+        correctIndex: Number(q.correctIndex ?? 0),
+        correctIndices: Array.isArray(q.correctIndices) ? q.correctIndices.slice() : null,
+        acceptedAnswers: Array.isArray(q.acceptedAnswers) ? q.acceptedAnswers.slice() : null,
+        correctOrder: Array.isArray(q.correctOrder) ? q.correctOrder.slice() : null,
+        explanation: q.explanation || '',
+      }));
+    } catch {
+      originalLessonQuestionIds = [];
+      draftAssessmentQuestions = [];
+    }
+  } else {
+    draftLessonQuizId = null;
+    originalLessonQuestionIds = [];
+    // Pre-populate from legacy inline knowledge_check blocks if present
+    draftAssessmentQuestions = (extracted.inlineChecks || []).map((kc, idx) => ({
+      tempId: `legacy-kc-${idx}-${Date.now()}`,
+      questionType: 'multiple_choice',
+      marks: 1,
+      difficulty: 'medium',
+      prompt: kc.prompt || '',
+      contextText: '',
+      options: Array.isArray(kc.options) ? kc.options.slice() : [],
+      correctIndex: Number(kc.correctIndex || 0),
+      correctIndices: null,
+      acceptedAnswers: null,
+      correctOrder: null,
+      explanation: kc.explanation || 'Review the lecture above.',
+    }));
+  }
 }
 
 /**
- * @param {import('../../types/kord.d.ts').LessonBlock} blk
- * @param {number} idx
- * @param {number} total
+ * Builds a live preview Lesson & optional preview Quiz directly from current editor state
+ * without needing a DB round-trip.
  */
-function renderDraftBlockEditor(blk, idx, total) {
-  let fieldsHtml;
-  if (blk.type === 'heading' || blk.type === 'paragraph') {
-    fieldsHtml = `
-      <textarea class="textarea" data-blk-field="text" data-blk-idx="${idx}" style="min-height:${blk.type === 'heading' ? '44px' : '74px'};" placeholder="Enter ${blk.type} text…">${escapeHtml(blk.text || '')}</textarea>
-    `;
-  } else if (blk.type === 'steps' || blk.type === 'bullets') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Section title" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="itemsLines" data-blk-idx="${idx}" style="min-height:74px;" placeholder="One item per line…">${escapeHtml((blk.items || []).join('\n'))}</textarea>
-    `;
-  } else if (blk.type === 'definition') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="term" data-blk-idx="${idx}" value="${escapeHtml(blk.term || '')}" placeholder="Term" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="meaning" data-blk-idx="${idx}" style="min-height:60px;" placeholder="Definition meaning…">${escapeHtml(blk.meaning || '')}</textarea>
-    `;
-  } else if (blk.type === 'example') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Example title" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="body" data-blk-idx="${idx}" style="min-height:70px;" placeholder="Worked example text…">${escapeHtml(blk.body || '')}</textarea>
-    `;
-  } else if (blk.type === 'case_study') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Case title" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="scenario" data-blk-idx="${idx}" style="min-height:70px; margin-bottom:6px;" placeholder="Scenario details…">${escapeHtml(blk.scenario || '')}</textarea>
-      <input class="input" data-blk-field="takeaway" data-blk-idx="${idx}" value="${escapeHtml(blk.takeaway || '')}" placeholder="Key outcome / takeaway" />
-    `;
-  } else if (blk.type === 'callout') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Note title" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="text" data-blk-idx="${idx}" style="min-height:60px;" placeholder="Important callout message…">${escapeHtml(blk.text || '')}</textarea>
-    `;
-  } else if (blk.type === 'demonstration') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Demonstration title" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="instructions" data-blk-idx="${idx}" style="min-height:70px; margin-bottom:6px;" placeholder="Hands-on steps…">${escapeHtml(blk.instructions || '')}</textarea>
-      <input class="input" data-blk-field="expectedOutcome" data-blk-idx="${idx}" value="${escapeHtml(blk.expectedOutcome || '')}" placeholder="Expected result" />
-    `;
-  } else if (blk.type === 'code') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Snippet title" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="code" data-blk-idx="${idx}" style="min-height:80px; font-family:var(--font-mono); font-size:12px;" placeholder="Code or template snippet…">${escapeHtml(blk.code || '')}</textarea>
-    `;
-  } else if (blk.type === 'image') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Illustration / diagram title" style="margin-bottom:6px;" />
-      <input class="input" data-blk-field="url" data-blk-idx="${idx}" value="${escapeHtml(blk.url || '')}" placeholder="Image URL (https://... or /assets/...)" style="margin-bottom:6px;" />
-      <div class="lab-grid-2">
-        <input class="input" data-blk-field="alt" data-blk-idx="${idx}" value="${escapeHtml(blk.alt || '')}" placeholder="Accessible alt description" />
-        <input class="input" data-blk-field="caption" data-blk-idx="${idx}" value="${escapeHtml(blk.caption || '')}" placeholder="Caption under figure" />
-      </div>
-    `;
-  } else if (blk.type === 'table') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Table title" style="margin-bottom:6px;" />
-      <input class="input" data-blk-field="headersCsv" data-blk-idx="${idx}" value="${escapeHtml((blk.headers || []).join(', '))}" placeholder="Comma-separated headers (e.g. Option, Pros, Cons)" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="rowsText" data-blk-idx="${idx}" style="min-height:64px;" placeholder="One row per line, pipe-separated: Val A | Val B">${escapeHtml((blk.rows || []).map((r) => r.join(' | ')).join('\n'))}</textarea>
-    `;
-  } else if (blk.type === 'resource_download') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="title" data-blk-idx="${idx}" value="${escapeHtml(blk.title || '')}" placeholder="Resource title" style="margin-bottom:6px;" />
-      <input class="input" data-blk-field="description" data-blk-idx="${idx}" value="${escapeHtml(blk.description || '')}" placeholder="Short description" style="margin-bottom:6px;" />
-      <input class="input" data-blk-field="url" data-blk-idx="${idx}" value="${escapeHtml(blk.url || '')}" placeholder="https://..." />
-    `;
-  } else if (blk.type === 'knowledge_check') {
-    fieldsHtml = `
-      <input class="input" data-blk-field="prompt" data-blk-idx="${idx}" value="${escapeHtml(blk.prompt || '')}" placeholder="Inline question prompt" style="margin-bottom:6px;" />
-      <textarea class="textarea" data-blk-field="optionsLines" data-blk-idx="${idx}" style="min-height:64px; margin-bottom:6px;" placeholder="Options (one per line)">${escapeHtml((blk.options || []).join('\n'))}</textarea>
-      <div class="lab-grid-2">
-        <input class="input" type="number" min="0" data-blk-field="correctIndex" data-blk-idx="${idx}" value="${Number(blk.correctIndex || 0)}" placeholder="Correct 0-based index" />
-        <input class="input" data-blk-field="explanation" data-blk-idx="${idx}" value="${escapeHtml(blk.explanation || '')}" placeholder="Feedback explanation" />
-      </div>
-    `;
-  } else {
-    fieldsHtml = `<input class="input" data-blk-field="text" data-blk-idx="${idx}" value="${escapeHtml(blk.text || '')}" />`;
+function buildLivePreviewPayload() {
+  let parseError = '';
+  /** @type {import('../../types/kord.d.ts').LessonBlock[]} */
+  let blocks = [];
+  try {
+    blocks = richTextToLessonBlocks({
+      mainContentText: lessonDraft.mainContentText,
+      practicalTitle: lessonDraft.practicalTitle,
+      practicalBody: lessonDraft.practicalBody,
+      practicalOutcome: lessonDraft.practicalOutcome,
+    });
+  } catch (err) {
+    parseError = err instanceof Error ? err.message : 'Invalid rich-text formatting.';
   }
 
-  const label = BLOCK_TYPE_CATALOG.find((b) => b.type === blk.type)?.label || blk.type;
-  return `
-    <div class="builder-block-card">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
-        <strong style="font-size:12.5px; color:var(--color-navy); text-transform:uppercase;">${idx + 1}. ${escapeHtml(label)}</strong>
-        <div style="display:flex; gap:4px;">
-          <button type="button" class="btn btn-secondary btn-sm" data-move-blk="${idx}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>Up</button>
-          <button type="button" class="btn btn-secondary btn-sm" data-move-blk="${idx}" data-dir="1" ${idx === total - 1 ? 'disabled' : ''}>Down</button>
-          <button type="button" class="btn btn-danger btn-sm" data-del-blk="${idx}">Remove</button>
-        </div>
-      </div>
-      ${fieldsHtml}
-    </div>
-  `;
+  /** @type {Partial<import('../../types/kord.d.ts').Lesson>} */
+  const previewLesson = {
+    id: editingLessonId || 'preview-draft',
+    title: lessonDraft.title || 'Untitled Lesson',
+    introduction: lessonDraft.introduction,
+    objectives: lessonDraft.objectives
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    blocks,
+    videos: draftVideos,
+    summary: lessonDraft.summary,
+    takeaways: lessonDraft.takeaways
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    furtherReading: draftResources,
+    completionCriteria: lessonDraft.completionCriteria,
+    publicationStatus: lessonDraft.publicationStatus,
+    estMinutes: Number(lessonDraft.estMinutes || 25),
+    isRequired: Boolean(lessonDraft.isRequired),
+  };
+
+  /** @type {import('../../types/kord.d.ts').Quiz | null} */
+  const previewQuiz =
+    draftAssessmentQuestions.length > 0
+      ? {
+          id: draftLessonQuizId || 'preview-quiz',
+          skillId: '',
+          quizType: 'knowledge_check',
+          title: `${lessonDraft.title || 'Lesson'} — Knowledge Check`,
+          passPercent: Number(lessonDraft.passPercent || 70),
+          questions: draftAssessmentQuestions.map((q, idx) => ({
+            id: q.id || q.tempId,
+            position: idx + 1,
+            questionType: q.questionType,
+            difficulty: q.difficulty,
+            marks: q.marks,
+            prompt: q.prompt,
+            contextText: q.contextText,
+            options: q.options,
+          })),
+        }
+      : null;
+
+  return { previewLesson, previewQuiz, parseError };
+}
+
+/**
+ * Inserts structured rich-text snippets cleanly at the textarea cursor.
+ *
+ * @param {HTMLTextAreaElement} textarea
+ * @param {string} action
+ */
+function applyRichTextToolbarAction(textarea, action) {
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? textarea.value.length;
+  const selected = textarea.value.slice(start, end);
+
+  /** @type {string} */
+  let snippet;
+  let selectOffsetStart = 0;
+  let selectOffsetEnd = 0;
+
+  switch (action) {
+    case 'h2': {
+      const txt = selected || 'Section heading';
+      snippet = `\n## ${txt}\n`;
+      selectOffsetStart = 4;
+      selectOffsetEnd = 4 + txt.length;
+      break;
+    }
+    case 'h3': {
+      const txt = selected || 'Subheading';
+      snippet = `\n### ${txt}\n`;
+      selectOffsetStart = 5;
+      selectOffsetEnd = 5 + txt.length;
+      break;
+    }
+    case 'bold': {
+      const txt = selected || 'important term';
+      snippet = `**${txt}**`;
+      selectOffsetStart = 2;
+      selectOffsetEnd = 2 + txt.length;
+      break;
+    }
+    case 'italic': {
+      const txt = selected || 'emphasis';
+      snippet = `*${txt}*`;
+      selectOffsetStart = 1;
+      selectOffsetEnd = 1 + txt.length;
+      break;
+    }
+    case 'bullets': {
+      const txt = selected || 'Key point one\nKey point two';
+      snippet =
+        '\n' +
+        txt
+          .split('\n')
+          .map((l) => `- ${l.replace(/^[-*]\s+/, '')}`)
+          .join('\n') +
+        '\n';
+      break;
+    }
+    case 'steps': {
+      const txt = selected || 'First step\nSecond step';
+      snippet =
+        '\n' +
+        txt
+          .split('\n')
+          .map((l, i) => `${i + 1}. ${l.replace(/^\d+[.)]\s+/, '')}`)
+          .join('\n') +
+        '\n';
+      break;
+    }
+    case 'table':
+      snippet = '\n| Concept | Purpose | Example |\n| --- | --- | --- |\n| Item A | Primary use | Sample |\n| Item B | Secondary use | Sample |\n';
+      break;
+    case 'definition':
+      snippet = `\n${selected || 'Key term'} :: Clear, concise explanation of the term.\n`;
+      break;
+    case 'callout':
+      snippet = `\n> Key insight: ${selected || 'Highlight an essential takeaway or common misconception to avoid.'}\n`;
+      break;
+    case 'code':
+      snippet = `\n\`\`\`text\n${selected || '// Example template or code snippet'}\n\`\`\`\n`;
+      break;
+    case 'image':
+      snippet = `\n![Diagram description|Caption under figure](https://images.example.com/diagram.png)\n`;
+      break;
+    default:
+      return;
+  }
+
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+  textarea.value = `${before}${snippet}${after}`;
+  lessonDraft.mainContentText = textarea.value;
+  textarea.focus();
+  if (selectOffsetEnd > selectOffsetStart) {
+    textarea.setSelectionRange(start + selectOffsetStart, start + selectOffsetEnd);
+  } else {
+    const caret = start + snippet.length;
+    textarea.setSelectionRange(caret, caret);
+  }
 }
 
 /**
@@ -393,22 +596,56 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
     listAllCourses({ includeDrafts: true }),
   ]);
 
+  const filteredSkillsList = skills.filter((s) => {
+    if (catalogCategoryFilter !== 'All' && s.category !== catalogCategoryFilter) return false;
+    if (skillSearchQuery.trim()) {
+      const q = skillSearchQuery.trim().toLowerCase();
+      return (
+        s.title.toLowerCase().includes(q) ||
+        (s.category || '').toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
   if (!selectedSkillId || !skills.some((s) => s.id === selectedSkillId)) {
-    selectedSkillId = skills.find((s) => (s.courseCount || 0) > 0)?.id || skills[0]?.id || null;
+    selectedSkillId =
+      filteredSkillsList[0]?.id ||
+      skills.find((s) => (s.courseCount || 0) > 0)?.id ||
+      skills[0]?.id ||
+      null;
   }
 
-  const skillCourses = courses.filter(
-    (c) => c.skillId === selectedSkillId || (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
-  );
+  const activeSkill = skills.find((s) => s.id === selectedSkillId) || null;
+  const skillCourses =
+    skillCourseFilter === 'all'
+      ? courses
+      : courses.filter(
+          (c) =>
+            c.skillId === selectedSkillId ||
+            (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
+        );
+
   if (!selectedCourseId || !courses.some((c) => c.id === selectedCourseId)) {
     selectedCourseId = skillCourses[0]?.id || courses[0]?.id || null;
+  } else if (
+    skillCourseFilter === 'linked' &&
+    skillCourses.length > 0 &&
+    !skillCourses.some((c) => c.id === selectedCourseId)
+  ) {
+    selectedCourseId = skillCourses[0].id;
   }
+
   const activeCourseSummary = courses.find((c) => c.id === selectedCourseId) || null;
   const activeCourse = activeCourseSummary
     ? (await getCourseById(activeCourseSummary.id, { includeDrafts: true })) || activeCourseSummary
     : null;
+  const courseAssessments = activeCourse
+    ? await listAssessmentsForCourse(activeCourse.id)
+    : [];
   const publishCheck = activeCourse ? validateCourseForPublish(activeCourse) : null;
   const phases = activeCourse?.phases || [];
+
   if (!selectedPhaseId || !phases.some((p) => p.id === selectedPhaseId)) {
     selectedPhaseId = phases[0]?.id || null;
   }
@@ -419,25 +656,39 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
     editingLessonId = null;
   }
 
+  const editingSkill = editingSkillId ? skills.find((s) => s.id === editingSkillId) || null : null;
+  const editingPhaseObj = editingPhaseId ? phases.find((p) => p.id === editingPhaseId) || null : null;
   const editCourseObj = courseFormMode === 'edit' && activeCourse ? activeCourse : null;
   if (!activeCourse && courseFormMode === 'edit') {
     courseFormMode = 'create';
   }
 
-  const previewLessonsFlat = phases.flatMap((p) =>
-    (p.lessons || []).map((l) => ({ ...l, phaseTitle: p.title, phasePosition: p.position }))
+  const allCourseLessonsFlat = phases.flatMap((p) =>
+    (p.lessons || []).map((l) => ({
+      ...l,
+      phaseId: p.id,
+      phaseTitle: p.title,
+      phasePosition: p.position,
+      totalInPhase: (p.lessons || []).length,
+    }))
   );
-  const previewLesson =
-    previewLessonsFlat.find((l) => l.id === previewLessonId) || previewLessonsFlat[0] || null;
+  const modalPreviewLesson = previewModalLessonId
+    ? allCourseLessonsFlat.find((l) => l.id === previewModalLessonId) || null
+    : null;
 
-  const filteredCatalogSkills = skills.filter((s) => {
-    if (catalogCategoryFilter !== 'All' && s.category !== catalogCategoryFilter) return false;
-    if (catalogCourseStatusFilter === 'published_courses' && s.courseCount === 0) return false;
-    if (catalogCourseStatusFilter === 'draft_courses' && (s.draftCourseCount || 0) === 0) return false;
-    if (catalogCourseStatusFilter === 'no_courses' && (s.totalCourseCount || 0) > 0) return false;
-    return true;
-  });
-  const editingSkill = editingSkillId ? skills.find((s) => s.id === editingSkillId) || null : null;
+  /** @type {import('../../types/kord.d.ts').Quiz | null} */
+  let modalPreviewQuiz = null;
+  if (modalPreviewLesson) {
+    const linked = courseAssessments.find((a) => a.lessonId === modalPreviewLesson.id);
+    if (linked) {
+      try {
+        const qs = await adminGetQuizQuestions(linked.id);
+        modalPreviewQuiz = { ...linked, questions: qs };
+      } catch {
+        modalPreviewQuiz = null;
+      }
+    }
+  }
 
   /** @type {import('../../types/kord.d.ts').ContentImportRecord[]} */
   let importHistory = [];
@@ -454,209 +705,294 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
   const dryRunMatchesCurrentText = Boolean(dryRunPlan) && importJsonText === lastPreviewedJsonText;
   const totalCourseLessons = phases.reduce((sum, p) => sum + (p.lessons || []).length, 0);
 
+  // Build filtered skills checklist for Course <-> Skill M2M association
+  const linkedSkillSet = new Set(
+    editCourseObj?.associatedSkillIds?.length
+      ? editCourseObj.associatedSkillIds
+      : selectedSkillId
+        ? [selectedSkillId]
+        : []
+  );
+  const associationSkillsList = skills.filter((s) => {
+    if (linkedSkillSet.has(s.id)) return true;
+    if (!skillAssociationFilter.trim()) return true;
+    const q = skillAssociationFilter.trim().toLowerCase();
+    return s.title.toLowerCase().includes(q) || (s.category || '').toLowerCase().includes(q);
+  });
+
+  // Assessment question composer helpers
+  const qType = questionComposer.questionType;
+  const qIsManual = ['short_answer', 'long_form', 'practical_submission'].includes(qType);
+  const qIsFill = qType === 'fill_blank';
+  const qIsOrder = qType === 'ordering';
+  const qIsMultiSelect = qType === 'multiple_select';
+  const qIsTrueFalse = qType === 'true_false';
+
+  const { previewLesson: livePreviewLesson, previewQuiz: livePreviewQuiz, parseError: liveParseError } =
+    activeTab === 'lesson_editor'
+      ? buildLivePreviewPayload()
+      : { previewLesson: null, previewQuiz: null, parseError: '' };
+
   const innerHtml = `
     <div class="page-header">
       <div>
-        <h1 class="page-title">Course Engine &amp; Curriculum Authoring</h1>
-        <p class="page-subtitle">Manage ${courses.length} courses, ${skills.length} competencies, module ordering, practical activities, JSON block lessons, bulk JSON import/export, and snapshot recovery.</p>
+        <h1 class="page-title">Curriculum &amp; Content Management</h1>
+        <p class="page-subtitle">Structured authoring hierarchy: Skills → Courses → Phases → Lessons, with rich-text editing and live learner preview.</p>
       </div>
 
       <div class="segmented" role="tablist">
-        <button type="button" class="segmented-btn ${activeTab === 'courses' ? 'is-active' : ''}" data-admin-tab="courses">Courses &amp; Modules</button>
-        <button type="button" class="segmented-btn ${activeTab === 'lessons' ? 'is-active' : ''}" data-admin-tab="lessons">Visual Lesson Builder</button>
+        <button type="button" class="segmented-btn ${activeTab === 'hierarchy' ? 'is-active' : ''}" data-admin-tab="hierarchy">Curriculum Hierarchy</button>
+        <button type="button" class="segmented-btn ${activeTab === 'lesson_editor' ? 'is-active' : ''}" data-admin-tab="lesson_editor">Lesson Editor</button>
         <button type="button" class="segmented-btn ${activeTab === 'import_export' ? 'is-active' : ''}" data-admin-tab="import_export">Import / Export</button>
-        <button type="button" class="segmented-btn ${activeTab === 'catalog' ? 'is-active' : ''}" data-admin-tab="catalog">Categories &amp; Skills (${skills.length})</button>
       </div>
     </div>
 
     ${
-      activeTab === 'courses'
+      activeTab === 'hierarchy'
         ? `
-      <div class="card" style="margin-bottom:20px;">
-        <div class="lab-grid-2">
-          <div class="field">
-            <label class="field-label" for="admin-course-skill">Filter by Parent / Associated Skill</label>
-            <select class="select" id="admin-course-skill">
-              ${skills
-                .map(
-                  (s) => `<option value="${escapeHtml(s.id)}" ${s.id === selectedSkillId ? 'selected' : ''}>${escapeHtml(s.title)} (${escapeHtml(s.category)} · ${s.courseCount} courses)</option>`
-                )
-                .join('')}
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label" for="admin-active-course">Select Course (${skillCourses.length} under skill · ${courses.length} total)</label>
-            <select class="select" id="admin-active-course">
-              ${
-                skillCourses.length > 0
-                  ? skillCourses
-                      .map(
-                        (c) => `<option value="${escapeHtml(c.id)}" ${c.id === selectedCourseId ? 'selected' : ''}>${escapeHtml(c.title)} (${escapeHtml(c.difficulty)} · v${c.version || 1} · ${c.publicationStatus})</option>`
-                      )
-                      .join('')
-                  : '<option value="">No courses linked to this skill yet — create one on the right</option>'
-              }
-            </select>
-          </div>
+      <!-- Explicit 4-Level Hierarchy Locator Strip -->
+      <div class="card admin-hierarchy-strip">
+        <div class="admin-hierarchy-step">
+          <span class="admin-step-label">1. Skill</span>
+          <strong>${activeSkill ? escapeHtml(activeSkill.title) : 'None selected'}</strong>
+        </div>
+        <span class="breadcrumb-sep" aria-hidden="true">→</span>
+        <div class="admin-hierarchy-step">
+          <span class="admin-step-label">2. Course</span>
+          <strong>${activeCourse ? escapeHtml(activeCourse.title) : 'None selected'}</strong>
+        </div>
+        <span class="breadcrumb-sep" aria-hidden="true">→</span>
+        <div class="admin-hierarchy-step">
+          <span class="admin-step-label">3. Phase</span>
+          <strong>${activePhase ? `Phase ${activePhase.position}: ${escapeHtml(activePhase.title)}` : 'None selected'}</strong>
+        </div>
+        <span class="breadcrumb-sep" aria-hidden="true">→</span>
+        <div class="admin-hierarchy-step">
+          <span class="admin-step-label">4. Lessons</span>
+          <strong>${phaseLessons.length} in active phase</strong>
         </div>
       </div>
 
-      <div class="lab-split">
-        <section class="card" style="display:flex; flex-direction:column; gap:16px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; padding-bottom:14px; border-bottom:1px solid var(--color-border);">
+      <!-- Level 1 & 2: Skills -> Courses Grid -->
+      <div class="admin-hierarchy-grid">
+        <!-- 1. SKILLS COLUMN -->
+        <section class="card" aria-label="Skills management">
+          <div class="admin-panel-head">
             <div>
-              <h2 class="section-heading" style="margin:0;">${activeCourse ? escapeHtml(activeCourse.title) : 'No course selected'}</h2>
-              ${
-                activeCourse
-                  ? `<div class="meta-line" style="margin-top:4px;">
-                      <span>${escapeHtml(activeCourse.difficulty)}</span>
-                      <span class="meta-sep">·</span>
-                      <span class="mono-num">${activeCourse.estimatedDurationWeeks} weeks (${activeCourse.recommendedWeeklyHours}h/wk)</span>
-                      <span class="meta-sep">·</span>
-                      <span class="mono-num">v${Number(activeCourse.version || 1)}</span>
-                      <span class="meta-sep">·</span>
-                      <span>By ${escapeHtml(activeCourse.authorName || 'Kord Curriculum Studio')}</span>
-                      <span class="meta-sep">·</span>
-                      <span>${phases.length} modules</span>
-                    </div>`
-                  : ''
-              }
+              <h2 class="section-heading" style="margin:0;">1. Skills (${filteredSkillsList.length})</h2>
+              <p class="admin-panel-sub">Create, edit, or select a skill to view its courses.</p>
             </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-secondary btn-sm" id="toggle-category-form-btn">${categoryFormOpen ? 'Close category' : '+ Category'}</button>
+              <button type="button" class="btn btn-primary btn-sm" id="new-skill-btn">+ New skill</button>
+            </div>
+          </div>
+
+          ${
+            categoryFormOpen
+              ? `<form id="admin-category-form" class="card-workspace form-stack" style="margin-bottom:14px; padding:12px;">
+                  <div class="field">
+                    <label class="field-label" for="cat-name">Category name</label>
+                    <input class="input" id="cat-name" name="name" required placeholder="e.g. Product &amp; Design" />
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="cat-desc">Description</label>
+                    <input class="input" id="cat-desc" name="description" required placeholder="Short category summary" />
+                  </div>
+                  <button type="submit" class="btn btn-primary btn-sm">Save category</button>
+                </form>`
+              : ''
+          }
+
+          ${
+            skillFormOpen || editingSkill
+              ? `<form id="admin-skill-form" class="card-workspace form-stack" style="margin-bottom:16px; padding:14px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <strong style="color:var(--color-navy);">${editingSkill ? `Edit Skill: ${escapeHtml(editingSkill.title)}` : 'Create New Skill'}</strong>
+                    <button type="button" class="btn btn-ghost btn-sm" id="cancel-skill-form-btn">Cancel</button>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="skill-title">Skill title</label>
+                    <input class="input" id="skill-title" name="title" required value="${escapeHtml(editingSkill?.title || '')}" placeholder="e.g. Email Lifecycle Strategy" />
+                  </div>
+                  <div class="lab-grid-2">
+                    <div class="field">
+                      <label class="field-label" for="skill-cat">Category</label>
+                      <select class="select" id="skill-cat" name="categoryId">
+                        ${categories
+                          .map(
+                            (c) => `<option value="${escapeHtml(c.id)}" ${editingSkill?.categoryId === c.id || editingSkill?.category === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
+                          )
+                          .join('')}
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="skill-level">Level</label>
+                      <select class="select" id="skill-level" name="level">
+                        ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}" ${editingSkill?.level === d ? 'selected' : ''}>${d}</option>`).join('')}
+                      </select>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="skill-pub">Publication status</label>
+                    <select class="select" id="skill-pub" name="publicationStatus">
+                      <option value="published" ${(editingSkill?.publicationStatus || 'published') === 'published' ? 'selected' : ''}>Published</option>
+                      <option value="draft" ${editingSkill?.publicationStatus === 'draft' ? 'selected' : ''}>Draft</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="skill-summary">Summary</label>
+                    <textarea class="textarea" id="skill-summary" name="summary" style="min-height:60px;" required>${escapeHtml(editingSkill?.summary || '')}</textarea>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="skill-outcomes">Learning outcomes (one per line)</label>
+                    <textarea class="textarea" id="skill-outcomes" name="outcomes" style="min-height:56px;">${escapeHtml((editingSkill?.outcomes || []).join('\n'))}</textarea>
+                  </div>
+                  <button type="submit" class="btn btn-primary btn-sm">${editingSkill ? 'Save skill' : 'Create skill'}</button>
+                </form>`
+              : ''
+          }
+
+          <div class="lab-grid-2" style="margin-bottom:12px;">
+            <input class="input" id="admin-skill-search" value="${escapeHtml(skillSearchQuery)}" placeholder="Search skills…" />
+            <select class="select" id="admin-cat-filter">
+              <option value="All">All categories (${categories.length})</option>
+              ${categories.map((c) => `<option value="${escapeHtml(c.name)}" ${catalogCategoryFilter === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+            </select>
+          </div>
+
+          <div class="admin-scroll-list">
             ${
-              activeCourse
-                ? `
-              <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                ${renderStatusBadge(activeCourse.publicationStatus || 'draft')}
-                <button type="button" class="btn btn-secondary btn-sm" id="open-course-preview">Preview course</button>
-                ${
-                  activeCourse.publicationStatus !== 'published'
-                    ? `<button type="button" class="btn btn-primary btn-sm" data-set-course-status="published">Publish</button>`
-                    : `<button type="button" class="btn btn-secondary btn-sm" data-set-course-status="draft">Unpublish (Draft)</button>`
-                }
-                ${
-                  activeCourse.publicationStatus !== 'archived'
-                    ? `<button type="button" class="btn btn-ghost btn-sm" data-set-course-status="archived">Archive</button>`
-                    : ''
-                }
+              filteredSkillsList.length > 0
+                ? filteredSkillsList
+                    .map((s) => {
+                      const isSelected = s.id === selectedSkillId;
+                      return `
+                        <div class="admin-list-row ${isSelected ? 'is-selected' : ''}">
+                          <button type="button" class="admin-list-select" data-select-skill="${escapeHtml(s.id)}">
+                            <span class="admin-list-title">${escapeHtml(s.title)}</span>
+                            <span class="meta-line">
+                              <span>${escapeHtml(s.category)}</span>
+                              <span class="meta-sep">·</span>
+                              <span class="mono-num">${Number(s.totalCourseCount ?? s.courseCount ?? 0)} courses</span>
+                            </span>
+                          </button>
+                          <div class="admin-list-actions">
+                            ${s.publicationStatus === 'draft' ? renderStatusBadge('draft') : ''}
+                            <button type="button" class="btn btn-ghost btn-sm" data-edit-skill="${escapeHtml(s.id)}">Edit</button>
+                            <button type="button" class="btn btn-ghost btn-sm" data-toggle-skill-pub="${escapeHtml(s.id)}">${s.publicationStatus === 'draft' ? 'Publish' : 'Draft'}</button>
+                          </div>
+                        </div>
+                      `;
+                    })
+                    .join('')
+                : '<p style="font-size:13.5px; color:var(--color-text-muted); margin:8px 0;">No skills match this filter.</p>'
+            }
+          </div>
+        </section>
+
+        <!-- 2. COURSES COLUMN -->
+        <section class="card" aria-label="Courses management">
+          <div class="admin-panel-head">
+            <div>
+              <h2 class="section-heading" style="margin:0;">2. Courses (${skillCourses.length})</h2>
+              <p class="admin-panel-sub">${skillCourseFilter === 'all' ? 'Showing all platform courses.' : `Associated with "${escapeHtml(activeSkill?.title || 'selected skill')}".`}</p>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+              <div class="segmented" style="padding:2px;">
+                <button type="button" class="segmented-btn ${skillCourseFilter === 'linked' ? 'is-active' : ''}" data-course-scope="linked">For skill</button>
+                <button type="button" class="segmented-btn ${skillCourseFilter === 'all' ? 'is-active' : ''}" data-course-scope="all">All (${courses.length})</button>
               </div>
-            `
-                : ''
+              <button type="button" class="btn btn-primary btn-sm" id="new-course-btn">+ New course</button>
+            </div>
+          </div>
+
+          <div class="admin-scroll-list" style="margin-bottom:14px;">
+            ${
+              skillCourses.length > 0
+                ? skillCourses
+                    .map((c) => {
+                      const isSelected = c.id === selectedCourseId;
+                      return `
+                        <div class="admin-list-row ${isSelected ? 'is-selected' : ''}">
+                          <button type="button" class="admin-list-select" data-select-course="${escapeHtml(c.id)}">
+                            <span class="admin-list-title">${escapeHtml(c.title)}</span>
+                            <span class="meta-line">
+                              <span>${escapeHtml(c.difficulty)}</span>
+                              <span class="meta-sep">·</span>
+                              <span class="mono-num">v${Number(c.version || 1)}</span>
+                            </span>
+                          </button>
+                          <div class="admin-list-actions">
+                            ${renderStatusBadge(c.publicationStatus || 'draft')}
+                            <button type="button" class="btn btn-ghost btn-sm" data-edit-course="${escapeHtml(c.id)}">Edit</button>
+                          </div>
+                        </div>
+                      `;
+                    })
+                    .join('')
+                : '<p style="font-size:13.5px; color:var(--color-text-muted); margin:8px 0;">No courses linked to this skill yet. Click "+ New course" to create one.</p>'
             }
           </div>
 
           ${
-            activeCourse
+            activeCourse && !courseFormOpen
               ? `
-            <!-- Version Snapshot Bar -->
-            <div style="padding:12px 14px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:8px;">
-              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                <input class="input" id="version-notes-input" placeholder="Release notes for v${Number(activeCourse.version || 1) + 1} (e.g. Updated capstone checklist)" style="flex:1; min-width:200px;" />
-                <button type="button" class="btn btn-secondary btn-sm" id="create-course-version-btn">Create Version Snapshot (v${Number(activeCourse.version || 1) + 1})</button>
+            <div class="card-workspace" style="padding:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                <div>
+                  <strong style="color:var(--color-navy); display:block;">${escapeHtml(activeCourse.title)}</strong>
+                  <div class="meta-line" style="margin-top:2px;">
+                    <span>${phases.length} phases</span>
+                    <span class="meta-sep">·</span>
+                    <span>${totalCourseLessons} lessons</span>
+                    <span class="meta-sep">·</span>
+                    <span>By ${escapeHtml(activeCourse.authorName || 'Kord Curriculum Studio')}</span>
+                  </div>
+                </div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <button type="button" class="btn btn-secondary btn-sm" id="open-course-preview">Preview course</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="edit-active-course-btn">Edit details &amp; skills</button>
+                  ${
+                    activeCourse.publicationStatus !== 'published'
+                      ? `<button type="button" class="btn btn-primary btn-sm" data-set-course-status="published">Publish</button>`
+                      : `<button type="button" class="btn btn-secondary btn-sm" data-set-course-status="draft">Set Draft</button>`
+                  }
+                </div>
               </div>
+
               ${
-                (activeCourse.versions || []).length > 0
-                  ? `<div style="font-size:12px; color:var(--color-text-muted);">
-                      Latest snapshots: ${(activeCourse.versions || [])
-                        .slice(0, 3)
-                        .map((v) => `v${v.versionNumber} (${escapeHtml(v.changeNotes || 'Release')})`)
-                        .join(' · ')}
+                publishCheck && !publishCheck.valid
+                  ? `<div style="padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--color-amber-border); background:var(--color-amber-bg); font-size:12.5px; margin-bottom:10px;">
+                      <strong style="color:var(--color-navy); display:block; margin-bottom:4px;">Publish readiness items remaining:</strong>
+                      <ul style="margin:0; padding-left:18px; color:var(--color-text-secondary);">
+                        ${publishCheck.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join('')}
+                      </ul>
                     </div>`
                   : ''
               }
-            </div>
 
-            ${
-              publishCheck
-                ? `<div style="padding:12px 14px; border-radius:var(--radius-sm); border:1px solid ${publishCheck.valid ? 'var(--color-green-border, #bbf7d0)' : 'var(--color-amber-border)'}; background:${publishCheck.valid ? 'var(--color-green-bg)' : 'var(--color-amber-bg)'}; font-size:13px;">
-                    <strong style="color:var(--color-navy); display:block; margin-bottom:${publishCheck.valid ? '0' : '4px'};">
-                      ${publishCheck.valid ? 'Publish readiness check passed — course meets curriculum requirements.' : 'Publish readiness requirements remaining:'}
-                    </strong>
-                    ${
-                      publishCheck.valid
-                        ? ''
-                        : `<ul style="margin:0; padding-left:18px; color:var(--color-text-secondary);">
-                            ${publishCheck.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join('')}
-                          </ul>`
-                    }
-                  </div>`
-                : ''
-            }
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <input class="input" id="version-notes-input" placeholder="Snapshot release notes (v${Number(activeCourse.version || 1) + 1})" style="flex:1; min-width:180px;" />
+                <button type="button" class="btn btn-secondary btn-sm" id="create-course-version-btn">Save snapshot</button>
+              </div>
+            </div>
           `
               : ''
           }
 
           ${
-            phases.length > 0
+            courseFormOpen
               ? `
-            <div style="display:flex; flex-direction:column; gap:14px;">
-              ${phases
-                .map(
-                  (ph, idx) => `
-                <div style="padding:14px; border:1px solid var(--color-border); border-radius:var(--radius-sm); background:var(--color-bg);">
-                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
-                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                      <strong style="color:var(--color-navy);">Module ${ph.position}: ${escapeHtml(ph.title)}</strong>
-                      ${renderStatusBadge(ph.publicationStatus || 'published')}
-                      <span class="mono-num" style="font-size:12px; color:var(--color-text-muted);">${(ph.lessons || []).length} lessons · ${(ph.activities || []).length} activities</span>
-                    </div>
-                    <div style="display:flex; gap:4px; align-items:center;">
-                      <button type="button" class="btn btn-secondary btn-sm" data-move-phase="${escapeHtml(ph.id)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>Up</button>
-                      <button type="button" class="btn btn-secondary btn-sm" data-move-phase="${escapeHtml(ph.id)}" data-dir="1" ${idx === phases.length - 1 ? 'disabled' : ''}>Down</button>
-                      <button type="button" class="btn btn-ghost btn-sm" data-toggle-phase-pub="${escapeHtml(ph.id)}">
-                        ${(ph.publicationStatus || 'published') === 'published' ? 'Set Draft' : 'Publish'}
-                      </button>
-                    </div>
-                  </div>
-                  <p style="font-size:13px; color:var(--color-text-secondary); margin-bottom:8px;">${escapeHtml(ph.summary || '')}</p>
-                  <div class="divider-list">
-                    ${(ph.lessons || [])
-                      .map(
-                        (l) => `
-                      <div class="divider-row" style="padding:6px 0;">
-                        <span style="font-size:13.5px;">
-                          ${escapeHtml(l.title)}
-                          <span style="color:var(--color-text-muted);">(${l.estMinutes}m · ${(l.blocks || []).length} blocks · ${(l.videos || []).length} videos · ${escapeHtml(l.publicationStatus || 'published')})</span>
-                        </span>
-                        <div style="display:flex; gap:6px;">
-                          <button type="button" class="btn btn-secondary btn-sm" data-edit-lesson-btn="${escapeHtml(l.id)}" data-phase-id="${escapeHtml(ph.id)}">Edit in Builder</button>
-                          <button type="button" class="btn btn-danger btn-sm" data-del-lesson="${escapeHtml(l.id)}" data-phase-id="${escapeHtml(ph.id)}">Delete</button>
-                        </div>
-                      </div>
-                    `
-                      )
-                      .join('')}
-                  </div>
-                  ${
-                    (ph.activities || []).length > 0
-                      ? `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--color-border); font-size:12.5px; color:var(--color-text-secondary);">
-                          <strong>Practical activities:</strong> ${(ph.activities || []).map((a) => escapeHtml(a.title)).join(' · ')}
-                        </div>`
-                      : ''
-                  }
-                </div>
-              `
-                )
-                .join('')}
-            </div>
-          `
-              : '<p style="font-size:14px; color:var(--color-text-muted);">Select or create a course, then add modules, lessons, and practical activities.</p>'
-          }
-        </section>
-
-        <aside style="display:flex; flex-direction:column; gap:18px;">
-          <div class="card-workspace">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
-              <h2 style="font-size:1.05rem;">${editCourseObj ? 'Edit Selected Course' : 'Create New Course'}</h2>
-              <div class="segmented" style="padding:2px;">
-                ${activeCourse ? `<button type="button" class="segmented-btn ${courseFormMode === 'edit' ? 'is-active' : ''}" data-course-form-mode="edit">Edit current</button>` : ''}
-                <button type="button" class="segmented-btn ${courseFormMode === 'create' ? 'is-active' : ''}" data-course-form-mode="create">+ New</button>
+            <form id="admin-course-form" class="card-workspace form-stack" style="padding:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                <strong style="color:var(--color-navy);">${editCourseObj ? `Edit Course: ${escapeHtml(editCourseObj.title)}` : 'Create New Course'}</strong>
+                <button type="button" class="btn btn-ghost btn-sm" id="cancel-course-form-btn">Close</button>
               </div>
-            </div>
 
-            <form id="admin-course-form" class="form-stack">
               <div class="field">
                 <label class="field-label" for="c-title">Course title</label>
-                <input class="input" id="c-title" name="title" required value="${escapeHtml(editCourseObj?.title || '')}" placeholder="e.g. Meta Ads Intermediate Retargeting" />
+                <input class="input" id="c-title" name="title" required value="${escapeHtml(editCourseObj?.title || '')}" placeholder="e.g. Technical Writing Foundations" />
               </div>
               <div class="lab-grid-2">
                 <div class="field">
@@ -670,15 +1006,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
               </div>
               <div class="field">
                 <label class="field-label" for="c-desc">Description</label>
-                <textarea class="textarea" id="c-desc" name="description" style="min-height:68px;" required placeholder="What learners achieve in this course…">${escapeHtml(editCourseObj?.description || '')}</textarea>
-              </div>
-              <div class="field">
-                <label class="field-label" for="c-audience">Target audience</label>
-                <input class="input" id="c-audience" name="targetAudience" value="${escapeHtml(editCourseObj?.targetAudience || '')}" placeholder="Career-starters and practitioners…" />
-              </div>
-              <div class="field">
-                <label class="field-label" for="c-thumb">Thumbnail URL (optional)</label>
-                <input class="input" id="c-thumb" name="thumbnailUrl" value="${escapeHtml(editCourseObj?.thumbnailUrl || '')}" placeholder="https://... or /assets/..." />
+                <textarea class="textarea" id="c-desc" name="description" style="min-height:64px;" required>${escapeHtml(editCourseObj?.description || '')}</textarea>
               </div>
               <div class="lab-grid-2">
                 <div class="field">
@@ -706,21 +1034,16 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                   <input class="input" id="c-hrs" name="recommendedWeeklyHours" type="number" min="1" max="40" value="${Number(editCourseObj?.recommendedWeeklyHours || 4)}" />
                 </div>
               </div>
+
               <div class="field">
-                <label class="field-label" for="c-schedule">Recommended schedule</label>
-                <input class="input" id="c-schedule" name="recommendedSchedule" value="${escapeHtml(editCourseObj?.recommendedSchedule || '2 lessons + 1 practical activity per week')}" />
-              </div>
-              <div class="field">
-                <span class="field-label">Associated competencies (M2M)</span>
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:4px;">
+                  <span class="field-label" style="margin:0;">Associate with skills</span>
+                  <input class="input" id="assoc-skill-filter" value="${escapeHtml(skillAssociationFilter)}" placeholder="Filter skills…" style="max-width:190px; min-height:30px; font-size:12.5px; padding:4px 8px;" />
+                </div>
                 <div class="checkbox-grid">
-                  ${skills
-                    .filter((s) => {
-                      const linked = editCourseObj?.associatedSkillIds || (selectedSkillId ? [selectedSkillId] : []);
-                      return linked.includes(s.id) || s.category === skills.find((x) => x.id === selectedSkillId)?.category || (s.courseCount || 0) > 0;
-                    })
-                    .slice(0, 30)
+                  ${associationSkillsList
                     .map((s) => {
-                      const checked = (editCourseObj?.associatedSkillIds || (selectedSkillId ? [selectedSkillId] : [])).includes(s.id);
+                      const checked = linkedSkillSet.has(s.id);
                       return `
                         <label class="checkbox-item">
                           <input type="checkbox" name="associatedSkillIds" value="${escapeHtml(s.id)}" ${checked ? 'checked' : ''} />
@@ -731,104 +1054,233 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                     .join('')}
                 </div>
               </div>
+
+              <div class="field">
+                <label class="field-label" for="c-outcomes">Course outcomes (one per line)</label>
+                <textarea class="textarea" id="c-outcomes" name="outcomes" style="min-height:56px;">${escapeHtml((editCourseObj?.outcomes || []).join('\n'))}</textarea>
+              </div>
               <div class="field">
                 <label class="field-label" for="c-prereqs">Prerequisites (one per line)</label>
-                <textarea class="textarea" id="c-prereqs" name="prerequisites" style="min-height:54px;">${escapeHtml((editCourseObj?.prerequisites || []).join('\n'))}</textarea>
+                <textarea class="textarea" id="c-prereqs" name="prerequisites" style="min-height:48px;">${escapeHtml((editCourseObj?.prerequisites || []).join('\n'))}</textarea>
               </div>
-              <div class="field">
-                <label class="field-label" for="c-outcomes">Learning objectives (one per line)</label>
-                <textarea class="textarea" id="c-outcomes" name="outcomes" style="min-height:60px;" placeholder="Build retargeting audiences&#10;Measure weekly ROAS">${escapeHtml((editCourseObj?.outcomes || []).join('\n'))}</textarea>
+              <input type="hidden" name="targetAudience" value="${escapeHtml(editCourseObj?.targetAudience || '')}" />
+              <input type="hidden" name="thumbnailUrl" value="${escapeHtml(editCourseObj?.thumbnailUrl || '')}" />
+              <input type="hidden" name="recommendedSchedule" value="${escapeHtml(editCourseObj?.recommendedSchedule || '2 lessons + 1 practical exercise per week')}" />
+
+              <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:12.5px; color:var(--color-navy);">
+                <label><input type="checkbox" name="ruleLessons" ${(editCourseObj?.completionRules?.requireAllRequiredLessons ?? true) ? 'checked' : ''} /> Require lessons</label>
+                <label><input type="checkbox" name="ruleActivities" ${(editCourseObj?.completionRules?.requireAllActivities ?? true) ? 'checked' : ''} /> Require activities</label>
+                <label><input type="checkbox" name="ruleAssessments" ${(editCourseObj?.completionRules?.requireAllAssessments ?? true) ? 'checked' : ''} /> Require assessments</label>
+                <label><input type="checkbox" name="ruleChallengeApproval" ${(editCourseObj?.completionRules?.requireChallengeApproval ?? true) ? 'checked' : ''} /> Require capstone approval</label>
               </div>
-              <div style="display:flex; flex-direction:column; gap:6px; font-size:12.5px; color:var(--color-navy); padding:10px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
-                <strong>Completion rules</strong>
-                <label><input type="checkbox" name="ruleLessons" ${(editCourseObj?.completionRules?.requireAllRequiredLessons ?? true) ? 'checked' : ''} /> Require all lessons</label>
-                <label><input type="checkbox" name="ruleActivities" ${(editCourseObj?.completionRules?.requireAllActivities ?? true) ? 'checked' : ''} /> Require practical activities</label>
-                <label><input type="checkbox" name="ruleAssessments" ${(editCourseObj?.completionRules?.requireAllAssessments ?? true) ? 'checked' : ''} /> Require graded assessments</label>
-                <label><input type="checkbox" name="ruleChallengeApproval" ${(editCourseObj?.completionRules?.requireChallengeApproval ?? true) ? 'checked' : ''} /> Require admin capstone approval for Verified</label>
-              </div>
+
               <button type="submit" class="btn btn-primary btn-sm">${editCourseObj ? 'Save course changes' : 'Create course'}</button>
             </form>
-          </div>
-
-          ${
-            activeCourse
-              ? `
-            <div class="card">
-              <h2 style="font-size:1.05rem; margin-bottom:10px;">Add Module to ${escapeHtml(activeCourse.title)}</h2>
-              <form id="admin-phase-form" class="form-stack">
-                <div class="field">
-                  <label class="field-label" for="ph-title">Module title</label>
-                  <input class="input" id="ph-title" name="title" required placeholder="e.g. Module 9: Performance Optimization" />
-                </div>
-                <div class="field">
-                  <label class="field-label" for="ph-summary">Module summary</label>
-                  <input class="input" id="ph-summary" name="summary" required placeholder="Key scope of this module" />
-                </div>
-                <div class="field">
-                  <label class="field-label" for="ph-objectives">Module objectives (one per line)</label>
-                  <textarea class="textarea" id="ph-objectives" name="objectives" style="min-height:54px;"></textarea>
-                </div>
-                <div class="lab-grid-2">
-                  <div class="field">
-                    <label class="field-label" for="ph-diff">Difficulty</label>
-                    <select class="select" id="ph-diff" name="difficulty">
-                      ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}">${d}</option>`).join('')}
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="ph-hrs">Est. hours</label>
-                    <input class="input" id="ph-hrs" name="estHours" type="number" min="1" max="40" value="3" />
-                  </div>
-                </div>
-                <button type="submit" class="btn btn-secondary btn-sm">Add module</button>
-              </form>
-            </div>
-
-            ${
-              phases.length > 0
-                ? `
-              <div class="card">
-                <h2 style="font-size:1.05rem; margin-bottom:10px;">Add Practical Activity to Module</h2>
-                <form id="admin-activity-form" class="form-stack">
-                  <div class="field">
-                    <label class="field-label" for="act-phase">Target module</label>
-                    <select class="select" id="act-phase" name="phaseId">
-                      ${phases.map((p) => `<option value="${escapeHtml(p.id)}" ${p.id === selectedPhaseId ? 'selected' : ''}>Module ${p.position}: ${escapeHtml(p.title)}</option>`).join('')}
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="act-title">Activity title</label>
-                    <input class="input" id="act-title" name="title" required placeholder="e.g. Build a semantic landing skeleton" />
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="act-desc">Description</label>
-                    <input class="input" id="act-desc" name="description" required placeholder="Brief practice goal" />
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="act-instr">Step-by-step instructions</label>
-                    <textarea class="textarea" id="act-instr" name="instructions" style="min-height:60px;" required></textarea>
-                  </div>
-                  <div class="lab-grid-2">
-                    <div class="field">
-                      <label class="field-label" for="act-output">Expected output</label>
-                      <input class="input" id="act-output" name="expectedOutput" required placeholder="Verified deliverable" />
-                    </div>
-                    <div class="field">
-                      <label class="field-label" for="act-mins">Est. minutes</label>
-                      <input class="input" id="act-mins" name="estMinutes" type="number" min="5" max="180" value="25" />
-                    </div>
-                  </div>
-                  <button type="submit" class="btn btn-secondary btn-sm">Add practical activity</button>
-                </form>
-              </div>
-            `
-                : ''
-            }
           `
               : ''
           }
-        </aside>
+        </section>
       </div>
+
+      <!-- Level 3 & 4: Phases -> Lessons -->
+      ${
+        activeCourse
+          ? `
+        <div class="admin-hierarchy-grid" style="margin-top:20px;">
+          <!-- 3. PHASES COLUMN -->
+          <section class="card" aria-label="Phases management">
+            <div class="admin-panel-head">
+              <div>
+                <h2 class="section-heading" style="margin:0;">3. Phases (${phases.length})</h2>
+                <p class="admin-panel-sub">Select, create, edit, reorder, or publish phases in ${escapeHtml(activeCourse.title)}.</p>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="new-phase-btn">+ New phase</button>
+            </div>
+
+            ${
+              phaseFormOpen || editingPhaseObj
+                ? `<form id="admin-phase-form" class="card-workspace form-stack" style="margin-bottom:14px; padding:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                      <strong style="color:var(--color-navy);">${editingPhaseObj ? `Edit Phase ${editingPhaseObj.position}: ${escapeHtml(editingPhaseObj.title)}` : 'Create New Phase'}</strong>
+                      <button type="button" class="btn btn-ghost btn-sm" id="cancel-phase-form-btn">Cancel</button>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="ph-title">Phase title</label>
+                      <input class="input" id="ph-title" name="title" required value="${escapeHtml(editingPhaseObj?.title || '')}" placeholder="e.g. Foundations &amp; Mental Models" />
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="ph-summary">Phase summary</label>
+                      <input class="input" id="ph-summary" name="summary" required value="${escapeHtml(editingPhaseObj?.summary || '')}" placeholder="Scope and goals of this phase" />
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="ph-objectives">Phase objectives (one per line)</label>
+                      <textarea class="textarea" id="ph-objectives" name="objectives" style="min-height:54px;">${escapeHtml((editingPhaseObj?.objectives || []).join('\n'))}</textarea>
+                    </div>
+                    <div class="lab-grid-3">
+                      <div class="field">
+                        <label class="field-label" for="ph-diff">Difficulty</label>
+                        <select class="select" id="ph-diff" name="difficulty">
+                          ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}" ${editingPhaseObj?.difficulty === d ? 'selected' : ''}>${d}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label class="field-label" for="ph-hrs">Est. hours</label>
+                        <input class="input" id="ph-hrs" name="estHours" type="number" min="1" max="40" value="${Number(editingPhaseObj?.estHours || 3)}" />
+                      </div>
+                      <div class="field">
+                        <label class="field-label" for="ph-pub">Status</label>
+                        <select class="select" id="ph-pub" name="publicationStatus">
+                          <option value="published" ${(editingPhaseObj?.publicationStatus || 'published') === 'published' ? 'selected' : ''}>Published</option>
+                          <option value="draft" ${editingPhaseObj?.publicationStatus === 'draft' ? 'selected' : ''}>Draft</option>
+                        </select>
+                      </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">${editingPhaseObj ? 'Save phase changes' : 'Create phase'}</button>
+                  </form>`
+                : ''
+            }
+
+            <div class="admin-scroll-list">
+              ${
+                phases.length > 0
+                  ? phases
+                      .map((ph, idx) => {
+                        const isSelected = ph.id === selectedPhaseId;
+                        const isConfirmDel = confirmDeletePhaseId === ph.id;
+                        return `
+                          <div class="admin-list-row ${isSelected ? 'is-selected' : ''}" style="flex-direction:column; align-items:stretch; gap:8px;">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+                              <button type="button" class="admin-list-select" data-select-phase="${escapeHtml(ph.id)}">
+                                <span class="admin-list-title">Phase ${ph.position}: ${escapeHtml(ph.title)}</span>
+                                <span class="meta-line">
+                                  <span>${(ph.lessons || []).length} lessons</span>
+                                  <span class="meta-sep">·</span>
+                                  <span>${Number(ph.estHours || 3)}h</span>
+                                  <span class="meta-sep">·</span>
+                                  <span>${escapeHtml(ph.publicationStatus || 'published')}</span>
+                                </span>
+                              </button>
+                              <div class="admin-list-actions">
+                                ${renderStatusBadge(ph.publicationStatus || 'published')}
+                                <button type="button" class="btn btn-ghost btn-sm" data-move-phase="${escapeHtml(ph.id)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>Up</button>
+                                <button type="button" class="btn btn-ghost btn-sm" data-move-phase="${escapeHtml(ph.id)}" data-dir="1" ${idx === phases.length - 1 ? 'disabled' : ''}>Down</button>
+                                <button type="button" class="btn btn-ghost btn-sm" data-edit-phase="${escapeHtml(ph.id)}">Edit</button>
+                                <button type="button" class="btn btn-ghost btn-sm" data-toggle-phase-pub="${escapeHtml(ph.id)}">${(ph.publicationStatus || 'published') === 'published' ? 'Draft' : 'Publish'}</button>
+                                ${
+                                  isConfirmDel
+                                    ? `<button type="button" class="btn btn-danger btn-sm" data-confirm-del-phase="${escapeHtml(ph.id)}">Confirm delete</button>
+                                       <button type="button" class="btn btn-ghost btn-sm" id="cancel-del-phase-btn">Cancel</button>`
+                                    : `<button type="button" class="btn btn-ghost btn-sm" data-del-phase="${escapeHtml(ph.id)}">Delete</button>`
+                                }
+                              </div>
+                            </div>
+                          </div>
+                        `;
+                      })
+                      .join('')
+                  : '<p style="font-size:13.5px; color:var(--color-text-muted); margin:8px 0;">No phases yet. Click "+ New phase" to structure this course.</p>'
+              }
+            </div>
+          </section>
+
+          <!-- 4. LESSONS COLUMN -->
+          <section class="card" aria-label="Lessons management">
+            <div class="admin-panel-head">
+              <div>
+                <h2 class="section-heading" style="margin:0;">4. Lessons (${phaseLessons.length})</h2>
+                <p class="admin-panel-sub">${activePhase ? `Inside Phase ${activePhase.position}: ${escapeHtml(activePhase.title)}` : 'Select a phase to manage its lessons.'}</p>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="new-lesson-in-phase-btn" ${!activePhase ? 'disabled' : ''}>+ New lesson</button>
+            </div>
+
+            ${
+              activePhase
+                ? `
+              <div class="admin-scroll-list">
+                ${
+                  phaseLessons.length > 0
+                    ? phaseLessons
+                        .map((l, idx) => {
+                          const linkedQuiz = courseAssessments.find((a) => a.lessonId === l.id);
+                          const isConfirmDel = confirmDeleteLessonId === l.id;
+                          return `
+                            <div class="admin-list-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+                              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+                                <div style="min-width:180px; flex:1;">
+                                  <div class="admin-list-title">${idx + 1}. ${escapeHtml(l.title)}</div>
+                                  <div class="meta-line">
+                                    <span class="mono-num">${Number(l.estMinutes || 25)} min</span>
+                                    <span class="meta-sep">·</span>
+                                    <span>${l.isRequired === false ? 'Optional' : 'Required'}</span>
+                                    ${(l.videos || []).length > 0 ? `<span class="meta-sep">·</span><span>${(l.videos || []).length} video</span>` : ''}
+                                    ${linkedQuiz ? `<span class="meta-sep">·</span><span>Has assessment</span>` : ''}
+                                  </div>
+                                </div>
+                                <div class="admin-list-actions">
+                                  ${renderStatusBadge(l.publicationStatus || 'published')}
+                                  <button type="button" class="btn btn-ghost btn-sm" data-move-lesson="${escapeHtml(l.id)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>Up</button>
+                                  <button type="button" class="btn btn-ghost btn-sm" data-move-lesson="${escapeHtml(l.id)}" data-dir="1" ${idx === phaseLessons.length - 1 ? 'disabled' : ''}>Down</button>
+                                  <button type="button" class="btn btn-secondary btn-sm" data-preview-lesson="${escapeHtml(l.id)}">Preview</button>
+                                  <button type="button" class="btn btn-primary btn-sm" data-edit-lesson-btn="${escapeHtml(l.id)}">Edit</button>
+                                  <button type="button" class="btn btn-ghost btn-sm" data-toggle-lesson-pub="${escapeHtml(l.id)}">${(l.publicationStatus || 'published') === 'published' ? 'Draft' : 'Publish'}</button>
+                                  ${
+                                    isConfirmDel
+                                      ? `<button type="button" class="btn btn-danger btn-sm" data-confirm-del-lesson="${escapeHtml(l.id)}">Confirm delete</button>
+                                         <button type="button" class="btn btn-ghost btn-sm" id="cancel-del-lesson-btn">Cancel</button>`
+                                      : `<button type="button" class="btn btn-ghost btn-sm" data-del-lesson="${escapeHtml(l.id)}">Delete</button>`
+                                  }
+                                </div>
+                              </div>
+                            </div>
+                          `;
+                        })
+                        .join('')
+                    : '<p style="font-size:13.5px; color:var(--color-text-muted); margin:8px 0;">No lessons in this phase yet. Click "+ New lesson" to write one.</p>'
+                }
+              </div>
+
+              <details class="lesson-optional-details" style="margin-top:16px;">
+                <summary>Phase practical activities (${(activePhase.activities || []).length}) — add or inspect</summary>
+                <div style="margin-top:10px; display:flex; flex-direction:column; gap:12px;">
+                  ${
+                    (activePhase.activities || []).length > 0
+                      ? `<div class="divider-list">
+                          ${(activePhase.activities || [])
+                            .map(
+                              (a) => `<div class="divider-row" style="padding:6px 0;">
+                                <span style="font-size:13.5px;"><strong>${escapeHtml(a.title)}</strong> · ${escapeHtml(a.description || '')}</span>
+                                <span class="mono-num" style="font-size:12px; color:var(--color-text-muted);">${a.estMinutes || 25} min</span>
+                              </div>`
+                            )
+                            .join('')}
+                        </div>`
+                      : ''
+                  }
+                  <form id="admin-activity-form" class="form-stack">
+                    <input type="hidden" name="phaseId" value="${escapeHtml(activePhase.id)}" />
+                    <div class="lab-grid-2">
+                      <input class="input" name="title" required placeholder="Activity title" />
+                      <input class="input" name="description" required placeholder="Short goal" />
+                    </div>
+                    <textarea class="textarea" name="instructions" style="min-height:54px;" required placeholder="Practical instructions…"></textarea>
+                    <div class="lab-grid-2">
+                      <input class="input" name="expectedOutput" required placeholder="Expected deliverable" />
+                      <input class="input" name="estMinutes" type="number" min="5" max="180" value="25" />
+                    </div>
+                    <div>
+                      <button type="submit" class="btn btn-secondary btn-sm">Add practical activity</button>
+                    </div>
+                  </form>
+                </div>
+              </details>
+            `
+                : '<p style="font-size:13.5px; color:var(--color-text-muted);">Create or select a phase on the left to manage its lessons.</p>'
+            }
+          </section>
+        </div>
+      `
+          : ''
+      }
 
       ${
         previewCourseOpen && activeCourse
@@ -838,7 +1290,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             <div class="modal-header">
               <div>
                 <div class="meta-line">
-                  <span>In-Admin Preview</span>
+                  <span>Course Preview</span>
                   <span class="meta-sep">·</span>
                   <span>v${Number(activeCourse.version || 1)}</span>
                   <span class="meta-sep">·</span>
@@ -846,229 +1298,409 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                 </div>
                 <h2 style="font-size:1.2rem; margin-top:2px;">${escapeHtml(activeCourse.title)}</h2>
               </div>
-              <button type="button" class="btn btn-secondary btn-sm" id="close-course-preview">Close preview</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="close-course-preview">Close</button>
             </div>
-
             <div style="margin-bottom:14px;">
               ${renderCourseThumbnailHtml(activeCourse, { height: '160px' })}
             </div>
-
             <p style="font-size:14px; color:var(--color-text-secondary); margin-bottom:14px;">${escapeHtml(activeCourse.description)}</p>
+            <div class="divider-list">
+              ${phases
+                .map(
+                  (p) => `<div class="divider-row" style="flex-direction:column; align-items:stretch; gap:4px;">
+                    <strong>Phase ${p.position}: ${escapeHtml(p.title)} (${escapeHtml(p.publicationStatus || 'published')})</strong>
+                    <div style="font-size:13px; color:var(--color-text-secondary);">${(p.lessons || []).map((l) => escapeHtml(l.title)).join(' · ') || 'No lessons yet'}</div>
+                  </div>`
+                )
+                .join('')}
+            </div>
+          </div>
+        </div>
+      `
+          : ''
+      }
 
-            ${
-              previewLessonsFlat.length > 0
-                ? `
-              <div class="field" style="margin-bottom:14px;">
-                <label class="field-label" for="preview-lesson-select">Inspect lesson content (${previewLessonsFlat.length} lessons)</label>
-                <select class="select" id="preview-lesson-select">
-                  ${previewLessonsFlat
-                    .map(
-                      (l) => `<option value="${escapeHtml(l.id)}" ${l.id === previewLesson?.id ? 'selected' : ''}>Module ${l.phasePosition}: ${escapeHtml(l.title)}</option>`
-                    )
-                    .join('')}
-                </select>
-              </div>
-              ${
-                previewLesson
-                  ? `
-                <div class="card" style="background:var(--color-bg);">
-                  <h3 style="font-size:1.05rem; margin-bottom:6px;">${escapeHtml(previewLesson.title)}</h3>
-                  ${previewLesson.introduction ? `<p class="lesson-paragraph">${escapeHtml(previewLesson.introduction)}</p>` : ''}
-                  ${renderLessonBlocks(previewLesson.blocks || [])}
-                  ${(previewLesson.videos || []).map((v, i) => renderVideoPlayerHtml(v, i)).join('')}
+      ${
+        modalPreviewLesson
+          ? `
+        <div class="modal-backdrop" id="lesson-preview-backdrop">
+          <div class="modal-panel" style="max-width:880px;">
+            <div class="modal-header">
+              <div>
+                <div class="meta-line">
+                  <span>Lesson Preview (exact learner view)</span>
+                  <span class="meta-sep">·</span>
+                  <span>${escapeHtml(modalPreviewLesson.publicationStatus || 'published')}</span>
                 </div>
-              `
-                  : ''
-              }
-            `
-                : '<p style="font-size:13.5px; color:var(--color-text-muted);">No lessons authored in this course yet.</p>'
-            }
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button type="button" class="btn btn-primary btn-sm" id="edit-from-modal-preview" data-lesson-id="${escapeHtml(modalPreviewLesson.id)}">Open in Lesson Editor</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="close-lesson-preview">Close</button>
+              </div>
+            </div>
+            ${renderLessonReaderHtml({
+              lesson: modalPreviewLesson,
+              courseTitle: activeCourse?.title || '',
+              phasePosition: modalPreviewLesson.phasePosition,
+              phaseTitle: modalPreviewLesson.phaseTitle,
+              lessonNumber: Math.max(1, phaseLessons.findIndex((x) => x.id === modalPreviewLesson.id) + 1),
+              totalLessonsInPhase: modalPreviewLesson.totalInPhase,
+              lessonQuiz: modalPreviewQuiz,
+              previewMode: true,
+            })}
           </div>
         </div>
       `
           : ''
       }
     `
-        : activeTab === 'lessons'
+        : activeTab === 'lesson_editor'
           ? `
+      <!-- Lesson Context & View Mode Bar -->
       <div class="card" style="margin-bottom:20px;">
-        <div class="lab-grid-3">
-          <div class="field">
-            <label class="field-label" for="builder-course-select">Target Course</label>
-            <select class="select" id="builder-course-select">
-              ${courses
-                .map(
-                  (c) => `<option value="${escapeHtml(c.id)}" ${c.id === selectedCourseId ? 'selected' : ''}>${escapeHtml(c.skill?.title || '')} — ${escapeHtml(c.title)}</option>`
-                )
-                .join('')}
-            </select>
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:14px; flex-wrap:wrap;">
+          <div class="lab-grid-3" style="flex:1; min-width:300px;">
+            <div class="field">
+              <label class="field-label" for="builder-course-select">Course</label>
+              <select class="select" id="builder-course-select">
+                ${courses
+                  .map(
+                    (c) => `<option value="${escapeHtml(c.id)}" ${c.id === selectedCourseId ? 'selected' : ''}>${escapeHtml(c.skill?.title || '')} — ${escapeHtml(c.title)}</option>`
+                  )
+                  .join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="builder-phase-select">Phase</label>
+              <select class="select" id="builder-phase-select">
+                ${phases
+                  .map(
+                    (p) => `<option value="${escapeHtml(p.id)}" ${p.id === selectedPhaseId ? 'selected' : ''}>Phase ${p.position}: ${escapeHtml(p.title)}</option>`
+                  )
+                  .join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="builder-lesson-select">Lesson</label>
+              <select class="select" id="builder-lesson-select">
+                <option value="" ${!editingLessonId ? 'selected' : ''}>+ New lesson</option>
+                ${phaseLessons
+                  .map(
+                    (l, i) => `<option value="${escapeHtml(l.id)}" ${l.id === editingLessonId ? 'selected' : ''}>${i + 1}. ${escapeHtml(l.title)} (${escapeHtml(l.publicationStatus || 'published')})</option>`
+                  )
+                  .join('')}
+              </select>
+            </div>
           </div>
-          <div class="field">
-            <label class="field-label" for="builder-phase-select">Target Module / Phase</label>
-            <select class="select" id="builder-phase-select">
-              ${phases
-                .map(
-                  (p) => `<option value="${escapeHtml(p.id)}" ${p.id === selectedPhaseId ? 'selected' : ''}>Module ${p.position}: ${escapeHtml(p.title)}</option>`
-                )
-                .join('')}
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label" for="builder-lesson-select">Load Existing Lesson or Create New</label>
-            <select class="select" id="builder-lesson-select">
-              <option value="" ${!editingLessonId ? 'selected' : ''}>+ Create new lesson</option>
-              ${phaseLessons
-                .map(
-                  (l, i) => `<option value="${escapeHtml(l.id)}" ${l.id === editingLessonId ? 'selected' : ''}>Edit ${i + 1}: ${escapeHtml(l.title)}</option>`
-                )
-                .join('')}
-            </select>
+
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <div class="segmented" role="group" aria-label="Lesson editor view mode">
+              <button type="button" class="segmented-btn ${lessonViewMode === 'edit' ? 'is-active' : ''}" data-lesson-view="edit">Edit</button>
+              <button type="button" class="segmented-btn ${lessonViewMode === 'split' ? 'is-active' : ''}" data-lesson-view="split">Split</button>
+              <button type="button" class="segmented-btn ${lessonViewMode === 'preview' ? 'is-active' : ''}" data-lesson-view="preview">Preview</button>
+            </div>
+            ${editingLessonId ? `<button type="button" class="btn btn-ghost btn-sm" id="reset-lesson-builder-btn">+ Blank lesson</button>` : ''}
+            <button type="button" class="btn btn-secondary btn-sm" id="back-to-hierarchy-btn">← Hierarchy</button>
           </div>
         </div>
       </div>
 
-      <div class="lab-split">
-        <section class="card">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
-            <h2 class="section-heading" style="margin:0;">${editingLessonId ? `Editing Lesson: ${escapeHtml(lessonDraft.title)}` : 'Visual JSON Block Lesson Builder (No Raw HTML)'}</h2>
-            ${editingLessonId ? `<button type="button" class="btn btn-ghost btn-sm" id="reset-lesson-builder-btn">New blank lesson</button>` : ''}
-          </div>
-          <form id="admin-lesson-form" class="form-stack">
-            <div class="lab-grid-3">
-              <div class="field">
-                <label class="field-label" for="les-title">Lesson title</label>
-                <input class="input" id="les-title" name="title" data-les-field="title" required value="${escapeHtml(lessonDraft.title)}" placeholder="e.g. Audience Exclusions &amp; Retargeting" />
-              </div>
-              <div class="field">
-                <label class="field-label" for="les-mins">Est. minutes</label>
-                <input class="input" id="les-mins" name="estMinutes" data-les-field="estMinutes" type="number" min="5" max="180" value="${Number(lessonDraft.estMinutes || 25)}" />
-              </div>
-              <div class="field">
-                <label class="field-label" for="les-pub">Publication status</label>
-                <select class="select" id="les-pub" name="publicationStatus" data-les-field="publicationStatus">
-                  <option value="published" ${lessonDraft.publicationStatus === 'published' ? 'selected' : ''}>Published</option>
-                  <option value="draft" ${lessonDraft.publicationStatus === 'draft' ? 'selected' : ''}>Draft</option>
-                </select>
-              </div>
+      <div class="${lessonViewMode === 'split' ? 'admin-editor-split' : ''}">
+        ${
+          lessonViewMode !== 'preview'
+            ? `
+          <section class="card" aria-label="10-field lesson editor">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--color-border);">
+              <h2 class="section-heading" style="margin:0;">${editingLessonId ? `Edit Lesson: ${escapeHtml(lessonDraft.title || 'Untitled')}` : 'New Lesson'}</h2>
+              ${renderStatusBadge(lessonDraft.publicationStatus || 'draft')}
             </div>
 
-            <div class="field">
-              <label class="field-label" for="les-intro">Lesson introduction</label>
-              <textarea class="textarea" id="les-intro" name="introduction" data-les-field="introduction" style="min-height:60px;" required placeholder="Concise opening framing what the learner will understand…">${escapeHtml(lessonDraft.introduction)}</textarea>
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="les-obj">Learning objectives (one per line)</label>
-              <textarea class="textarea" id="les-obj" name="objectives" data-les-field="objectives" style="min-height:60px;" placeholder="Define custom audiences&#10;Configure 7-day exclusion windows">${escapeHtml(lessonDraft.objectives)}</textarea>
-            </div>
-
-            <!-- Structured Content Blocks -->
-            <div style="border-top:1px solid var(--color-border); padding-top:14px;">
-              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
-                <strong style="color:var(--color-navy);">Lesson Content Blocks (${draftBlocks.length})</strong>
-                <div style="display:flex; gap:8px; align-items:center;">
-                  <select class="select" id="add-block-type" style="width:auto;">
-                    ${BLOCK_TYPE_CATALOG.map((b) => `<option value="${b.type}">${escapeHtml(b.label)}</option>`).join('')}
+            <form id="admin-lesson-form" class="form-stack">
+              <!-- 1. Title + 10. Publication status (+ duration/required) -->
+              <div class="lab-grid-3">
+                <div class="field" style="grid-column: span 1;">
+                  <label class="field-label" for="les-title">1. Title</label>
+                  <input class="input" id="les-title" name="title" data-les-field="title" required value="${escapeHtml(lessonDraft.title)}" placeholder="e.g. Audience Exclusions &amp; Retargeting" />
+                </div>
+                <div class="field">
+                  <label class="field-label" for="les-mins">Estimated minutes</label>
+                  <input class="input" id="les-mins" name="estMinutes" data-les-field="estMinutes" type="number" min="5" max="180" value="${Number(lessonDraft.estMinutes || 25)}" />
+                </div>
+                <div class="field">
+                  <label class="field-label" for="les-pub">10. Publication status</label>
+                  <select class="select" id="les-pub" name="publicationStatus" data-les-field="publicationStatus">
+                    <option value="published" ${lessonDraft.publicationStatus === 'published' ? 'selected' : ''}>Published</option>
+                    <option value="draft" ${lessonDraft.publicationStatus === 'draft' ? 'selected' : ''}>Draft</option>
                   </select>
-                  <button type="button" class="btn btn-secondary btn-sm" id="add-block-btn">+ Add block</button>
                 </div>
               </div>
-              <div style="display:flex; flex-direction:column; gap:10px;">
-                ${draftBlocks.map((b, i) => renderDraftBlockEditor(b, i, draftBlocks.length)).join('')}
-              </div>
-            </div>
 
-            <!-- YouTube Video Embedder -->
-            <div style="border-top:1px solid var(--color-border); padding-top:14px;">
-              <strong style="color:var(--color-navy); display:block; margin-bottom:8px;">Embedded YouTube Videos (${draftVideos.length})</strong>
-              ${
-                draftVideos.length > 0
-                  ? `
-                <div class="divider-list" style="margin-bottom:10px;">
-                  ${draftVideos
-                    .map(
-                      (v, i) => `
-                    <div class="divider-row">
-                      <span style="font-size:13px;"><strong>${escapeHtml(v.title)}</strong> (${escapeHtml(v.videoId)} · ${escapeHtml(v.duration || 'Video')})</span>
-                      <button type="button" class="btn btn-danger btn-sm" data-del-video="${i}">Remove</button>
+              <!-- 2. Introduction -->
+              <div class="field">
+                <label class="field-label" for="les-intro">2. Introduction</label>
+                <textarea class="textarea" id="les-intro" name="introduction" data-les-field="introduction" style="min-height:68px;" required placeholder="Short framing explanation of what the lesson teaches and why it matters…">${escapeHtml(lessonDraft.introduction)}</textarea>
+              </div>
+
+              <!-- 3. Learning objectives -->
+              <div class="field">
+                <label class="field-label" for="les-obj">3. Learning objectives (one per line)</label>
+                <textarea class="textarea" id="les-obj" name="objectives" data-les-field="objectives" style="min-height:70px;" placeholder="Explain foundational principles&#10;Apply the framework in a practical scenario">${escapeHtml(lessonDraft.objectives)}</textarea>
+              </div>
+
+              <!-- 4. Main lesson content (Rich-text editor + toolbar) -->
+              <div class="field">
+                <label class="field-label" for="les-main-content">4. Main lesson content</label>
+                <div class="lesson-richtext-toolbar" role="toolbar" aria-label="Rich-text formatting controls">
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="h2">Heading</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="h3">Subheading</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="bold"><strong>B</strong></button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="italic"><em>I</em></button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="bullets">Bullet list</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="steps">Numbered list</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="table">Table</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="definition">Definition</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="callout">Note</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="code">Code</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-rt-action="image">Image</button>
+                </div>
+                <textarea class="textarea lesson-richtext-area" id="les-main-content" name="mainContentText" data-les-field="mainContentText" required placeholder="Write the instructional lecture using natural paragraphs, occasional headings (## Heading), lists (- item), tables (| A | B |), definitions (Term :: Meaning), code fences, and images…">${escapeHtml(lessonDraft.mainContentText)}</textarea>
+                <span class="field-hint">Write naturally in paragraphs. Use the toolbar above for headings, lists, tables, definitions, callouts, code, and images.</span>
+              </div>
+
+              <!-- 5. Practical application -->
+              <div class="card-workspace" style="padding:14px;">
+                <strong style="display:block; color:var(--color-navy); margin-bottom:10px;">5. Practical application / worked example</strong>
+                <div class="form-stack">
+                  <div class="field">
+                    <label class="field-label" for="les-prac-title">Application title</label>
+                    <input class="input" id="les-prac-title" name="practicalTitle" data-les-field="practicalTitle" value="${escapeHtml(lessonDraft.practicalTitle)}" placeholder="e.g. Worked Example: Auditing a Funnel Exclusion Matrix" />
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="les-prac-body">Walkthrough / scenario</label>
+                    <textarea class="textarea" id="les-prac-body" name="practicalBody" data-les-field="practicalBody" style="min-height:90px;" placeholder="Show a realistic scenario, step-by-step worked example, or hands-on exercise…">${escapeHtml(lessonDraft.practicalBody)}</textarea>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="les-prac-outcome">Expected outcome / takeaway (optional)</label>
+                    <input class="input" id="les-prac-outcome" name="practicalOutcome" data-les-field="practicalOutcome" value="${escapeHtml(lessonDraft.practicalOutcome)}" placeholder="What the learner should observe or verify" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- 6. Lesson summary -->
+              <div class="lab-grid-2">
+                <div class="field">
+                  <label class="field-label" for="les-summary">6. Lesson summary</label>
+                  <textarea class="textarea" id="les-summary" name="summary" data-les-field="summary" style="min-height:70px;" placeholder="Concise synthesis of what this lesson covered…">${escapeHtml(lessonDraft.summary)}</textarea>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="les-takeaways">Key takeaways (one per line, optional)</label>
+                  <textarea class="textarea" id="les-takeaways" name="takeaways" data-les-field="takeaways" style="min-height:70px;">${escapeHtml(lessonDraft.takeaways)}</textarea>
+                </div>
+              </div>
+
+              <!-- 7. Assessment questions -->
+              <div class="card-workspace" style="padding:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                  <div>
+                    <strong style="color:var(--color-navy);">7. Assessment questions (${draftAssessmentQuestions.length})</strong>
+                    <p class="admin-panel-sub">Saved as this lesson's knowledge assessment and graded automatically for learners.</p>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    <label class="field-label" for="les-pass-pct" style="margin:0;">Pass %</label>
+                    <input class="input" id="les-pass-pct" data-les-field="passPercent" type="number" min="50" max="100" value="${Number(lessonDraft.passPercent || 70)}" style="width:76px; min-height:34px; padding:4px 8px;" />
+                  </div>
+                </div>
+
+                ${
+                  draftAssessmentQuestions.length > 0
+                    ? `<div class="divider-list" style="margin-bottom:12px;">
+                        ${draftAssessmentQuestions
+                          .map(
+                            (q, idx) => `
+                          <div class="divider-row" style="align-items:flex-start; flex-wrap:wrap; padding:8px 0;">
+                            <div style="flex:1; min-width:200px;">
+                              <div style="font-weight:600; font-size:13.5px; color:var(--color-navy);">
+                                <span class="mono-num">${idx + 1}.</span> ${escapeHtml(q.prompt)}
+                              </div>
+                              <div class="meta-line" style="margin-top:2px;">
+                                <span>${escapeHtml(q.questionType.replace('_', ' '))}</span>
+                                <span class="meta-sep">·</span>
+                                <span class="mono-num">${q.marks} marks</span>
+                                ${q.options?.length ? `<span class="meta-sep">·</span><span>${q.options.length} options</span>` : ''}
+                              </div>
+                            </div>
+                            <div style="display:flex; gap:6px;">
+                              <button type="button" class="btn btn-secondary btn-sm" data-edit-draft-q="${idx}">Edit</button>
+                              <button type="button" class="btn btn-ghost btn-sm" data-del-draft-q="${idx}">Remove</button>
+                            </div>
+                          </div>
+                        `
+                          )
+                          .join('')}
+                      </div>`
+                    : ''
+                }
+
+                <div style="padding:12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+                    <strong style="font-size:13px; color:var(--color-navy);">${editingQuestionIndex !== null ? `Edit Question #${editingQuestionIndex + 1}` : 'Add Assessment Question'}</strong>
+                    ${editingQuestionIndex !== null ? `<button type="button" class="btn btn-ghost btn-sm" id="cancel-edit-draft-q">Cancel edit</button>` : ''}
+                  </div>
+                  <div class="form-stack">
+                    <div class="lab-grid-2">
+                      <div class="field">
+                        <label class="field-label" for="qc-type">Question type</label>
+                        <select class="select" id="qc-type" data-qc-field="questionType">
+                          ${QUESTION_TYPES.map((t) => `<option value="${t.key}" ${t.key === qType ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label class="field-label" for="qc-marks">Marks</label>
+                        <input class="input" id="qc-marks" data-qc-field="marks" type="number" min="1" max="50" value="${Number(questionComposer.marks || 2)}" />
+                      </div>
                     </div>
-                  `
-                    )
-                    .join('')}
-                </div>
-              `
-                  : ''
-              }
-              <div class="card-workspace" style="padding:12px;">
-                <div class="lab-grid-2" style="margin-bottom:8px;">
-                  <input class="input" id="vid-url" placeholder="YouTube URL (youtube.com/watch?v=... or youtu.be/...)" />
-                  <input class="input" id="vid-title" placeholder="Video title" />
-                </div>
-                <div class="lab-grid-2" style="margin-bottom:8px;">
-                  <input class="input" id="vid-duration" placeholder="Duration (e.g. 09:40)" />
-                  <input class="input" id="vid-guide" placeholder="Viewing instructions for learners" />
-                </div>
-                <textarea class="textarea" id="vid-transcript" style="min-height:54px; margin-bottom:8px;" placeholder="Transcript or key study notes (shown if video is restricted)…"></textarea>
-                <button type="button" class="btn btn-secondary btn-sm" id="add-video-btn">Validate &amp; attach YouTube video</button>
-              </div>
-            </div>
-
-            <!-- Further Reading External Resources -->
-            <div style="border-top:1px solid var(--color-border); padding-top:14px;">
-              <strong style="color:var(--color-navy); display:block; margin-bottom:8px;">Supplementary Further Reading (${draftResources.length})</strong>
-              ${
-                draftResources.length > 0
-                  ? `
-                <div class="divider-list" style="margin-bottom:10px;">
-                  ${draftResources
-                    .map(
-                      (r, i) => `
-                    <div class="divider-row">
-                      <span style="font-size:13px;"><strong>${escapeHtml(r.title)}</strong> (${escapeHtml(r.url)})</span>
-                      <button type="button" class="btn btn-danger btn-sm" data-del-res="${i}">Remove</button>
+                    <div class="field">
+                      <label class="field-label" for="qc-prompt">Question prompt</label>
+                      <input class="input" id="qc-prompt" data-qc-field="prompt" value="${escapeHtml(questionComposer.prompt)}" placeholder="Enter question prompt…" />
                     </div>
-                  `
-                    )
-                    .join('')}
+                    ${
+                      qIsManual
+                        ? '<div style="font-size:12.5px; color:var(--color-text-secondary);">Written responses are saved for administrator review.</div>'
+                        : qIsFill
+                          ? `<div class="field">
+                              <label class="field-label" for="qc-accepted">Accepted answers (comma-separated)</label>
+                              <input class="input" id="qc-accepted" data-qc-field="acceptedAnswersCsv" value="${escapeHtml(questionComposer.acceptedAnswersCsv)}" placeholder="e.g. BLUF, Bottom Line Up Front" />
+                            </div>`
+                          : qIsTrueFalse
+                            ? `<div class="field">
+                                <label class="field-label" for="qc-tf-correct">Correct answer</label>
+                                <select class="select" id="qc-tf-correct" data-qc-field="correctIndex">
+                                  <option value="0" ${Number(questionComposer.correctIndex) === 0 ? 'selected' : ''}>True</option>
+                                  <option value="1" ${Number(questionComposer.correctIndex) === 1 ? 'selected' : ''}>False</option>
+                                </select>
+                              </div>`
+                            : `<div class="field">
+                                <label class="field-label" for="qc-options">${qIsOrder ? 'Steps in correct order (one per line)' : 'Options (one per line)'}</label>
+                                <textarea class="textarea" id="qc-options" data-qc-field="optionsLines" style="min-height:68px;" placeholder="Option A&#10;Option B&#10;Option C">${escapeHtml(questionComposer.optionsLines)}</textarea>
+                              </div>
+                              ${
+                                qIsMultiSelect
+                                  ? `<div class="field">
+                                      <label class="field-label" for="qc-multi-idx">Correct 0-based indices (comma-separated)</label>
+                                      <input class="input" id="qc-multi-idx" data-qc-field="correctIndicesCsv" value="${escapeHtml(questionComposer.correctIndicesCsv)}" placeholder="e.g. 0, 2" />
+                                    </div>`
+                                  : qIsOrder
+                                    ? ''
+                                    : `<div class="field">
+                                        <label class="field-label" for="qc-correct">Correct option 0-based index</label>
+                                        <input class="input" id="qc-correct" data-qc-field="correctIndex" type="number" min="0" max="10" value="${Number(questionComposer.correctIndex || 0)}" />
+                                      </div>`
+                              }`
+                    }
+                    <div class="field">
+                      <label class="field-label" for="qc-expl">Feedback explanation</label>
+                      <input class="input" id="qc-expl" data-qc-field="explanation" value="${escapeHtml(questionComposer.explanation)}" placeholder="Explanation shown after submission" />
+                    </div>
+                    <div>
+                      <button type="button" class="btn btn-secondary btn-sm" id="save-draft-question-btn">
+                        ${editingQuestionIndex !== null ? 'Update question in lesson' : '+ Add question to lesson'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              `
-                  : ''
-              }
-              <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                <input class="input" id="res-title" placeholder="Resource title" style="flex:1; min-width:160px;" />
-                <input class="input" id="res-url" placeholder="https://developer.mozilla.org/..." style="flex:1.4; min-width:200px;" />
-                <button type="button" class="btn btn-secondary btn-sm" id="add-res-btn">+ Add resource</button>
+              </div>
+
+              <!-- 8. Optional video resources -->
+              <div class="card-workspace" style="padding:14px;">
+                <strong style="display:block; color:var(--color-navy); margin-bottom:8px;">8. Optional video resources (${draftVideos.length})</strong>
+                ${
+                  draftVideos.length > 0
+                    ? `<div class="divider-list" style="margin-bottom:10px;">
+                        ${draftVideos
+                          .map(
+                            (v, i) => `<div class="divider-row" style="padding:6px 0;">
+                              <span style="font-size:13px;"><strong>${escapeHtml(v.title || 'Video')}</strong> (${escapeHtml(v.videoId || v.url || '')})</span>
+                              <button type="button" class="btn btn-ghost btn-sm" data-del-video="${i}">Remove</button>
+                            </div>`
+                          )
+                          .join('')}
+                      </div>`
+                    : ''
+                }
+                <div class="lab-grid-3">
+                  <input class="input" id="vid-url" placeholder="YouTube URL (https://youtu.be/...)" />
+                  <input class="input" id="vid-title" placeholder="Optional video title" />
+                  <div style="display:flex; gap:6px;">
+                    <input class="input" id="vid-duration" placeholder="e.g. 08:30" style="flex:1;" />
+                    <button type="button" class="btn btn-secondary btn-sm" id="add-video-btn">Attach</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 9. Completion criteria -->
+              <div class="field">
+                <label class="field-label" for="les-criteria">9. Completion criteria</label>
+                <input class="input" id="les-criteria" name="completionCriteria" data-les-field="completionCriteria" value="${escapeHtml(lessonDraft.completionCriteria)}" />
+              </div>
+
+              <label style="display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--color-navy);">
+                <input type="checkbox" name="isRequired" id="les-required" ${lessonDraft.isRequired ? 'checked' : ''} />
+                <span>Required for phase and course completion</span>
+              </label>
+
+              <div style="display:flex; gap:10px; flex-wrap:wrap; padding-top:8px;">
+                <button type="submit" class="btn btn-primary" ${!activePhase ? 'disabled' : ''}>${editingLessonId ? 'Save lesson changes' : 'Save new lesson'}</button>
+                <button type="button" class="btn btn-secondary" id="refresh-live-preview-btn">Refresh preview</button>
+              </div>
+            </form>
+          </section>
+        `
+            : ''
+        }
+
+        ${
+          lessonViewMode !== 'edit'
+            ? `
+          <aside class="card" aria-label="Lesson preview">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid var(--color-border);">
+              <div>
+                <h2 class="section-heading" style="margin:0;">Learner Lesson Preview</h2>
+                <p class="admin-panel-sub">Reflects the exact 8-section learner reading layout before publication.</p>
               </div>
             </div>
-
-            <div class="field">
-              <label class="field-label" for="les-summary">Lesson summary</label>
-              <textarea class="textarea" id="les-summary" name="summary" data-les-field="summary" style="min-height:56px;" placeholder="Recap the core lesson takeaway…">${escapeHtml(lessonDraft.summary)}</textarea>
-            </div>
-            <div class="field">
-              <label class="field-label" for="les-takeaways">Key takeaways (one per line)</label>
-              <textarea class="textarea" id="les-takeaways" name="takeaways" data-les-field="takeaways" style="min-height:54px;">${escapeHtml(lessonDraft.takeaways)}</textarea>
-            </div>
-            <div class="field">
-              <label class="field-label" for="les-criteria">Completion criteria</label>
-              <input class="input" id="les-criteria" name="completionCriteria" data-les-field="completionCriteria" value="${escapeHtml(lessonDraft.completionCriteria)}" />
-            </div>
-
-            <button type="submit" class="btn btn-primary" ${!activePhase ? 'disabled' : ''}>${editingLessonId ? 'Update Lesson' : 'Save New Lesson to Module'}</button>
-          </form>
-        </section>
-
-        <aside class="card">
-          <h2 style="font-size:1.05rem; margin-bottom:10px;">Live Safe Block Preview</h2>
-          <p style="font-size:12.5px; color:var(--color-text-muted); margin-bottom:14px;">All JSON blocks pass through XSS-safe escaping before rendering.</p>
-          <div style="border-top:1px solid var(--color-border); padding-top:14px;">
-            ${renderLessonBlocks(draftBlocks)}
-          </div>
-        </aside>
+            ${
+              liveParseError
+                ? `<div style="padding:10px 12px; border-radius:var(--radius-sm); background:var(--color-red-bg); color:var(--color-red); font-size:13px; margin-bottom:12px;">${escapeHtml(liveParseError)}</div>`
+                : ''
+            }
+            ${
+              livePreviewLesson
+                ? renderLessonReaderHtml({
+                    lesson: livePreviewLesson,
+                    courseTitle: activeCourse?.title || 'Course',
+                    phasePosition: activePhase?.position || 1,
+                    phaseTitle: activePhase?.title || 'Phase',
+                    lessonNumber: Math.max(
+                      1,
+                      editingLessonId
+                        ? phaseLessons.findIndex((l) => l.id === editingLessonId) + 1
+                        : phaseLessons.length + 1
+                    ),
+                    totalLessonsInPhase: Math.max(1, phaseLessons.length),
+                    lessonQuiz: livePreviewQuiz,
+                    previewMode: true,
+                  })
+                : ''
+            }
+          </aside>
+        `
+            : ''
+        }
       </div>
     `
-          : activeTab === 'import_export'
-            ? `
+            : activeCourse
+              ? `
+      <!-- Import / Export & Snapshot Recovery Tab -->
       <div class="card" style="margin-bottom:20px;">
         <div class="lab-grid-2" style="align-items:end;">
           <div class="field">
@@ -1082,490 +1714,266 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
                 .join('')}
             </select>
           </div>
-          ${
-            activeCourse
-              ? `<div class="card-workspace" style="padding:10px 12px;">
-                  <div class="meta-line" style="margin-bottom:4px;">
-                    <span>Course ID: <code class="mono-num">${escapeHtml(activeCourse.id)}</code></span>
-                    <span class="meta-sep">·</span>
-                    <span>Version <strong class="mono-num">v${Number(activeCourse.version || 1)}</strong></span>
-                  </div>
-                  <div style="font-size:12.5px; color:var(--color-text-secondary);">
-                    ${phases.length} modules · ${totalCourseLessons} lessons · ${recoverableVersions.length} restorable snapshots
-                  </div>
-                </div>`
-              : ''
-          }
+          <div class="card-workspace" style="padding:10px 12px;">
+            <div class="meta-line" style="margin-bottom:4px;">
+              <span>Course ID: <code class="mono-num">${escapeHtml(activeCourse.id)}</code></span>
+              <span class="meta-sep">·</span>
+              <span>Version <strong class="mono-num">v${Number(activeCourse.version || 1)}</strong></span>
+            </div>
+            <div style="font-size:12.5px; color:var(--color-text-secondary);">
+              ${phases.length} phases · ${totalCourseLessons} lessons · ${recoverableVersions.length} restorable snapshots
+            </div>
+          </div>
         </div>
       </div>
 
-      ${
-        activeCourse
-          ? `
-        <div class="card" style="margin-bottom:20px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
-            <div>
-              <h2 class="section-heading" style="margin:0 0 4px;">Export Course Curriculum (Schema v${CONTENT_PACKAGE_SCHEMA_VERSION})</h2>
-              <p style="font-size:13px; color:var(--color-text-secondary); margin:0;">
-                Downloads all ${phases.length} modules, ${totalCourseLessons} lessons, structured blocks, video metadata, and further-reading resources cleanly without learner PII or quiz answers.
-              </p>
-            </div>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <button type="button" class="btn btn-primary btn-sm" id="export-course-json-btn">Export JSON Package</button>
-              <button type="button" class="btn btn-secondary btn-sm" id="load-export-into-import-btn">Load Export into Inspector</button>
-              <button type="button" class="btn btn-ghost btn-sm" id="toggle-export-preview-btn">${exportPreviewOpen ? 'Hide JSON Preview' : 'Preview Export JSON'}</button>
-            </div>
-          </div>
-          ${
-            exportPreviewOpen && exportPreviewJson
-              ? `<pre style="margin-top:14px; padding:12px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-family:var(--font-mono); font-size:12px; max-height:280px; overflow:auto; white-space:pre-wrap; word-break:break-word;">${escapeHtml(exportPreviewJson)}</pre>`
-              : ''
-          }
-        </div>
-
-        <div class="card" style="margin-bottom:20px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
-            <div>
-              <h2 class="section-heading" style="margin:0 0 4px;">Bulk JSON Lesson Import &amp; Dry-Run Validation</h2>
-              <p style="font-size:13px; color:var(--color-text-secondary); margin:0;">
-                Step 1 validates every block, URL, and module reference without modifying database records. Step 2 commits atomically after creating an automatic <code class="mono-num">pre_import</code> backup snapshot. New lessons always stage as <strong>Draft</strong>.
-              </p>
-            </div>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <button type="button" class="btn btn-secondary btn-sm" id="load-import-template-btn">Load Starter Template</button>
-              <button type="button" class="btn btn-ghost btn-sm" id="clear-import-btn" ${!importJsonText && !dryRunPlan && dryRunParseErrors.length === 0 ? 'disabled' : ''}>Clear</button>
-            </div>
-          </div>
-
-          <div class="form-stack">
-            <div class="lab-grid-2" style="align-items:end;">
-              <div class="field">
-                <label class="field-label" for="import-json-file">Upload JSON Content Package (.json, max 5 MB)</label>
-                <input class="input" type="file" id="import-json-file" accept=".json,application/json" />
-              </div>
-              <div style="font-size:12.5px; color:var(--color-text-muted); padding-bottom:6px;">
-                ${importFileName ? `Loaded file: <strong style="color:var(--color-navy);">${escapeHtml(importFileName)}</strong>` : 'Or paste JSON directly into the inspector below.'}
-              </div>
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="import-json-textarea">Package JSON Payload</label>
-              <textarea class="textarea" id="import-json-textarea" style="min-height:210px; font-family:var(--font-mono); font-size:12px;" placeholder='Paste a "${CONTENT_PACKAGE_TYPE}" schema v${CONTENT_PACKAGE_SCHEMA_VERSION} JSON package here…'>${escapeHtml(importJsonText)}</textarea>
-            </div>
-
-            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-              <button type="button" class="btn btn-secondary" id="run-dry-run-btn" ${importInFlight ? 'disabled' : ''}>
-                1. Validate &amp; Preview Import (Dry Run)
-              </button>
-              ${
-                dryRunPlan && !dryRunMatchesCurrentText
-                  ? `<span style="font-size:12.5px; color:var(--color-amber, #b45309);">JSON edited after preview — re-run Dry Run before committing.</span>`
-                  : ''
-              }
-            </div>
-          </div>
-
-          ${
-            lastCommitResult
-              ? `<div style="margin-top:16px; padding:12px 14px; border-radius:var(--radius-sm); border:1px solid var(--color-green-border, #bbf7d0); background:var(--color-green-bg); font-size:13px;">
-                  <strong style="color:var(--color-navy); display:block; margin-bottom:4px;">
-                    Bulk import committed cleanly${lastCommitResult.idempotentReplay ? ' (idempotent replay)' : ''}.
-                  </strong>
-                  <div style="color:var(--color-text-secondary);">
-                    Import ID <code class="mono-num">${escapeHtml(lastCommitResult.importId)}</code> · Created <strong class="mono-num">${lastCommitResult.createdCount}</strong> draft lesson(s) · Updated <strong class="mono-num">${lastCommitResult.updatedCount}</strong> lesson(s) · Unchanged <strong class="mono-num">${lastCommitResult.unchangedCount}</strong>${lastCommitResult.snapshotVersionNumber ? ` · Backup snapshot <strong class="mono-num">v${lastCommitResult.snapshotVersionNumber}</strong> saved` : ''}.
-                  </div>
-                </div>`
-              : ''
-          }
-
-          ${
-            dryRunParseErrors.length > 0
-              ? `<div style="margin-top:16px; padding:14px; border-radius:var(--radius-sm); border:1px solid var(--color-red-border); background:var(--color-red-bg);">
-                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-                    <strong style="color:var(--color-red);">Package Parsing Rejected (${dryRunParseErrors.length} error${dryRunParseErrors.length === 1 ? '' : 's'})</strong>
-                    <button type="button" class="btn btn-secondary btn-sm" id="download-error-report-btn">Download Error Report (.json)</button>
-                  </div>
-                  <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--color-navy);">
-                    ${dryRunParseErrors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
-                  </ul>
-                </div>`
-              : ''
-          }
-
-          ${
-            dryRunPlan
-              ? `
-            <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--color-border);">
-              <div style="padding:14px; border-radius:var(--radius-sm); border:1px solid ${
-                !dryRunPlan.valid
-                  ? 'var(--color-red-border)'
-                  : dryRunPlan.canCommit
-                    ? 'var(--color-green-border, #bbf7d0)'
-                    : 'var(--color-amber-border)'
-              }; background:${
-                !dryRunPlan.valid
-                  ? 'var(--color-red-bg)'
-                  : dryRunPlan.canCommit
-                    ? 'var(--color-green-bg)'
-                    : 'var(--color-amber-bg)'
-              }; margin-bottom:14px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
-                  <strong style="color:var(--color-navy);">
-                    ${
-                      !dryRunPlan.valid
-                        ? 'Dry-Run Failed: Resolve all rejected items before commit.'
-                        : dryRunPlan.canCommit
-                          ? 'Dry-Run Passed: Ready for administrator review and commit.'
-                          : 'Dry-Run Complete: No new or modified lessons detected.'
-                    }
-                  </strong>
-                  <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                    <span class="status-tag status-green">New: ${dryRunPlan.counts.new}</span>
-                    <span class="status-tag status-blue">Updated: ${dryRunPlan.counts.updated}</span>
-                    <span class="status-tag status-neutral">Unchanged: ${dryRunPlan.counts.unchanged}</span>
-                    <span class="status-tag status-red">Rejected: ${dryRunPlan.counts.rejected}</span>
-                  </div>
-                </div>
-                ${
-                  dryRunPlan.packageErrors.length > 0
-                    ? `<ul style="margin:6px 0 0; padding-left:18px; font-size:13px; color:var(--color-red);">
-                        ${dryRunPlan.packageErrors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
-                      </ul>`
-                    : ''
-                }
-                ${
-                  dryRunPlan.warnings.length > 0
-                    ? `<ul style="margin:6px 0 0; padding-left:18px; font-size:12.5px; color:var(--color-text-secondary);">
-                        ${dryRunPlan.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}
-                      </ul>`
-                    : ''
-                }
-                ${
-                  !dryRunPlan.valid || dryRunPlan.counts.rejected > 0
-                    ? `<div style="margin-top:10px;">
-                        <button type="button" class="btn btn-secondary btn-sm" id="download-error-report-btn">Download Validation Error Report (.json)</button>
-                      </div>`
-                    : ''
-                }
-              </div>
-
-              <div class="divider-list" style="margin-bottom:16px;">
-                ${dryRunPlan.lessons
-                  .map(
-                    (item) => `
-                  <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:6px; padding:10px 0;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-                      <div>
-                        <strong style="color:var(--color-navy);">${item.index + 1}. ${escapeHtml(item.title)}</strong>
-                        <span style="font-size:12.5px; color:var(--color-text-muted); margin-left:8px;">
-                          Module: ${escapeHtml(item.phaseTitle)} · Pos <span class="mono-num">${item.position ?? 'auto'}</span> · Target status: <strong class="mono-num">${escapeHtml(item.effectiveStatus)}</strong>
-                        </span>
-                      </div>
-                      ${renderStatusBadge(item.classification)}
-                    </div>
-                    ${
-                      item.warnings.length > 0
-                        ? `<div style="font-size:12.5px; color:var(--color-text-secondary);">
-                            ${item.warnings.map((w) => escapeHtml(w)).join(' · ')}
-                          </div>`
-                        : ''
-                    }
-                    ${
-                      item.errors.length > 0
-                        ? `<ul style="margin:0; padding-left:18px; font-size:12.5px; color:var(--color-red);">
-                            ${item.errors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
-                          </ul>`
-                        : ''
-                    }
-                    ${
-                      item.changes.length > 0
-                        ? `<details style="font-size:12.5px;">
-                            <summary style="cursor:pointer; color:var(--color-blue); font-weight:600;">View ${item.changes.length} field change${item.changes.length === 1 ? '' : 's'}</summary>
-                            <div style="margin-top:6px; padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:6px;">
-                              ${item.changes
-                                .map(
-                                  (ch) => `
-                                <div>
-                                  <strong class="mono-num" style="color:var(--color-navy);">${escapeHtml(ch.field)}</strong>:
-                                  <div style="color:var(--color-text-muted);">Before: ${escapeHtml(formatDiffValue(ch.before))}</div>
-                                  <div style="color:var(--color-navy);">After: ${escapeHtml(formatDiffValue(ch.after))}</div>
-                                </div>
-                              `
-                                )
-                                .join('')}
-                            </div>
-                          </details>`
-                        : ''
-                    }
-                  </div>
-                `
-                  )
-                  .join('')}
-              </div>
-
-              ${
-                dryRunPlan.canCommit
-                  ? `<div class="card-workspace" style="padding:14px;">
-                      <h3 style="font-size:0.98rem; margin:0 0 10px;">2. Confirm &amp; Commit Atomic Bulk Import</h3>
-                      <div class="form-stack">
-                        <div class="field">
-                          <label class="field-label" for="import-change-notes">Release / Import Notes (stored on backup snapshot &amp; audit log)</label>
-                          <input class="input" id="import-change-notes" value="${escapeHtml(importChangeNotes)}" placeholder="e.g. Q4 Module 2 content refresh + 2 new draft lessons" />
-                        </div>
-                        <label style="display:flex; align-items:flex-start; gap:8px; font-size:13px; color:var(--color-navy); cursor:pointer;">
-                          <input type="checkbox" id="confirm-bulk-import-chk" ${confirmBulkImport ? 'checked' : ''} ${!dryRunMatchesCurrentText ? 'disabled' : ''} style="margin-top:3px;" />
-                          <span>
-                            I have reviewed the dry-run summary (${dryRunPlan.counts.new} new, ${dryRunPlan.counts.updated} updated, ${dryRunPlan.counts.unchanged} unchanged). Existing learner progress stays untouched, new lessons stage as Draft, and an automatic backup snapshot will be saved first.
-                          </span>
-                        </label>
-                        <div>
-                          <button type="button" class="btn btn-primary" id="commit-bulk-import-btn" ${!confirmBulkImport || importInFlight || !dryRunMatchesCurrentText ? 'disabled' : ''}>
-                            ${importInFlight ? 'Committing Import…' : `Commit Validated Lessons (${dryRunPlan.counts.new + dryRunPlan.counts.updated})`}
-                          </button>
-                        </div>
-                      </div>
-                    </div>`
-                  : ''
-              }
-            </div>
-          `
-              : ''
-          }
-        </div>
-
-        <div class="lab-grid-2" style="align-items:start;">
-          <section class="card">
-            <h2 class="section-heading" style="margin:0 0 6px;">Curriculum Snapshot Recovery (${recoverableVersions.length})</h2>
-            <p style="font-size:12.5px; color:var(--color-text-muted); margin:0 0 12px;">
-              Restoring any snapshot first saves an automatic <code class="mono-num">pre_restore</code> backup and leaves all learner enrollments, lesson progress, and quiz attempts intact.
+      <div class="card" style="margin-bottom:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+          <div>
+            <h2 class="section-heading" style="margin:0 0 4px;">Export Course Curriculum (Schema v${CONTENT_PACKAGE_SCHEMA_VERSION})</h2>
+            <p style="font-size:13px; color:var(--color-text-secondary); margin:0;">
+              Downloads all ${phases.length} phases, ${totalCourseLessons} lessons, structured content, and video metadata cleanly without learner PII or quiz answers.
             </p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary btn-sm" id="export-course-json-btn">Export JSON Package</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="load-export-into-import-btn">Load Export into Inspector</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="toggle-export-preview-btn">${exportPreviewOpen ? 'Hide JSON Preview' : 'Preview Export JSON'}</button>
+          </div>
+        </div>
+        ${
+          exportPreviewOpen && exportPreviewJson
+            ? `<pre style="margin-top:14px; padding:12px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm); font-family:var(--font-mono); font-size:12px; max-height:280px; overflow:auto; white-space:pre-wrap; word-break:break-word;">${escapeHtml(exportPreviewJson)}</pre>`
+            : ''
+        }
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+          <div>
+            <h2 class="section-heading" style="margin:0 0 4px;">Bulk JSON Lesson Import &amp; Dry-Run Validation</h2>
+            <p style="font-size:13px; color:var(--color-text-secondary); margin:0;">
+              Step 1 validates every block, URL, and phase reference without modifying database records. Step 2 commits atomically after creating a backup snapshot.
+            </p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" id="load-import-template-btn">Load Starter Template</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="clear-import-btn" ${!importJsonText && !dryRunPlan && dryRunParseErrors.length === 0 ? 'disabled' : ''}>Clear</button>
+          </div>
+        </div>
+
+        <div class="form-stack">
+          <div class="lab-grid-2" style="align-items:end;">
+            <div class="field">
+              <label class="field-label" for="import-json-file">Upload JSON Content Package (.json, max 5 MB)</label>
+              <input class="input" type="file" id="import-json-file" accept=".json,application/json" />
+            </div>
+            <div style="font-size:12.5px; color:var(--color-text-muted); padding-bottom:6px;">
+              ${importFileName ? `Loaded file: <strong style="color:var(--color-navy);">${escapeHtml(importFileName)}</strong>` : 'Or paste JSON directly into the inspector below.'}
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="import-json-textarea">Package JSON Payload</label>
+            <textarea class="textarea" id="import-json-textarea" style="min-height:210px; font-family:var(--font-mono); font-size:12px;" placeholder='Paste a "${CONTENT_PACKAGE_TYPE}" schema v${CONTENT_PACKAGE_SCHEMA_VERSION} JSON package here…'>${escapeHtml(importJsonText)}</textarea>
+          </div>
+
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary" id="run-dry-run-btn" ${importInFlight ? 'disabled' : ''}>
+              1. Validate &amp; Preview Import (Dry Run)
+            </button>
             ${
-              recoverableVersions.length > 0
-                ? `<div class="divider-list">
-                    ${recoverableVersions
-                      .map(
-                        (v) => `
-                      <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:8px; padding:10px 0;">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
-                          <div>
-                            <div style="font-weight:700; color:var(--color-navy);">
-                              Version v${Number(v.versionNumber || 1)}
-                              <span class="status-tag status-neutral" style="margin-left:6px;">${escapeHtml(v.snapshotType || 'manual')}</span>
-                            </div>
-                            <div style="font-size:12.5px; color:var(--color-text-secondary); margin-top:2px;">
-                              ${escapeHtml(v.changeNotes || 'Curriculum snapshot')} · ${v.snapshotData?.phases?.length || 0} modules · ${formatDate(v.createdAt)}
-                            </div>
+              dryRunPlan && !dryRunMatchesCurrentText
+                ? `<span style="font-size:12.5px; color:var(--color-amber);">JSON edited after preview — re-run Dry Run before committing.</span>`
+                : ''
+            }
+          </div>
+        </div>
+
+        ${
+          lastCommitResult
+            ? `<div style="margin-top:16px; padding:12px 14px; border-radius:var(--radius-sm); border:1px solid var(--color-green-border); background:var(--color-green-bg); font-size:13px;">
+                <strong style="color:var(--color-navy); display:block; margin-bottom:4px;">Bulk import committed cleanly${lastCommitResult.idempotentReplay ? ' (idempotent replay)' : ''}.</strong>
+                <div style="color:var(--color-text-secondary);">
+                  Created <strong class="mono-num">${lastCommitResult.createdCount}</strong> draft lesson(s) · Updated <strong class="mono-num">${lastCommitResult.updatedCount}</strong> lesson(s) · Unchanged <strong class="mono-num">${lastCommitResult.unchangedCount}</strong>.
+                </div>
+              </div>`
+            : ''
+        }
+
+        ${
+          dryRunParseErrors.length > 0
+            ? `<div style="margin-top:16px; padding:14px; border-radius:var(--radius-sm); border:1px solid var(--color-red-border); background:var(--color-red-bg);">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+                  <strong style="color:var(--color-red);">Package Parsing Rejected (${dryRunParseErrors.length})</strong>
+                  <button type="button" class="btn btn-secondary btn-sm" id="download-error-report-btn">Download Error Report (.json)</button>
+                </div>
+                <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--color-navy);">
+                  ${dryRunParseErrors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
+                </ul>
+              </div>`
+            : ''
+        }
+
+        ${
+          dryRunPlan
+            ? `
+          <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--color-border);">
+            <div style="padding:14px; border-radius:var(--radius-sm); border:1px solid ${!dryRunPlan.valid ? 'var(--color-red-border)' : dryRunPlan.canCommit ? 'var(--color-green-border)' : 'var(--color-amber-border)'}; background:${!dryRunPlan.valid ? 'var(--color-red-bg)' : dryRunPlan.canCommit ? 'var(--color-green-bg)' : 'var(--color-amber-bg)'}; margin-bottom:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <strong style="color:var(--color-navy);">
+                  ${!dryRunPlan.valid ? 'Dry-Run Failed' : dryRunPlan.canCommit ? 'Dry-Run Passed' : 'Dry-Run Complete (no changes)'}
+                </strong>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <span class="status-tag status-green">New: ${dryRunPlan.counts.new}</span>
+                  <span class="status-tag status-blue">Updated: ${dryRunPlan.counts.updated}</span>
+                  <span class="status-tag status-neutral">Unchanged: ${dryRunPlan.counts.unchanged}</span>
+                  <span class="status-tag status-red">Rejected: ${dryRunPlan.counts.rejected}</span>
+                </div>
+              </div>
+              ${
+                !dryRunPlan.valid || dryRunPlan.counts.rejected > 0
+                  ? `<div style="margin-top:10px;"><button type="button" class="btn btn-secondary btn-sm" id="download-error-report-btn">Download Error Report (.json)</button></div>`
+                  : ''
+              }
+            </div>
+
+            <div class="divider-list" style="margin-bottom:16px;">
+              ${dryRunPlan.lessons
+                .map(
+                  (item) => `
+                <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:6px; padding:10px 0;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <div>
+                      <strong style="color:var(--color-navy);">${item.index + 1}. ${escapeHtml(item.title)}</strong>
+                      <span style="font-size:12.5px; color:var(--color-text-muted); margin-left:8px;">
+                        Phase: ${escapeHtml(item.phaseTitle)} · Target status: <strong class="mono-num">${escapeHtml(item.effectiveStatus)}</strong>
+                      </span>
+                    </div>
+                    ${renderStatusBadge(item.classification)}
+                  </div>
+                  ${
+                    item.errors.length > 0
+                      ? `<ul style="margin:0; padding-left:18px; font-size:12.5px; color:var(--color-red);">
+                          ${item.errors.map((e) => `<li><code class="mono-num">${escapeHtml(e.field)}</code>: ${escapeHtml(e.message)}</li>`).join('')}
+                        </ul>`
+                      : ''
+                  }
+                  ${
+                    item.changes.length > 0
+                      ? `<details style="font-size:12.5px;">
+                          <summary style="cursor:pointer; color:var(--color-blue); font-weight:600;">View ${item.changes.length} field change${item.changes.length === 1 ? '' : 's'}</summary>
+                          <div style="margin-top:6px; padding:8px 10px; background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-sm);">
+                            ${item.changes
+                              .map(
+                                (ch) => `<div style="margin-bottom:4px;"><strong class="mono-num">${escapeHtml(ch.field)}</strong>: ${escapeHtml(formatDiffValue(ch.before))} → ${escapeHtml(formatDiffValue(ch.after))}</div>`
+                              )
+                              .join('')}
                           </div>
-                          ${
-                            confirmRestoreVersionId === v.id
-                              ? ''
-                              : `<button type="button" class="btn btn-secondary btn-sm" data-start-restore="${escapeHtml(v.id)}" ${restoreInFlightId ? 'disabled' : ''}>Restore Version</button>`
-                          }
+                        </details>`
+                      : ''
+                  }
+                </div>
+              `
+                )
+                .join('')}
+            </div>
+
+            ${
+              dryRunPlan.canCommit
+                ? `<div class="card-workspace" style="padding:14px;">
+                    <div class="form-stack">
+                      <div class="field">
+                        <label class="field-label" for="import-change-notes">Release / Import Notes</label>
+                        <input class="input" id="import-change-notes" value="${escapeHtml(importChangeNotes)}" placeholder="e.g. Phase 2 content refresh" />
+                      </div>
+                      <label style="display:flex; align-items:flex-start; gap:8px; font-size:13px; color:var(--color-navy); cursor:pointer;">
+                        <input type="checkbox" id="confirm-bulk-import-chk" ${confirmBulkImport ? 'checked' : ''} ${!dryRunMatchesCurrentText ? 'disabled' : ''} style="margin-top:3px;" />
+                        <span>I confirm committing these validated curriculum updates with an automatic backup snapshot.</span>
+                      </label>
+                      <div>
+                        <button type="button" class="btn btn-primary" id="commit-bulk-import-btn" ${!confirmBulkImport || importInFlight || !dryRunMatchesCurrentText ? 'disabled' : ''}>
+                          ${importInFlight ? 'Committing Import…' : `Commit Validated Lessons (${dryRunPlan.counts.new + dryRunPlan.counts.updated})`}
+                        </button>
+                      </div>
+                    </div>
+                  </div>`
+                : ''
+            }
+          </div>
+        `
+            : ''
+        }
+      </div>
+
+      <div class="lab-grid-2" style="align-items:start;">
+        <section class="card">
+          <h2 class="section-heading" style="margin:0 0 6px;">Curriculum Snapshot Recovery (${recoverableVersions.length})</h2>
+          ${
+            recoverableVersions.length > 0
+              ? `<div class="divider-list">
+                  ${recoverableVersions
+                    .map(
+                      (v) => `
+                    <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:8px; padding:10px 0;">
+                      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+                        <div>
+                          <strong style="color:var(--color-navy);">Version v${Number(v.versionNumber || 1)}</strong>
+                          <div style="font-size:12.5px; color:var(--color-text-secondary);">${escapeHtml(v.changeNotes || 'Snapshot')} · ${formatDate(v.createdAt)}</div>
                         </div>
                         ${
                           confirmRestoreVersionId === v.id
-                            ? `<div class="card-workspace" style="padding:10px 12px;">
-                                <p style="font-size:12.5px; color:var(--color-navy); margin:0 0 8px;">
-                                  Confirm restoring <strong>v${Number(v.versionNumber || 1)}</strong>? Current state will be backed up as a <code class="mono-num">pre_restore</code> snapshot before reverting modules and lessons. Learner records will not be altered.
-                                </p>
-                                <input class="input" id="restore-notes-input" value="${escapeHtml(restoreNotes)}" placeholder="Optional recovery reason…" style="margin-bottom:8px;" />
-                                <div style="display:flex; gap:8px;">
-                                  <button type="button" class="btn btn-primary btn-sm" data-confirm-restore="${escapeHtml(v.id)}" ${restoreInFlightId ? 'disabled' : ''}>
-                                    ${restoreInFlightId === v.id ? 'Restoring…' : 'Confirm Restore'}
-                                  </button>
-                                  <button type="button" class="btn btn-ghost btn-sm" id="cancel-restore-btn" ${restoreInFlightId ? 'disabled' : ''}>Cancel</button>
-                                </div>
-                              </div>`
-                            : ''
+                            ? ''
+                            : `<button type="button" class="btn btn-secondary btn-sm" data-start-restore="${escapeHtml(v.id)}" ${restoreInFlightId ? 'disabled' : ''}>Restore</button>`
                         }
                       </div>
-                    `
-                      )
-                      .join('')}
-                  </div>`
-                : `<p style="font-size:13px; color:var(--color-text-muted); margin:0;">No full curriculum snapshots saved for this course yet. Create a manual snapshot or run a bulk import to generate one automatically.</p>`
-            }
-          </section>
-
-          <section class="card">
-            <h2 class="section-heading" style="margin:0 0 6px;">Import &amp; Recovery Audit History (${importHistory.length})</h2>
-            <p style="font-size:12.5px; color:var(--color-text-muted); margin:0 0 12px;">
-              Immutable administrator record of committed, rejected, failed, and restored curriculum operations.
-            </p>
-            ${
-              importHistory.length > 0
-                ? `<div class="divider-list">
-                    ${importHistory
-                      .map(
-                        (rec) => `
-                      <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-                          <div style="font-size:13px; font-weight:700; color:var(--color-navy);">
-                            ${escapeHtml(rec.operationType === 'restore' ? 'Snapshot Recovery' : 'Bulk JSON Import')}
-                            <span style="font-weight:400; color:var(--color-text-muted); margin-left:6px;">${formatDate(rec.createdAt)}</span>
-                          </div>
-                          ${renderStatusBadge(rec.status === 'failed' ? 'import_failed' : rec.status)}
-                        </div>
-                        <div style="font-size:12.5px; color:var(--color-text-secondary);">
-                          Actor: ${escapeHtml(rec.actorEmail || rec.actorId || 'Administrator')} ·
-                          New <span class="mono-num">${rec.createdCount}</span> ·
-                          Updated <span class="mono-num">${rec.updatedCount}</span> ·
-                          Unchanged <span class="mono-num">${rec.unchangedCount}</span> ·
-                          Rejected <span class="mono-num">${rec.rejectedCount}</span>
-                        </div>
-                        ${
-                          rec.changeNotes
-                            ? `<div style="font-size:12.5px; color:var(--color-navy);">Notes: ${escapeHtml(rec.changeNotes)}</div>`
-                            : ''
-                        }
-                        ${
-                          rec.errorSummary
-                            ? `<div style="font-size:12.5px; color:var(--color-red);">Error: ${escapeHtml(rec.errorSummary)}</div>`
-                            : ''
-                        }
-                      </div>
-                    `
-                      )
-                      .join('')}
-                  </div>`
-                : `<p style="font-size:13px; color:var(--color-text-muted); margin:0;">No bulk import or snapshot recovery events recorded for this course yet.</p>`
-            }
-          </section>
-        </div>
-      `
-          : `<div class="card"><p style="font-size:14px; color:var(--color-text-muted); margin:0;">Create or select a course first to export, bulk import, or restore snapshots.</p></div>`
-      }
-    `
-            : `
-      <div class="lab-split">
-        <section class="card">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
-            <h2 class="section-heading" style="margin:0;">Skills Directory (${filteredCatalogSkills.length})</h2>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <select class="select" id="admin-cat-filter" style="width:auto;">
-                <option value="All">All categories (${categories.length})</option>
-                ${categories.map((c) => `<option value="${escapeHtml(c.name)}" ${catalogCategoryFilter === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
-              </select>
-              <select class="select" id="admin-course-status-filter" style="width:auto;">
-                <option value="all" ${catalogCourseStatusFilter === 'all' ? 'selected' : ''}>All course states</option>
-                <option value="published_courses" ${catalogCourseStatusFilter === 'published_courses' ? 'selected' : ''}>Has published courses</option>
-                <option value="draft_courses" ${catalogCourseStatusFilter === 'draft_courses' ? 'selected' : ''}>Courses in development</option>
-                <option value="no_courses" ${catalogCourseStatusFilter === 'no_courses' ? 'selected' : ''}>No courses yet</option>
-              </select>
-            </div>
-          </div>
-          <div class="divider-list">
-            ${filteredCatalogSkills
-              .map((s) => {
-                const pubCnt = Number(s.courseCount || 0);
-                const draftCnt = Number(s.draftCourseCount || 0);
-                const courseSummary =
-                  pubCnt > 0 && draftCnt > 0
-                    ? `${pubCnt} published · ${draftCnt} draft`
-                    : pubCnt > 0
-                      ? `${pubCnt} published ${pubCnt === 1 ? 'course' : 'courses'}`
-                      : draftCnt > 0
-                        ? `${draftCnt} in development (draft)`
-                        : 'No courses yet';
-                return `
-                  <div class="divider-row" style="align-items:flex-start; flex-wrap:wrap;">
-                    <div style="min-width:200px; flex:1;">
-                      <div style="font-weight:700; color:var(--color-navy);">${escapeHtml(s.title)}</div>
-                      <div class="meta-line" style="margin-top:2px;">
-                        <span>${escapeHtml(s.category)}</span>
-                        <span class="meta-sep">·</span>
-                        <span>${escapeHtml(s.level)}</span>
-                        <span class="meta-sep">·</span>
-                        <span class="mono-num">${escapeHtml(courseSummary)}</span>
-                      </div>
+                      ${
+                        confirmRestoreVersionId === v.id
+                          ? `<div class="card-workspace" style="padding:10px 12px;">
+                              <input class="input" id="restore-notes-input" value="${escapeHtml(restoreNotes)}" placeholder="Optional recovery reason…" style="margin-bottom:8px;" />
+                              <div style="display:flex; gap:8px;">
+                                <button type="button" class="btn btn-primary btn-sm" data-confirm-restore="${escapeHtml(v.id)}" ${restoreInFlightId ? 'disabled' : ''}>Confirm Restore</button>
+                                <button type="button" class="btn btn-ghost btn-sm" id="cancel-restore-btn">Cancel</button>
+                              </div>
+                            </div>`
+                          : ''
+                      }
                     </div>
-                    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                      ${renderStatusBadge(s.publicationStatus || 'published')}
-                      <button type="button" class="btn btn-secondary btn-sm" data-edit-skill="${escapeHtml(s.id)}">Edit</button>
-                      <button type="button" class="btn btn-secondary btn-sm" data-add-course-skill="${escapeHtml(s.id)}">+ Course</button>
-                      <button type="button" class="btn btn-ghost btn-sm" data-toggle-skill-pub="${escapeHtml(s.id)}">
-                        ${s.publicationStatus === 'draft' ? 'Publish' : 'Set Draft'}
-                      </button>
-                    </div>
-                  </div>
-                `;
-              })
-              .join('')}
-          </div>
+                  `
+                    )
+                    .join('')}
+                </div>`
+              : '<p style="font-size:13px; color:var(--color-text-muted); margin:0;">No full curriculum snapshots saved yet.</p>'
+          }
         </section>
 
-        <aside style="display:flex; flex-direction:column; gap:18px;">
-          <div class="card-workspace">
-            <h2 style="font-size:1.05rem; margin-bottom:10px;">Add Dynamic Category</h2>
-            <form id="admin-category-form" class="form-stack">
-              <div class="field">
-                <label class="field-label" for="cat-name">Category name</label>
-                <input class="input" id="cat-name" name="name" required placeholder="e.g. Sustainability &amp; Operations" />
-              </div>
-              <div class="field">
-                <label class="field-label" for="cat-desc">Description</label>
-                <input class="input" id="cat-desc" name="description" required placeholder="Skills covered in this category" />
-              </div>
-              <button type="submit" class="btn btn-secondary btn-sm">Add category</button>
-            </form>
-          </div>
-
-          <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px;">
-              <h2 style="font-size:1.05rem;">${editingSkill ? `Edit Skill: ${escapeHtml(editingSkill.title)}` : 'Create Independent Skill'}</h2>
-              ${editingSkill ? `<button type="button" class="btn btn-ghost btn-sm" id="cancel-edit-skill">Cancel</button>` : ''}
-            </div>
-            <p style="font-size:12.5px; color:var(--color-text-muted); margin-bottom:12px;">
-              Skills exist independently and can be created or published with zero courses. Courses can be attached anytime.
-            </p>
-            <form id="admin-skill-form" class="form-stack">
-              <div class="field">
-                <label class="field-label" for="skill-title">Skill title</label>
-                <input class="input" id="skill-title" name="title" required value="${escapeHtml(editingSkill?.title || '')}" placeholder="e.g. Email Lifecycle Strategy" />
-              </div>
-              <div class="lab-grid-2">
-                <div class="field">
-                  <label class="field-label" for="skill-cat">Category</label>
-                  <select class="select" id="skill-cat" name="categoryId">
-                    ${categories
-                      .map(
-                        (c) => `<option value="${escapeHtml(c.id)}" ${editingSkill?.categoryId === c.id || editingSkill?.category === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
-                      )
-                      .join('')}
-                  </select>
-                </div>
-                <div class="field">
-                  <label class="field-label" for="skill-level">Level</label>
-                  <select class="select" id="skill-level" name="level">
-                    ${DIFFICULTY_LEVELS.map((d) => `<option value="${d}" ${editingSkill?.level === d ? 'selected' : ''}>${d}</option>`).join('')}
-                  </select>
-                </div>
-              </div>
-              <div class="field">
-                <label class="field-label" for="skill-pub">Publication status</label>
-                <select class="select" id="skill-pub" name="publicationStatus">
-                  <option value="published" ${(editingSkill?.publicationStatus || 'published') === 'published' ? 'selected' : ''}>Published (visible to learners)</option>
-                  <option value="draft" ${editingSkill?.publicationStatus === 'draft' ? 'selected' : ''}>Draft (admin only)</option>
-                </select>
-              </div>
-              <div class="field">
-                <label class="field-label" for="skill-summary">Competency description</label>
-                <textarea class="textarea" id="skill-summary" name="summary" style="min-height:70px;" required placeholder="What learners master in this skill…">${escapeHtml(editingSkill?.summary || '')}</textarea>
-              </div>
-              <div class="field">
-                <label class="field-label" for="skill-expectations">Competency expectations</label>
-                <input class="input" id="skill-expectations" name="competencyExpectations" value="${escapeHtml(editingSkill?.competencyExpectations || '')}" placeholder="Applied portfolio expectations…" />
-              </div>
-              <div class="field">
-                <label class="field-label" for="skill-outcomes">Learning outcomes (one per line)</label>
-                <textarea class="textarea" id="skill-outcomes" name="outcomes" style="min-height:76px;" placeholder="Explain core frameworks&#10;Deliver practical projects">${escapeHtml((editingSkill?.outcomes || []).join('\n'))}</textarea>
-              </div>
-              <button type="submit" class="btn btn-primary btn-sm">${editingSkill ? 'Save skill changes' : 'Create skill'}</button>
-            </form>
-          </div>
-        </aside>
+        <section class="card">
+          <h2 class="section-heading" style="margin:0 0 6px;">Import &amp; Recovery History (${importHistory.length})</h2>
+          ${
+            importHistory.length > 0
+              ? `<div class="divider-list">
+                  ${importHistory
+                    .map(
+                      (rec) => `
+                    <div class="divider-row" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0;">
+                      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                        <strong style="font-size:13px; color:var(--color-navy);">${escapeHtml(rec.operationType === 'restore' ? 'Snapshot Recovery' : 'Bulk Import')} · ${formatDate(rec.createdAt)}</strong>
+                        ${renderStatusBadge(rec.status === 'failed' ? 'import_failed' : rec.status)}
+                      </div>
+                      <div style="font-size:12.5px; color:var(--color-text-secondary);">
+                        New ${rec.createdCount} · Updated ${rec.updatedCount} · Rejected ${rec.rejectedCount}
+                      </div>
+                    </div>
+                  `
+                    )
+                    .join('')}
+                </div>`
+              : '<p style="font-size:13px; color:var(--color-text-muted); margin:0;">No import or recovery events recorded yet.</p>'
+          }
+        </section>
       </div>
     `
+              : '<div class="card"><p style="font-size:14px; color:var(--color-text-muted); margin:0;">Create or select a course first to export, bulk import, or restore snapshots.</p></div>'
     }
   `;
 
@@ -1573,138 +1981,194 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
     html: renderAdminLayout({ currentPath, innerHtml }),
     /** @param {HTMLElement} root */
     bind(root) {
+      // Top Tabs
       root.querySelectorAll('[data-admin-tab]').forEach((node) => {
         const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          activeTab = btn.dataset.adminTab || 'courses';
+          activeTab = /** @type {'hierarchy' | 'lesson_editor' | 'import_export'} */ (
+            btn.dataset.adminTab || 'hierarchy'
+          );
           rerender({ silent: true });
         });
       });
 
-      // Courses tab handlers
-      root.querySelector('#admin-course-skill')?.addEventListener('change', (e) => {
-        selectedSkillId = /** @type {HTMLSelectElement} */ (e.target).value;
-        const nextCourses = courses.filter(
-          (c) => c.skillId === selectedSkillId || (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
-        );
-        selectedCourseId = nextCourses[0]?.id || null;
-        selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
-        resetImportExportState();
+      // Hierarchy: Skills
+      root.querySelector('#admin-skill-search')?.addEventListener('input', (e) => {
+        skillSearchQuery = /** @type {HTMLInputElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
-      root.querySelector('#admin-active-course')?.addEventListener('change', (e) => {
-        selectedCourseId = /** @type {HTMLSelectElement} */ (e.target).value;
-        const nextC = courses.find((c) => c.id === selectedCourseId);
-        selectedPhaseId = nextC?.phases?.[0]?.id || null;
-        resetImportExportState();
+      root.querySelector('#admin-cat-filter')?.addEventListener('change', (e) => {
+        catalogCategoryFilter = /** @type {HTMLSelectElement} */ (e.target).value;
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-course-form-mode]').forEach((node) => {
+      root.querySelector('#toggle-category-form-btn')?.addEventListener('click', () => {
+        categoryFormOpen = !categoryFormOpen;
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#new-skill-btn')?.addEventListener('click', () => {
+        editingSkillId = null;
+        skillFormOpen = true;
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#cancel-skill-form-btn')?.addEventListener('click', () => {
+        editingSkillId = null;
+        skillFormOpen = false;
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-select-skill]').forEach((node) => {
         const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          courseFormMode = btn.dataset.courseFormMode || 'edit';
+          selectedSkillId = btn.dataset.selectSkill || null;
+          const nextCourses = courses.filter(
+            (c) =>
+              c.skillId === selectedSkillId ||
+              (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
+          );
+          selectedCourseId = nextCourses[0]?.id || selectedCourseId;
+          selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
+          editingPhaseId = null;
+          phaseFormOpen = false;
+          confirmDeletePhaseId = null;
+          confirmDeleteLessonId = null;
           rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-set-course-status]').forEach((node) => {
+      root.querySelectorAll('[data-edit-skill]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          editingSkillId = btn.dataset.editSkill || null;
+          skillFormOpen = true;
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelectorAll('[data-toggle-skill-pub]').forEach((node) => {
         const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', async () => {
-          if (!activeCourse) return;
-          const nextStatus = btn.dataset.setCourseStatus || 'draft';
+          const skill = skills.find((s) => s.id === btn.dataset.toggleSkillPub);
+          if (!skill) return;
           try {
-            await adminSetCourseStatus(activeCourse.id, nextStatus);
-            showToast(`Course status updated to ${nextStatus}.`, 'success');
+            await adminUpsertSkill({
+              ...skill,
+              publicationStatus: skill.publicationStatus === 'draft' ? 'published' : 'draft',
+            });
+            showToast(`Updated ${skill.title}.`, 'success');
             rerender({ silent: true });
           } catch (err) {
-            showToast(err instanceof Error ? err.message : 'Cannot change course status.', 'error');
+            showToast(err instanceof Error ? err.message : 'Unable to update skill status.', 'error');
           }
         });
       });
 
-      root.querySelector('#create-course-version-btn')?.addEventListener('click', async () => {
-        if (!activeCourse) return;
-        const notes = /** @type {HTMLInputElement | null} */ (root.querySelector('#version-notes-input'))?.value || '';
+      root.querySelector('#admin-category-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
-          const ver = await adminCreateCourseVersion(activeCourse.id, notes);
-          showToast(`Version v${ver?.versionNumber || Number(activeCourse.version || 1) + 1} snapshot created.`, 'success');
+          await adminUpsertCategory({
+            name: String(fd.get('name')),
+            description: String(fd.get('description')),
+          });
+          categoryFormOpen = false;
+          showToast('Category created.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err instanceof Error ? err.message : 'Unable to create version snapshot.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to create category.', 'error');
         }
       });
 
-      root.querySelector('#open-course-preview')?.addEventListener('click', () => {
-        previewCourseOpen = true;
-        rerender({ silent: true });
-      });
-      root.querySelector('#close-course-preview')?.addEventListener('click', () => {
-        previewCourseOpen = false;
-        rerender({ silent: true });
-      });
-      root.querySelector('#course-preview-backdrop')?.addEventListener('click', (e) => {
-        if (/** @type {HTMLElement | null} */ (e.target)?.id === 'course-preview-backdrop') {
-          previewCourseOpen = false;
+      root.querySelector('#admin-skill-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
+        try {
+          const saved = await adminUpsertSkill({
+            id: editingSkillId || undefined,
+            slug: editingSkill?.slug || undefined,
+            title: String(fd.get('title')),
+            categoryId: String(fd.get('categoryId')),
+            level: String(fd.get('level')),
+            summary: String(fd.get('summary')),
+            outcomes: String(fd.get('outcomes') || ''),
+            publicationStatus: String(fd.get('publicationStatus') || 'published'),
+          });
+          if (saved?.id) selectedSkillId = saved.id;
+          showToast(editingSkillId ? 'Skill updated.' : 'Skill created.', 'success');
+          editingSkillId = null;
+          skillFormOpen = false;
           rerender({ silent: true });
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Unable to save skill.', 'error');
         }
       });
-      root.querySelector('#preview-lesson-select')?.addEventListener('change', (e) => {
-        previewLessonId = /** @type {HTMLSelectElement} */ (e.target).value;
+
+      // Hierarchy: Courses
+      root.querySelectorAll('[data-course-scope]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          skillCourseFilter = btn.dataset.courseScope === 'all' ? 'all' : 'linked';
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelectorAll('[data-select-course]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          selectedCourseId = btn.dataset.selectCourse || null;
+          const nextC = courses.find((c) => c.id === selectedCourseId);
+          selectedPhaseId = nextC?.phases?.[0]?.id || null;
+          courseFormOpen = false;
+          editingPhaseId = null;
+          phaseFormOpen = false;
+          confirmDeletePhaseId = null;
+          confirmDeleteLessonId = null;
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelector('#new-course-btn')?.addEventListener('click', () => {
+        courseFormMode = 'create';
+        courseFormOpen = true;
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-move-phase]').forEach((node) => {
+      root.querySelector('#edit-active-course-btn')?.addEventListener('click', () => {
+        courseFormMode = 'edit';
+        courseFormOpen = true;
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-edit-course]').forEach((node) => {
         const btn = /** @type {HTMLElement} */ (node);
-        btn.addEventListener('click', async () => {
-          if (!activeCourse) return;
-          const phId = btn.dataset.movePhase || '';
-          const dir = Number(btn.dataset.dir);
-          const ids = phases.map((p) => p.id);
-          const idx = ids.indexOf(phId);
-          const target = idx + dir;
-          if (idx < 0 || target < 0 || target >= ids.length) return;
-          [ids[idx], ids[target]] = [ids[target], ids[idx]];
-          try {
-            await adminReorderPhases(activeCourse.id, ids);
-            showToast('Module order updated.', 'success');
-            rerender({ silent: true });
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : 'Unable to reorder modules.', 'error');
-          }
+        btn.addEventListener('click', () => {
+          selectedCourseId = btn.dataset.editCourse || null;
+          courseFormMode = 'edit';
+          courseFormOpen = true;
+          rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-toggle-phase-pub]').forEach((node) => {
-        const btn = /** @type {HTMLElement} */ (node);
-        btn.addEventListener('click', async () => {
-          if (!activeCourse) return;
-          const ph = phases.find((p) => p.id === btn.dataset.togglePhasePub);
-          if (!ph) return;
-          const nextPub = (ph.publicationStatus || 'published') === 'published' ? 'draft' : 'published';
-          try {
-            await adminUpsertPhase({
-              ...ph,
-              courseId: activeCourse.id,
-              publicationStatus: nextPub,
-            });
-            showToast(`Module "${ph.title}" set to ${nextPub}.`, 'success');
-            rerender({ silent: true });
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : 'Unable to update module status.', 'error');
-          }
-        });
+      root.querySelector('#cancel-course-form-btn')?.addEventListener('click', () => {
+        courseFormOpen = false;
+        rerender({ silent: true });
+      });
+
+      root.querySelector('#assoc-skill-filter')?.addEventListener('input', (e) => {
+        skillAssociationFilter = /** @type {HTMLInputElement} */ (e.target).value;
+        rerender({ silent: true });
       });
 
       root.querySelector('#admin-course-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const form = /** @type {HTMLFormElement} */ (e.currentTarget);
-        const fd = new FormData(form);
+        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         const associatedSkillIds = fd.getAll('associatedSkillIds').map(String).filter(Boolean);
         const primarySkillId = associatedSkillIds[0] || editCourseObj?.skillId || selectedSkillId || '';
         try {
-          await adminUpsertCourse({
+          const saved = await adminUpsertCourse({
             id: editCourseObj?.id || undefined,
             skillId: primarySkillId,
             associatedSkillIds,
@@ -1729,12 +2193,88 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
               requireChallengeApproval: Boolean(fd.get('ruleChallengeApproval')),
             },
           });
-          showToast(editCourseObj ? 'Course updated.' : 'Course created under selected skill.', 'success');
+          if (saved?.id) selectedCourseId = saved.id;
+          showToast(editCourseObj ? 'Course updated.' : 'Course created.', 'success');
           courseFormMode = 'edit';
+          courseFormOpen = false;
           rerender({ silent: true });
         } catch (err) {
           showToast(err instanceof Error ? err.message : 'Unable to save course.', 'error');
         }
+      });
+
+      root.querySelectorAll('[data-set-course-status]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse) return;
+          const nextStatus = btn.dataset.setCourseStatus || 'draft';
+          try {
+            await adminSetCourseStatus(activeCourse.id, nextStatus);
+            showToast(`Course status updated to ${nextStatus}.`, 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Cannot change course status.', 'error');
+          }
+        });
+      });
+
+      root.querySelector('#create-course-version-btn')?.addEventListener('click', async () => {
+        if (!activeCourse) return;
+        const notes =
+          /** @type {HTMLInputElement | null} */ (root.querySelector('#version-notes-input'))?.value || '';
+        try {
+          const ver = await adminCreateCourseVersion(activeCourse.id, notes);
+          showToast(`Snapshot v${ver?.versionNumber || Number(activeCourse.version || 1) + 1} saved.`, 'success');
+          rerender({ silent: true });
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Unable to save snapshot.', 'error');
+        }
+      });
+
+      root.querySelector('#open-course-preview')?.addEventListener('click', () => {
+        previewCourseOpen = true;
+        rerender({ silent: true });
+      });
+      root.querySelector('#close-course-preview')?.addEventListener('click', () => {
+        previewCourseOpen = false;
+        rerender({ silent: true });
+      });
+      root.querySelector('#course-preview-backdrop')?.addEventListener('click', (e) => {
+        if (/** @type {HTMLElement | null} */ (e.target)?.id === 'course-preview-backdrop') {
+          previewCourseOpen = false;
+          rerender({ silent: true });
+        }
+      });
+
+      // Hierarchy: Phases
+      root.querySelectorAll('[data-select-phase]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          selectedPhaseId = btn.dataset.selectPhase || null;
+          confirmDeleteLessonId = null;
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelector('#new-phase-btn')?.addEventListener('click', () => {
+        editingPhaseId = null;
+        phaseFormOpen = true;
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-edit-phase]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          editingPhaseId = btn.dataset.editPhase || null;
+          phaseFormOpen = true;
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelector('#cancel-phase-form-btn')?.addEventListener('click', () => {
+        editingPhaseId = null;
+        phaseFormOpen = false;
+        rerender({ silent: true });
       });
 
       root.querySelector('#admin-phase-form')?.addEventListener('submit', async (e) => {
@@ -1742,19 +2282,218 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         if (!activeCourse) return;
         const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
         try {
-          await adminUpsertPhase({
+          const saved = await adminUpsertPhase({
+            id: editingPhaseObj?.id || undefined,
             courseId: activeCourse.id,
+            position: editingPhaseObj?.position,
             title: String(fd.get('title')),
             summary: String(fd.get('summary')),
             objectives: String(fd.get('objectives') || ''),
             difficulty: String(fd.get('difficulty')),
             estHours: Number(fd.get('estHours') || 3),
+            publicationStatus: String(fd.get('publicationStatus') || 'published'),
           });
-          showToast('Module added to course.', 'success');
+          if (saved?.id) selectedPhaseId = saved.id;
+          showToast(editingPhaseObj ? 'Phase updated.' : 'Phase created.', 'success');
+          editingPhaseId = null;
+          phaseFormOpen = false;
           rerender({ silent: true });
         } catch (err) {
-          showToast(err instanceof Error ? err.message : 'Unable to add module.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to save phase.', 'error');
         }
+      });
+
+      root.querySelectorAll('[data-move-phase]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse) return;
+          const phId = btn.dataset.movePhase || '';
+          const dir = Number(btn.dataset.dir);
+          const ids = phases.map((p) => p.id);
+          const idx = ids.indexOf(phId);
+          const target = idx + dir;
+          if (idx < 0 || target < 0 || target >= ids.length) return;
+          [ids[idx], ids[target]] = [ids[target], ids[idx]];
+          try {
+            await adminReorderPhases(activeCourse.id, ids);
+            showToast('Phase order updated.', 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Unable to reorder phases.', 'error');
+          }
+        });
+      });
+
+      root.querySelectorAll('[data-toggle-phase-pub]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse) return;
+          const ph = phases.find((p) => p.id === btn.dataset.togglePhasePub);
+          if (!ph) return;
+          const nextPub = (ph.publicationStatus || 'published') === 'published' ? 'draft' : 'published';
+          try {
+            await adminUpsertPhase({
+              ...ph,
+              courseId: activeCourse.id,
+              publicationStatus: nextPub,
+            });
+            showToast(`Phase set to ${nextPub}.`, 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Unable to update phase status.', 'error');
+          }
+        });
+      });
+
+      root.querySelectorAll('[data-del-phase]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          confirmDeletePhaseId = btn.dataset.delPhase || null;
+          rerender({ silent: true });
+        });
+      });
+      root.querySelector('#cancel-del-phase-btn')?.addEventListener('click', () => {
+        confirmDeletePhaseId = null;
+        rerender({ silent: true });
+      });
+      root.querySelectorAll('[data-confirm-del-phase]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse) return;
+          const phId = btn.dataset.confirmDelPhase || '';
+          try {
+            await adminDeletePhase(activeCourse.id, phId);
+            confirmDeletePhaseId = null;
+            if (selectedPhaseId === phId) selectedPhaseId = null;
+            showToast('Phase deleted.', 'info');
+            rerender({ silent: true });
+          } catch (err) {
+            confirmDeletePhaseId = null;
+            showToast(err instanceof Error ? err.message : 'Unable to delete phase.', 'error');
+            rerender({ silent: true });
+          }
+        });
+      });
+
+      // Hierarchy: Lessons
+      root.querySelector('#new-lesson-in-phase-btn')?.addEventListener('click', () => {
+        resetLessonEditor();
+        activeTab = 'lesson_editor';
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-move-lesson]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse || !activePhase) return;
+          const lid = btn.dataset.moveLesson || '';
+          const dir = Number(btn.dataset.dir);
+          const ids = phaseLessons.map((l) => l.id);
+          const idx = ids.indexOf(lid);
+          const target = idx + dir;
+          if (idx < 0 || target < 0 || target >= ids.length) return;
+          [ids[idx], ids[target]] = [ids[target], ids[idx]];
+          try {
+            await adminReorderLessons(activeCourse.id, activePhase.id, ids);
+            showToast('Lesson order updated.', 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Unable to reorder lessons.', 'error');
+          }
+        });
+      });
+
+      root.querySelectorAll('[data-toggle-lesson-pub]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse || !activePhase) return;
+          const les = phaseLessons.find((l) => l.id === btn.dataset.toggleLessonPub);
+          if (!les) return;
+          const nextPub = (les.publicationStatus || 'published') === 'published' ? 'draft' : 'published';
+          try {
+            await adminUpsertLesson({
+              ...les,
+              courseId: activeCourse.id,
+              phaseId: activePhase.id,
+              publicationStatus: nextPub,
+            });
+            showToast(`Lesson set to ${nextPub}.`, 'success');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Unable to update lesson status.', 'error');
+          }
+        });
+      });
+
+      root.querySelectorAll('[data-edit-lesson-btn]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          const les = phaseLessons.find((l) => l.id === btn.dataset.editLessonBtn);
+          if (!les) return;
+          await loadLessonIntoEditor(les, courseAssessments);
+          activeTab = 'lesson_editor';
+          rerender({ silent: true });
+        });
+      });
+
+      root.querySelectorAll('[data-preview-lesson]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          previewModalLessonId = btn.dataset.previewLesson || null;
+          rerender({ silent: true });
+        });
+      });
+      root.querySelector('#close-lesson-preview')?.addEventListener('click', () => {
+        previewModalLessonId = null;
+        rerender({ silent: true });
+      });
+      root.querySelector('#lesson-preview-backdrop')?.addEventListener('click', (e) => {
+        if (/** @type {HTMLElement | null} */ (e.target)?.id === 'lesson-preview-backdrop') {
+          previewModalLessonId = null;
+          rerender({ silent: true });
+        }
+      });
+      root.querySelector('#edit-from-modal-preview')?.addEventListener('click', async (e) => {
+        const lid = /** @type {HTMLElement} */ (e.currentTarget).dataset.lessonId || '';
+        const les = allCourseLessonsFlat.find((l) => l.id === lid) || null;
+        previewModalLessonId = null;
+        if (les) {
+          selectedPhaseId = les.phaseId;
+          await loadLessonIntoEditor(les, courseAssessments);
+          activeTab = 'lesson_editor';
+        }
+        rerender({ silent: true });
+      });
+
+      if (modalPreviewLesson) {
+        bindLessonReader(root, { lessonQuiz: modalPreviewQuiz });
+      }
+
+      root.querySelectorAll('[data-del-lesson]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          confirmDeleteLessonId = btn.dataset.delLesson || null;
+          rerender({ silent: true });
+        });
+      });
+      root.querySelector('#cancel-del-lesson-btn')?.addEventListener('click', () => {
+        confirmDeleteLessonId = null;
+        rerender({ silent: true });
+      });
+      root.querySelectorAll('[data-confirm-del-lesson]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', async () => {
+          if (!activeCourse || !activePhase) return;
+          const lid = btn.dataset.confirmDelLesson || '';
+          try {
+            await adminDeleteLesson(activeCourse.id, activePhase.id, lid);
+            confirmDeleteLessonId = null;
+            showToast('Lesson deleted.', 'info');
+            rerender({ silent: true });
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Unable to delete lesson.', 'error');
+          }
+        });
       });
 
       root.querySelector('#admin-activity-form')?.addEventListener('submit', async (e) => {
@@ -1771,157 +2510,219 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             expectedOutput: String(fd.get('expectedOutput')),
             estMinutes: Number(fd.get('estMinutes') || 25),
           });
-          showToast('Practical activity added to module.', 'success');
+          showToast('Practical activity added.', 'success');
           rerender({ silent: true });
         } catch (err) {
-          showToast(err instanceof Error ? err.message : 'Unable to add practical activity.', 'error');
+          showToast(err instanceof Error ? err.message : 'Unable to add activity.', 'error');
         }
       });
 
-      root.querySelectorAll('[data-edit-lesson-btn]').forEach((node) => {
+      // 10-Field Lesson Editor handlers
+      root.querySelector('#back-to-hierarchy-btn')?.addEventListener('click', () => {
+        activeTab = 'hierarchy';
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-lesson-view]').forEach((node) => {
         const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          const ph = phases.find((p) => p.id === btn.dataset.phaseId);
-          const les = (ph?.lessons || []).find((l) => l.id === btn.dataset.editLessonBtn);
-          if (ph && les) {
-            selectedPhaseId = ph.id;
-            loadLessonIntoBuilder(les);
-            activeTab = 'lessons';
-            rerender({ silent: true });
-          }
+          lessonViewMode = /** @type {'split' | 'edit' | 'preview'} */ (
+            btn.dataset.lessonView || 'split'
+          );
+          rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-del-lesson]').forEach((node) => {
-        const btn = /** @type {HTMLElement} */ (node);
-        btn.addEventListener('click', async () => {
-          if (!activeCourse) return;
-          try {
-            await adminDeleteLesson(activeCourse.id, btn.dataset.phaseId || '', btn.dataset.delLesson || '');
-            showToast('Lesson deleted.', 'info');
-            rerender({ silent: true });
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : 'Unable to delete lesson.', 'error');
-          }
-        });
-      });
-
-      // Lesson Builder tab handlers
       root.querySelector('#builder-course-select')?.addEventListener('change', (e) => {
         selectedCourseId = /** @type {HTMLSelectElement} */ (e.target).value;
         const nextC = courses.find((c) => c.id === selectedCourseId);
         selectedPhaseId = nextC?.phases?.[0]?.id || null;
-        resetLessonBuilder();
+        resetLessonEditor();
         rerender({ silent: true });
       });
 
       root.querySelector('#builder-phase-select')?.addEventListener('change', (e) => {
         selectedPhaseId = /** @type {HTMLSelectElement} */ (e.target).value;
-        resetLessonBuilder();
+        resetLessonEditor();
         rerender({ silent: true });
       });
 
-      root.querySelector('#builder-lesson-select')?.addEventListener('change', (e) => {
+      root.querySelector('#builder-lesson-select')?.addEventListener('change', async (e) => {
         const lid = /** @type {HTMLSelectElement} */ (e.target).value;
         const found = phaseLessons.find((l) => l.id === lid) || null;
-        loadLessonIntoBuilder(found);
+        await loadLessonIntoEditor(found, courseAssessments);
         rerender({ silent: true });
       });
 
       root.querySelector('#reset-lesson-builder-btn')?.addEventListener('click', () => {
-        resetLessonBuilder();
+        resetLessonEditor();
         rerender({ silent: true });
       });
 
-      // Sync top-level lesson draft fields live on input
       root.querySelectorAll('[data-les-field]').forEach((node) => {
         const el = /** @type {HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement} */ (node);
         el.addEventListener('input', () => {
           const f = el.dataset.lesField;
           if (!f) return;
           /** @type {Record<string, string | number | boolean>} */ (lessonDraft)[f] =
-            f === 'estMinutes' ? Number(el.value || 25) : el.value;
+            f === 'estMinutes' || f === 'passPercent' ? Number(el.value || 0) : el.value;
         });
       });
 
-      // Sync draft block edits live on input
-      root.querySelectorAll('[data-blk-field]').forEach((node) => {
-        const el = /** @type {HTMLInputElement | HTMLTextAreaElement} */ (node);
-        el.addEventListener('input', () => {
-          const idx = Number(el.dataset.blkIdx);
-          const field = el.dataset.blkField;
-          const blk = draftBlocks[idx];
-          if (!blk || !field) return;
-          if (field === 'itemsLines') {
-            blk.items = el.value.split('\n').map((s) => s.trim()).filter(Boolean);
-          } else if (field === 'optionsLines') {
-            blk.options = el.value.split('\n').map((s) => s.trim()).filter(Boolean);
-          } else if (field === 'headersCsv') {
-            blk.headers = el.value.split(',').map((s) => s.trim()).filter(Boolean);
-          } else if (field === 'rowsText') {
-            blk.rows = el.value
-              .split('\n')
-              .map((line) => line.split('|').map((cell) => cell.trim()))
-              .filter((r) => r.some(Boolean));
-          } else if (field === 'correctIndex') {
-            blk.correctIndex = Number(el.value || 0);
-          } else {
-            /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (blk))[field] = el.value;
+      root.querySelector('#les-required')?.addEventListener('change', (e) => {
+        lessonDraft.isRequired = /** @type {HTMLInputElement} */ (e.target).checked;
+      });
+
+      const mainTextarea = /** @type {HTMLTextAreaElement | null} */ (root.querySelector('#les-main-content'));
+      root.querySelectorAll('[data-rt-action]').forEach((node) => {
+        const btn = /** @type {HTMLElement} */ (node);
+        btn.addEventListener('click', () => {
+          if (!mainTextarea) return;
+          applyRichTextToolbarAction(mainTextarea, btn.dataset.rtAction || '');
+        });
+      });
+
+      root.querySelector('#refresh-live-preview-btn')?.addEventListener('click', () => {
+        rerender({ silent: true });
+      });
+
+      // Assessment question composer inside Lesson Editor
+      root.querySelectorAll('[data-qc-field]').forEach((node) => {
+        const el = /** @type {HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement} */ (node);
+        const eventName = el.tagName === 'SELECT' ? 'change' : 'input';
+        el.addEventListener(eventName, () => {
+          const f = el.dataset.qcField;
+          if (!f) return;
+          /** @type {Record<string, string | number>} */ (questionComposer)[f] =
+            f === 'marks' || f === 'correctIndex' ? Number(el.value || 0) : el.value;
+          if (f === 'questionType') {
+            rerender({ silent: true });
           }
         });
       });
 
-      root.querySelector('#add-block-btn')?.addEventListener('click', () => {
-        const type =
-          /** @type {HTMLSelectElement | null} */ (root.querySelector('#add-block-type'))?.value || 'paragraph';
-        draftBlocks.push(createEmptyBlock(type));
+      root.querySelector('#save-draft-question-btn')?.addEventListener('click', () => {
+        const prompt = String(questionComposer.prompt || '').trim();
+        if (!prompt) {
+          showToast('Enter a question prompt first.', 'error');
+          return;
+        }
+        const qt = questionComposer.questionType || 'multiple_choice';
+        const isManual = ['short_answer', 'long_form', 'practical_submission'].includes(qt);
+        const options =
+          qt === 'true_false'
+            ? ['True', 'False']
+            : String(questionComposer.optionsLines || '')
+                .split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean);
+
+        const acceptedAnswers = String(questionComposer.acceptedAnswersCsv || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const correctIndices = String(questionComposer.correctIndicesCsv || '')
+          .split(',')
+          .map((s) => Number(s.trim()))
+          .filter((n) => !Number.isNaN(n));
+
+        if (!isManual && qt !== 'fill_blank' && options.length < 2) {
+          showToast('Provide at least 2 answer options (one per line).', 'error');
+          return;
+        }
+        if (qt === 'fill_blank' && acceptedAnswers.length === 0) {
+          showToast('Provide at least one accepted answer.', 'error');
+          return;
+        }
+        if (qt === 'multiple_select' && correctIndices.length === 0) {
+          showToast('Provide at least one correct option index (0-based).', 'error');
+          return;
+        }
+
+        const existingQ =
+          editingQuestionIndex !== null ? draftAssessmentQuestions[editingQuestionIndex] : null;
+        /** @type {DraftAssessmentQuestion} */
+        const entry = {
+          id: existingQ?.id,
+          tempId: existingQ?.tempId || `dq-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+          questionType: qt,
+          marks: Math.max(1, Number(questionComposer.marks || 1)),
+          difficulty: questionComposer.difficulty || 'medium',
+          prompt,
+          contextText: String(questionComposer.contextText || '').trim(),
+          options,
+          correctIndex: Number(questionComposer.correctIndex || 0),
+          correctIndices: qt === 'multiple_select' ? correctIndices : null,
+          acceptedAnswers: qt === 'fill_blank' ? acceptedAnswers : null,
+          correctOrder: qt === 'ordering' ? options.map((_, i) => i) : null,
+          explanation: String(questionComposer.explanation || '').trim() || 'Review the lesson section above.',
+        };
+
+        if (editingQuestionIndex !== null) {
+          draftAssessmentQuestions[editingQuestionIndex] = entry;
+          showToast('Question updated.', 'success');
+        } else {
+          draftAssessmentQuestions.push(entry);
+          showToast('Question added to lesson.', 'success');
+        }
+        resetQuestionComposer();
         rerender({ silent: true });
       });
 
-      root.querySelectorAll('[data-del-blk]').forEach((node) => {
+      root.querySelectorAll('[data-edit-draft-q]').forEach((node) => {
         const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          draftBlocks.splice(Number(btn.dataset.delBlk), 1);
+          const idx = Number(btn.dataset.editDraftQ);
+          const q = draftAssessmentQuestions[idx];
+          if (!q) return;
+          editingQuestionIndex = idx;
+          questionComposer = {
+            questionType: q.questionType || 'multiple_choice',
+            marks: Number(q.marks || 1),
+            difficulty: q.difficulty || 'medium',
+            prompt: q.prompt || '',
+            contextText: q.contextText || '',
+            optionsLines: (q.options || []).join('\n'),
+            correctIndex: Number(q.correctIndex || 0),
+            correctIndicesCsv: (q.correctIndices || []).join(', '),
+            acceptedAnswersCsv: (q.acceptedAnswers || []).join(', '),
+            explanation: q.explanation || '',
+          };
           rerender({ silent: true });
         });
       });
 
-      root.querySelectorAll('[data-move-blk]').forEach((node) => {
+      root.querySelector('#cancel-edit-draft-q')?.addEventListener('click', () => {
+        resetQuestionComposer();
+        rerender({ silent: true });
+      });
+
+      root.querySelectorAll('[data-del-draft-q]').forEach((node) => {
         const btn = /** @type {HTMLElement} */ (node);
         btn.addEventListener('click', () => {
-          const idx = Number(btn.dataset.moveBlk);
-          const target = idx + Number(btn.dataset.dir);
-          if (target < 0 || target >= draftBlocks.length) return;
-          [draftBlocks[idx], draftBlocks[target]] = [draftBlocks[target], draftBlocks[idx]];
+          const idx = Number(btn.dataset.delDraftQ);
+          draftAssessmentQuestions.splice(idx, 1);
+          if (editingQuestionIndex === idx) resetQuestionComposer();
           rerender({ silent: true });
         });
       });
 
+      // Optional Video attachment in Lesson Editor
       root.querySelector('#add-video-btn')?.addEventListener('click', () => {
-        const url = /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-url'))?.value.trim() || '';
+        const url =
+          /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-url'))?.value.trim() || '';
         const title =
-          /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-title'))?.value.trim() || 'Lesson Video';
+          /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-title'))?.value.trim() ||
+          'Optional Lesson Video';
         const duration =
           /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-duration'))?.value.trim() || '';
-        const viewingInstructions =
-          /** @type {HTMLInputElement | null} */ (root.querySelector('#vid-guide'))?.value.trim() || '';
-        const transcript =
-          /** @type {HTMLTextAreaElement | null} */ (root.querySelector('#vid-transcript'))?.value.trim() || '';
-
-        const res = normalizeVideoEntry({
-          provider: 'youtube',
-          url,
-          title,
-          duration,
-          viewingInstructions,
-          transcript,
-        });
+        const res = normalizeVideoEntry({ provider: 'youtube', url, title, duration });
         if (!res.valid || !res.video) {
           showToast(res.error || 'Invalid YouTube URL.', 'error');
           return;
         }
         draftVideos.push(res.video);
-        showToast('YouTube video validated and attached.', 'success');
+        showToast('Optional video attached.', 'success');
         rerender({ silent: true });
       });
 
@@ -1933,151 +2734,122 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
         });
       });
 
-      root.querySelector('#add-res-btn')?.addEventListener('click', () => {
-        const title = /** @type {HTMLInputElement | null} */ (root.querySelector('#res-title'))?.value.trim();
-        const url = /** @type {HTMLInputElement | null} */ (root.querySelector('#res-url'))?.value.trim();
-        if (!title || !url || (!url.startsWith('https://') && !url.startsWith('http://'))) {
-          showToast('Enter both a resource title and a valid https:// URL.', 'error');
-          return;
-        }
-        draftResources.push({ title, url, resourceType: 'article' });
-        rerender({ silent: true });
-      });
-
-      root.querySelectorAll('[data-del-res]').forEach((node) => {
-        const btn = /** @type {HTMLElement} */ (node);
-        btn.addEventListener('click', () => {
-          draftResources.splice(Number(btn.dataset.delRes), 1);
-          rerender({ silent: true });
-        });
-      });
-
+      // Save 10-field Lesson + Assessment Questions
       root.querySelector('#admin-lesson-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (!activeCourse || !activePhase) {
-          showToast('Select a valid course and module first.', 'error');
+          showToast('Select a valid course and phase first.', 'error');
           return;
         }
-        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
+
+        let compiledBlocks;
         try {
-          await adminUpsertLesson({
+          compiledBlocks = richTextToLessonBlocks({
+            mainContentText: lessonDraft.mainContentText,
+            practicalTitle: lessonDraft.practicalTitle,
+            practicalBody: lessonDraft.practicalBody,
+            practicalOutcome: lessonDraft.practicalOutcome,
+          });
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'Check lesson rich-text formatting.', 'error');
+          return;
+        }
+
+        if (compiledBlocks.length === 0) {
+          showToast('Enter main instructional content before saving the lesson.', 'error');
+          return;
+        }
+
+        try {
+          const savedLesson = await adminUpsertLesson({
             id: editingLessonId || undefined,
             courseId: activeCourse.id,
             phaseId: activePhase.id,
-            title: String(fd.get('title')),
-            introduction: String(fd.get('introduction')),
-            objectives: String(fd.get('objectives') || ''),
-            estMinutes: Number(fd.get('estMinutes') || 25),
-            blocks: structuredClone(draftBlocks),
+            title: lessonDraft.title,
+            introduction: lessonDraft.introduction,
+            objectives: lessonDraft.objectives,
+            estMinutes: Number(lessonDraft.estMinutes || 25),
+            blocks: compiledBlocks,
             videos: structuredClone(draftVideos),
             furtherReading: structuredClone(draftResources),
-            summary: String(fd.get('summary') || ''),
-            takeaways: String(fd.get('takeaways') || ''),
-            completionCriteria: String(fd.get('completionCriteria') || ''),
-            publicationStatus: String(fd.get('publicationStatus') || 'published'),
+            summary: lessonDraft.summary,
+            takeaways: lessonDraft.takeaways,
+            completionCriteria: lessonDraft.completionCriteria,
+            publicationStatus: lessonDraft.publicationStatus,
+            isRequired: lessonDraft.isRequired,
           });
-          showToast(editingLessonId ? 'Lesson updated!' : 'New lesson saved to module!', 'success');
-          resetLessonBuilder();
+
+          const savedLessonId = savedLesson?.id || editingLessonId || '';
+
+          if (savedLessonId && draftAssessmentQuestions.length > 0) {
+            const savedQuiz = await adminUpsertAssessment({
+              id: draftLessonQuizId || undefined,
+              skillId: activeCourse.skillId,
+              courseId: activeCourse.id,
+              phaseId: activePhase.id,
+              lessonId: savedLessonId,
+              quizType: 'knowledge_check',
+              title: `${lessonDraft.title} — Knowledge Check`,
+              description: 'Lesson knowledge assessment.',
+              passPercent: Number(lessonDraft.passPercent || 70),
+            });
+            const targetQuizId = savedQuiz?.id || draftLessonQuizId || '';
+            if (targetQuizId) {
+              const currentIds = new Set(
+                draftAssessmentQuestions.map((q) => q.id).filter(Boolean)
+              );
+              for (const oldId of originalLessonQuestionIds) {
+                if (!currentIds.has(oldId)) {
+                  await adminDeleteQuestion(targetQuizId, oldId);
+                }
+              }
+              for (let idx = 0; idx < draftAssessmentQuestions.length; idx++) {
+                const q = draftAssessmentQuestions[idx];
+                await adminUpsertQuestion({
+                  id: q.id || undefined,
+                  quizId: targetQuizId,
+                  position: idx + 1,
+                  questionType: q.questionType,
+                  difficulty: q.difficulty,
+                  marks: q.marks,
+                  prompt: q.prompt,
+                  contextText: q.contextText || '',
+                  options: q.options,
+                  correctIndex: q.correctIndex,
+                  correctIndices: q.correctIndices,
+                  acceptedAnswers: q.acceptedAnswers,
+                  correctOrder: q.correctOrder,
+                  explanation: q.explanation,
+                });
+              }
+            }
+          } else if (draftLessonQuizId && draftAssessmentQuestions.length === 0) {
+            try {
+              await adminDeleteAssessment(draftLessonQuizId);
+            } catch (delErr) {
+              showToast(
+                delErr instanceof Error
+                  ? delErr.message
+                  : 'Lesson saved, but existing assessment has recorded attempts.',
+                'info'
+              );
+            }
+          }
+
+          showToast(editingLessonId ? 'Lesson & assessment saved.' : 'New lesson created.', 'success');
+          if (savedLesson) {
+            const refreshedAssessments = await listAssessmentsForCourse(activeCourse.id);
+            await loadLessonIntoEditor(savedLesson, refreshedAssessments);
+          }
           rerender({ silent: true });
         } catch (err) {
           showToast(err instanceof Error ? err.message : 'Unable to save lesson.', 'error');
         }
       });
 
-      // Catalog tab handlers
-      root.querySelector('#admin-cat-filter')?.addEventListener('change', (e) => {
-        catalogCategoryFilter = /** @type {HTMLSelectElement} */ (e.target).value;
-        rerender({ silent: true });
-      });
-
-      root.querySelector('#admin-course-status-filter')?.addEventListener('change', (e) => {
-        catalogCourseStatusFilter = /** @type {HTMLSelectElement} */ (e.target).value;
-        rerender({ silent: true });
-      });
-
-      root.querySelectorAll('[data-edit-skill]').forEach((node) => {
-        const btn = /** @type {HTMLElement} */ (node);
-        btn.addEventListener('click', () => {
-          editingSkillId = btn.dataset.editSkill || null;
-          rerender({ silent: true });
-        });
-      });
-
-      root.querySelector('#cancel-edit-skill')?.addEventListener('click', () => {
-        editingSkillId = null;
-        rerender({ silent: true });
-      });
-
-      root.querySelectorAll('[data-add-course-skill]').forEach((node) => {
-        const btn = /** @type {HTMLElement} */ (node);
-        btn.addEventListener('click', () => {
-          selectedSkillId = btn.dataset.addCourseSkill || null;
-          const nextCourses = courses.filter(
-            (c) => c.skillId === selectedSkillId || (selectedSkillId ? (c.associatedSkillIds || []).includes(selectedSkillId) : false)
-          );
-          selectedCourseId = nextCourses[0]?.id || null;
-          selectedPhaseId = nextCourses[0]?.phases?.[0]?.id || null;
-          courseFormMode = 'create';
-          activeTab = 'courses';
-          rerender({ silent: true });
-        });
-      });
-
-      root.querySelector('#admin-category-form')?.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
-        try {
-          await adminUpsertCategory({
-            name: String(fd.get('name')),
-            description: String(fd.get('description')),
-          });
-          showToast('Category created dynamically!', 'success');
-          rerender({ silent: true });
-        } catch (err) {
-          showToast(err instanceof Error ? err.message : 'Unable to create category.', 'error');
-        }
-      });
-
-      root.querySelector('#admin-skill-form')?.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const fd = new FormData(/** @type {HTMLFormElement} */ (e.currentTarget));
-        try {
-          await adminUpsertSkill({
-            id: editingSkillId || undefined,
-            slug: editingSkill?.slug || undefined,
-            title: String(fd.get('title')),
-            categoryId: String(fd.get('categoryId')),
-            level: String(fd.get('level')),
-            summary: String(fd.get('summary')),
-            competencyExpectations: String(fd.get('competencyExpectations') || ''),
-            outcomes: String(fd.get('outcomes') || ''),
-            publicationStatus: String(fd.get('publicationStatus') || 'published'),
-          });
-          showToast(editingSkillId ? 'Skill details updated.' : 'Independent skill created.', 'success');
-          editingSkillId = null;
-          rerender({ silent: true });
-        } catch (err) {
-          showToast(err instanceof Error ? err.message : 'Unable to save skill.', 'error');
-        }
-      });
-
-      root.querySelectorAll('[data-toggle-skill-pub]').forEach((node) => {
-        const btn = /** @type {HTMLElement} */ (node);
-        btn.addEventListener('click', async () => {
-          const skill = skills.find((s) => s.id === btn.dataset.toggleSkillPub);
-          if (!skill) return;
-          try {
-            await adminUpsertSkill({
-              ...skill,
-              publicationStatus: skill.publicationStatus === 'draft' ? 'published' : 'draft',
-            });
-            showToast(`Updated ${skill.title} status.`, 'success');
-            rerender({ silent: true });
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : 'Unable to update skill status.', 'error');
-          }
-        });
-      });
+      if (activeTab === 'lesson_editor' && lessonViewMode !== 'edit' && livePreviewLesson) {
+        bindLessonReader(root, { lessonQuiz: livePreviewQuiz });
+      }
 
       // Import / Export & Recovery tab handlers
       root.querySelector('#import-course-select')?.addEventListener('change', (e) => {
@@ -2175,9 +2947,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           confirmChk.checked = false;
           confirmChk.disabled = importJsonText !== lastPreviewedJsonText;
         }
-        if (commitBtn) {
-          commitBtn.disabled = true;
-        }
+        if (commitBtn) commitBtn.disabled = true;
       });
 
       root.querySelector('#import-change-notes')?.addEventListener('input', (e) => {
@@ -2211,9 +2981,9 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
             dryRunParseErrors = [];
             dryRunPlan = res.plan;
             if (res.plan && !res.plan.valid) {
-              showToast('Dry run rejected one or more items. Review error details.', 'error');
+              showToast('Dry run rejected one or more items.', 'error');
             } else if (res.plan?.canCommit) {
-              showToast('Dry run passed! Review changes and confirm to commit.', 'success');
+              showToast('Dry run passed!', 'success');
             } else {
               showToast('Dry run complete: no changes to import.', 'info');
             }
@@ -2262,10 +3032,7 @@ export async function renderAdminContentPage({ currentPath, rerender }) {
           confirmBulkImport = false;
           importChangeNotes = '';
           lastPreviewedJsonText = '';
-          showToast(
-            `Imported ${result.createdCount} new and ${result.updatedCount} updated lesson(s).`,
-            'success'
-          );
+          showToast(`Imported ${result.createdCount} new and ${result.updatedCount} updated lesson(s).`, 'success');
         } catch (err) {
           showToast(err instanceof Error ? err.message : 'Bulk import failed.', 'error');
         } finally {

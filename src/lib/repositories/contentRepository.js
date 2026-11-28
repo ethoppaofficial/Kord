@@ -607,7 +607,9 @@ export async function adminUpsertSkill(payload) {
       return data;
     }
 
-    return updateDemoState((draft) => {
+    /** @type {import('../../types/kord.d.ts').Skill | null} */
+    let savedSkill = null;
+    updateDemoState((draft) => {
       const existing = payload.id
         ? draft.skills.find((s) => s.id === payload.id)
         : draft.skills.find((s) => s.slug === cleanSlug);
@@ -651,14 +653,16 @@ export async function adminUpsertSkill(payload) {
           beforeData: prev,
           afterData: { title: existing.title, publicationStatus: existing.publicationStatus },
         });
+        savedSkill = existing;
         return draft;
       }
 
       const newSkillId = `skill-${cleanSlug}-${Date.now().toString(36).slice(-4)}`;
-      draft.skills.push({
+      const createdSkill = {
         id: newSkillId,
         ...enriched,
-      });
+      };
+      draft.skills.push(createdSkill);
       appendDemoAuditLog(draft, {
         action: 'skill_created',
         targetTable: 'skills',
@@ -666,8 +670,10 @@ export async function adminUpsertSkill(payload) {
         beforeData: null,
         afterData: { title: enriched.title, publicationStatus: enriched.publicationStatus },
       });
+      savedSkill = createdSkill;
       return draft;
     });
+    return savedSkill;
   });
 }
 
@@ -1040,7 +1046,9 @@ export async function adminUpsertPhase({
       return data;
     }
 
-    return updateDemoState((draft) => {
+    /** @type {import('../../types/kord.d.ts').Phase | null} */
+    let savedPhase = null;
+    updateDemoState((draft) => {
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course) throw new Error('Course not found');
       course.phases = course.phases || [];
@@ -1063,9 +1071,10 @@ export async function adminUpsertPhase({
           beforeData: null,
           afterData: { courseId, title: existing.title, publicationStatus },
         });
+        savedPhase = existing;
       } else {
         const newPhaseId = `ph-${Date.now()}`;
-        course.phases.push({
+        const createdPhase = {
           id: newPhaseId,
           position: Number(position || course.phases.length + 1),
           title: String(title || '').trim(),
@@ -1076,7 +1085,8 @@ export async function adminUpsertPhase({
           publicationStatus,
           activities: [],
           lessons: [],
-        });
+        };
+        course.phases.push(createdPhase);
         appendDemoAuditLog(draft, {
           action: 'phase_created',
           targetTable: 'phases',
@@ -1084,10 +1094,12 @@ export async function adminUpsertPhase({
           beforeData: null,
           afterData: { courseId, title: String(title || '').trim(), publicationStatus },
         });
+        savedPhase = createdPhase;
       }
       course.updatedAt = new Date().toISOString();
       return draft;
     });
+    return savedPhase;
   });
 }
 
@@ -1299,7 +1311,9 @@ export async function adminUpsertLesson({
       return data;
     }
 
-    return updateDemoState((draft) => {
+    /** @type {import('../../types/kord.d.ts').Lesson | null} */
+    let savedLesson = null;
+    updateDemoState((draft) => {
       const course = (draft.courses || []).find((c) => c.id === courseId);
       if (!course) throw new Error('Course not found');
       const phase = (course.phases || []).find((p) => p.id === phaseId);
@@ -1331,13 +1345,15 @@ export async function adminUpsertLesson({
           beforeData: null,
           afterData: { courseId, phaseId, title: lessonData.title, publicationStatus },
         });
+        savedLesson = existing;
       } else {
         const newLessonId = `les-${Date.now()}`;
-        phase.lessons.push({
+        const createdLesson = {
           id: newLessonId,
           position: Number(position || phase.lessons.length + 1),
           ...lessonData,
-        });
+        };
+        phase.lessons.push(createdLesson);
         appendDemoAuditLog(draft, {
           action: 'lesson_created',
           targetTable: 'lessons',
@@ -1345,10 +1361,12 @@ export async function adminUpsertLesson({
           beforeData: null,
           afterData: { courseId, phaseId, title: lessonData.title, publicationStatus },
         });
+        savedLesson = createdLesson;
       }
       course.updatedAt = new Date().toISOString();
       return draft;
     });
+    return savedLesson;
   });
 }
 
