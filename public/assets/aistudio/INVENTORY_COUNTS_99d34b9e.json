@@ -1,0 +1,13 @@
+{
+  "prepared_on": "2026-11-27",
+  "supabase_project_id": "vqkoukltadvvhsvrelhy",
+  "counts": {
+    "categories": 7,
+    "skills": 99,
+    "courses": 63,
+    "course_skill_associations": 111,
+    "phases": 386,
+    "lessons": 772
+  },
+  "note": "Aggregate counts verified with read-only Supabase queries. Complete nested export must be generated with sql/export_curriculum.sql."
+}
